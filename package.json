@@ -1,0 +1,78 @@
+{
+  "name": "antigravity-kite",
+  "displayName": "Antigravity Kite",
+  "description": "为 Antigravity IDE 量身打造的无感多账号切换与号池管理插件",
+  "version": "0.8.0",
+  "publisher": "soulvon",
+  "repository": "https://github.com/soulvon/antigravity-kite",
+  "license": "MIT",
+  "icon": "resources/icon.png",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "antigravityKite",
+          "title": "Antigravity Kite",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "antigravityKite": [
+        {
+          "type": "webview",
+          "id": "antigravityKite.sidebar",
+          "name": "0.8.0"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "antigravityKite.checkForUpdates",
+        "title": "Kite: 检查更新",
+        "category": "Antigravity Kite"
+      }
+    ],
+    "configuration": {
+      "title": "Antigravity Kite",
+      "properties": {
+        "antigravityKite.update.autoCheck": {
+          "type": "boolean",
+          "default": true,
+          "description": "启动时自动检查更新"
+        },
+        "antigravityKite.update.autoInstall": {
+          "type": "boolean",
+          "default": true,
+          "description": "发现新版本时自动静默安装"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "node ./scripts/update-version.js && npm run compile && vsce package --skip-license"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.22.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "sql.js": "^1.14.1"
+  }
+}

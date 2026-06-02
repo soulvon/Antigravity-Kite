@@ -1,0 +1,67 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="blue1" x1="100" y1="100" x2="462" y2="462" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4EA1FF"/>
+      <stop offset="1" stop-color="#1E5BFF"/>
+    </linearGradient>
+
+    <linearGradient id="blue2" x1="562" y1="100" x2="924" y2="462" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#73E4FF"/>
+      <stop offset="1" stop-color="#36BFFF"/>
+    </linearGradient>
+
+    <linearGradient id="blue3" x1="100" y1="562" x2="462" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#123E7C"/>
+      <stop offset="1" stop-color="#072A56"/>
+    </linearGradient>
+
+    <linearGradient id="blue4" x1="562" y1="562" x2="924" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4D9DFF"/>
+      <stop offset="1" stop-color="#246BFF"/>
+    </linearGradient>
+
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0B1B3A" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <!-- Top Left -->
+  <path
+    d="M 100 60 H 462 Q 502 60 502 100 V 462 Q 502 502 462 462 L 100 100 Q 60 60 100 60 Z"
+    fill="url(#blue1)"
+    filter="url(#shadow)"
+    stroke="#2D6BFF"
+    stroke-width="10"
+    stroke-linejoin="round"
+  />
+
+  <!-- Top Right -->
+  <path
+    d="M 562 60 H 924 Q 964 60 964 100 V 462 Q 964 502 924 462 L 562 100 Q 522 60 562 60 Z"
+    fill="url(#blue2)"
+    filter="url(#shadow)"
+    stroke="#44CCFF"
+    stroke-width="10"
+    stroke-linejoin="round"
+  />
+
+  <!-- Bottom Left -->
+  <path
+    d="M 100 522 H 462 Q 502 522 502 562 V 924 Q 502 964 462 924 L 100 562 Q 60 522 100 522 Z"
+    fill="url(#blue3)"
+    filter="url(#shadow)"
+    stroke="#0D356B"
+    stroke-width="10"
+    stroke-linejoin="round"
+  />
+
+  <!-- Bottom Right -->
+  <path
+    d="M 562 522 H 924 Q 964 522 964 562 V 924 Q 964 964 924 924 L 562 562 Q 522 522 562 522 Z"
+    fill="url(#blue4)"
+    filter="url(#shadow)"
+    stroke="#2E76FF"
+    stroke-width="10"
+    stroke-linejoin="round"
+  />
+</svg>

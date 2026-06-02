@@ -1,0 +1,116 @@
+import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import { StoredAccount } from './types';
+
+let _accounts: StoredAccount[] = [];
+let _storageDir: string = '';
+let _watcher: fs.FSWatcher | null = null;
+let _onChangeCallback: (() => void) | null = null;
+
+const ACCOUNTS_FILE = 'accounts.json';
+
+function getFilePath(): string {
+  return path.join(_storageDir, ACCOUNTS_FILE);
+}
+
+export function init(context: vscode.ExtensionContext): void {
+  _storageDir = context.globalStorageUri.fsPath;
+  try {
+    fs.mkdirSync(_storageDir, { recursive: true });
+  } catch (e) { console.warn('[accountStore] mkdir failed:', e); }
+  load();
+  
+  // 监听文件变化（多窗口同步）
+  try {
+    _watcher = fs.watch(_storageDir, (event, filename) => {
+      if (filename === ACCOUNTS_FILE) {
+        load();
+        _onChangeCallback?.();
+      }
+    });
+  } catch (e) { console.warn('[accountStore] watch failed:', e); }
+}
+
+export function dispose(): void {
+  _watcher?.close();
+  _watcher = null;
+}
+
+export function onChange(callback: () => void): void {
+  _onChangeCallback = callback;
+}
+
+function load(): void {
+  try {
+    const filePath = getFilePath();
+    if (fs.existsSync(filePath)) {
+      const data = fs.readFileSync(filePath, 'utf8');
+      _accounts = JSON.parse(data);
+    }
+  } catch (e) {
+    console.warn('[accountStore] load failed:', e);
+    _accounts = [];
+  }
+}
+
+function save(): void {
+  try {
+    const filePath = getFilePath();
+    fs.writeFileSync(filePath, JSON.stringify(_accounts, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[accountStore] save failed:', err);
+  }
+}
+
+export function getAll(): StoredAccount[] {
+  return [..._accounts];
+}
+
+export function getByEmail(email: string): StoredAccount | undefined {
+  return _accounts.find(a => a.email.toLowerCase() === email.toLowerCase());
+}
+
+export function add(account: StoredAccount): boolean {
+  const existing = getByEmail(account.email);
+  if (existing) {
+    // 更新已有账号
+    Object.assign(existing, account);
+  } else {
+    _accounts.push(account);
+  }
+  save();
+  return true;
+}
+
+export function remove(email: string): boolean {
+  const idx = _accounts.findIndex(a => a.email.toLowerCase() === email.toLowerCase());
+  if (idx >= 0) {
+    _accounts.splice(idx, 1);
+    save();
+    return true;
+  }
+  return false;
+}
+
+export function update(email: string, updates: Partial<StoredAccount>): boolean {
+  const account = getByEmail(email);
+  if (account) {
+    Object.assign(account, updates);
+    save();
+    return true;
+  }
+  return false;
+}
+
+export function setDisabled(email: string, disabled: boolean): boolean {
+  return update(email, { disabled });
+}
+
+export function count(): number {
+  return _accounts.length;
+}
+
+export function countActive(): number {
+  return _accounts.filter(a => !a.disabled).length;
+}

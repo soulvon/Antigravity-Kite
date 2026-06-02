@@ -1,0 +1,22 @@
+# Dependency & build directories
+out/
+node_modules/
+.vscode-test/
+.windsurf/
+OrderProject/
+.vscode/
+.idea/
+
+# Built packages
+*.vsix
+
+# Temporary/debug assets and scripts
+*.png
+*.jpg
+*.jpeg
+scripts/test_*
+
+# Exclude ALL documentation files except README.md
+*.md
+!README.md
+spec/
