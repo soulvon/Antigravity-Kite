@@ -1,0 +1,61 @@
+name: 🐛 Bug 报告 (Bug report)
+description: 提交 Antigravity Kite 插件中遇到的异常、Bug 或兼容性问题
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈问题！请在提交前确认已移除 API Key、Token、账号邮箱等敏感信息。
+  - type: input
+    id: version
+    attributes:
+      label: Antigravity Kite 插件版本
+      placeholder: 例如 0.8.13
+    validations:
+      required: true
+  - type: input
+    id: host_version
+    attributes:
+      label: Antigravity IDE 版本
+      placeholder: 例如 1.18.4 / 2.0+
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统与版本
+      placeholder: 例如 Windows 11 / macOS Sequoia / Linux
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开 ...
+        2. 点击 ...
+        3. 出现 ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      placeholder: 描述正常情况下应当发生的事情
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      placeholder: 描述当前发生的异常现象或报错
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关运行日志（已脱敏）
+      description: 可从 Antigravity Kite 日志面板中复制相关日志，请务必脱敏
+      render: text

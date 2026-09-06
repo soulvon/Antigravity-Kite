@@ -2,9 +2,16 @@
   "name": "antigravity-kite",
   "displayName": "Antigravity Kite",
   "description": "为 Antigravity IDE 量身打造的无感多账号切换与号池管理插件",
-  "version": "0.8.0",
+  "version": "0.8.13",
   "publisher": "soulvon",
-  "repository": "https://github.com/soulvon/antigravity-kite",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/soulvon/Antigravity-Kite"
+  },
+  "bugs": {
+    "url": "https://github.com/soulvon/Antigravity-Kite/issues"
+  },
+  "homepage": "https://github.com/soulvon/Antigravity-Kite#readme",
   "license": "MIT",
   "icon": "resources/icon.png",
   "engines": {
@@ -32,7 +39,7 @@
         {
           "type": "webview",
           "id": "antigravityKite.sidebar",
-          "name": "0.8.0"
+          "name": "0.8.13"
         }
       ]
     },
@@ -41,6 +48,19 @@
         "command": "antigravityKite.checkForUpdates",
         "title": "Kite: 检查更新",
         "category": "Antigravity Kite"
+      },
+      {
+        "command": "antigravityKite.openLogPanel",
+        "title": "Kite: 打开统计面板",
+        "category": "Antigravity Kite"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "antigravityKite.openLogPanel",
+        "key": "ctrl+shift+q",
+        "mac": "cmd+shift+q",
+        "when": "true"
       }
     ],
     "configuration": {
@@ -55,6 +75,11 @@
           "type": "boolean",
           "default": true,
           "description": "发现新版本时自动静默安装"
+        },
+        "antigravityKite.customIdeExePath": {
+          "type": "string",
+          "default": "",
+          "description": "自定义 Antigravity 主程序可执行文件路径 (用于多版本启动分身)"
         }
       }
     }

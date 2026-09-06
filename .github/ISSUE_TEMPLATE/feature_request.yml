@@ -1,0 +1,30 @@
+name: 💡 功能建议 (Feature request)
+description: 为 Antigravity Kite 提出新功能、改进建议或更多增强特性
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 遇到的痛点或需求背景
+      description: 目前的哪些限制或使用场景促使你提出这个建议？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 功能建议与期望实现方案
+      description: 详细描述你期望的功能形式与交互表现
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案或临时解决方案
+      description: 你目前是如何处理或绕过这个问题的？
+  - type: textarea
+    id: context
+    attributes:
+      label: 其他补充信息
+      description: 截图、相关链接或其他参考资料
