@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { StoredAccount } from './types';
 import * as accountStore from './accountStore';
+import { decryptSecureAccount, isEncryptedPayload, readSecureStorageKey } from './secureAccounts';
 
 interface ExternalAccount {
   id?: string;
@@ -73,16 +74,22 @@ function convertToStoredAccount(ext: ExternalAccount, source: string): StoredAcc
   };
 }
 
-async function loadAccountsFromDir(dataDir: string): Promise<ExternalAccount[]> {
+async function loadAccountsFromDir(dataDir: string): Promise<{ accounts: ExternalAccount[]; failures: string[] }> {
   const accountsDir = path.join(dataDir, 'accounts');
   const indexPath = path.join(dataDir, 'accounts.json');
-  
+
   if (!fs.existsSync(accountsDir)) {
-    return [];
+    return { accounts: [], failures: [`accounts 目录不存在: ${accountsDir}`] };
   }
 
   const accounts: ExternalAccount[] = [];
-  
+  const failures: string[] = [];
+  // Cockpit Tools 新版加密存储：密钥缺失时加密文件必须逐个暴露为失败，而不是当成 0 账号
+  const secureKey = readSecureStorageKey(dataDir);
+  if (!secureKey) {
+    failures.push('加密密钥缺失或非法（secure-account-storage.key），加密账号文件将无法导入');
+  }
+
   // 读取索引文件获取账号列表
   let accountIds: string[] = [];
   if (fs.existsSync(indexPath)) {
@@ -91,9 +98,10 @@ async function loadAccountsFromDir(dataDir: string): Promise<ExternalAccount[]> 
       accountIds = indexData.accounts.map(a => a.id);
     } catch (e) {
       console.warn('[importService] Failed to read index:', e);
+      failures.push('账号索引 accounts.json 解析失败');
     }
   }
-  
+
   // 如果没有索引，扫描目录
   if (accountIds.length === 0) {
     try {
@@ -103,37 +111,58 @@ async function loadAccountsFromDir(dataDir: string): Promise<ExternalAccount[]> 
         .map(f => f.replace('.json', ''));
     } catch (e) {
       console.warn('[importService] Failed to scan accounts dir:', e);
+      failures.push('accounts 目录扫描失败');
     }
   }
 
   // 读取每个账号文件
   for (const id of accountIds) {
     const accountPath = path.join(accountsDir, `${id}.json`);
-    if (fs.existsSync(accountPath)) {
-      try {
-        const data = JSON.parse(fs.readFileSync(accountPath, 'utf8'));
-        if (data.email && data.token) {
-          accounts.push(data as ExternalAccount);
+    if (!fs.existsSync(accountPath)) {
+      failures.push(`账号文件缺失: ${id}.json`);
+      continue;
+    }
+    try {
+      const data = JSON.parse(fs.readFileSync(accountPath, 'utf8'));
+      let account: unknown = data;
+      if (isEncryptedPayload(data)) {
+        if (!secureKey) {
+          failures.push(`${id}.json 为加密存储但无法解密（密钥缺失）`);
+          continue;
         }
-      } catch (e) {
-        console.warn(`[importService] Failed to read account ${id}:`, e);
+        account = decryptSecureAccount(data, secureKey);
       }
+      const acc = account as ExternalAccount;
+      if (acc.email && acc.token) {
+        accounts.push(acc);
+      } else {
+        failures.push(`${id}.json 缺少 email 或 token 字段`);
+      }
+    } catch (e) {
+      // 解密失败/JSON 损坏逐文件留证，绝不静默吞掉后伪装成 0 账号
+      const reason = e instanceof Error ? e.message : String(e);
+      failures.push(`${id}.json 读取失败: ${reason}`);
+      console.warn(`[importService] Failed to read account ${id}:`, e);
     }
   }
 
-  return accounts;
+  return { accounts, failures };
 }
 
 export async function importFromCockpitTools(): Promise<{ imported: number; skipped: number }> {
   const dataDir = getCockpitToolsDir();
-  
+
   if (!fs.existsSync(dataDir)) {
     throw new Error('Cockpit Tools 数据目录不存在');
   }
 
-  const accounts = await loadAccountsFromDir(dataDir);
+  const { accounts, failures } = await loadAccountsFromDir(dataDir);
   if (accounts.length === 0) {
-    throw new Error('Cockpit Tools 中没有找到账号');
+    const detail = failures.length > 0 ? `：${failures.slice(0, 3).join('；')}${failures.length > 3 ? ` 等 ${failures.length} 项` : ''}` : '';
+    throw new Error(`Cockpit Tools 中没有找到账号${detail}`);
+  }
+  if (failures.length > 0) {
+    console.warn(`[importService] Cockpit Tools 部分账号读取失败: ${failures.join('；')}`);
   }
 
   let imported = 0;
@@ -145,7 +174,7 @@ export async function importFromCockpitTools(): Promise<{ imported: number; skip
       skipped++;
       continue;
     }
-    
+
     const stored = convertToStoredAccount(ext, 'cockpit-tools');
     accountStore.add(stored);
     imported++;
@@ -156,14 +185,18 @@ export async function importFromCockpitTools(): Promise<{ imported: number; skip
 
 export async function importFromAntigravityManager(): Promise<{ imported: number; skipped: number }> {
   const dataDir = getAntigravityManagerDir();
-  
+
   if (!fs.existsSync(dataDir)) {
     throw new Error('Antigravity Manager 数据目录不存在');
   }
 
-  const accounts = await loadAccountsFromDir(dataDir);
+  const { accounts, failures } = await loadAccountsFromDir(dataDir);
   if (accounts.length === 0) {
-    throw new Error('Antigravity Manager 中没有找到账号');
+    const detail = failures.length > 0 ? `：${failures.slice(0, 3).join('；')}${failures.length > 3 ? ` 等 ${failures.length} 项` : ''}` : '';
+    throw new Error(`Antigravity Manager 中没有找到账号${detail}`);
+  }
+  if (failures.length > 0) {
+    console.warn(`[importService] Antigravity Manager 部分账号读取失败: ${failures.join('；')}`);
   }
 
   let imported = 0;
@@ -175,7 +208,7 @@ export async function importFromAntigravityManager(): Promise<{ imported: number
       skipped++;
       continue;
     }
-    
+
     const stored = convertToStoredAccount(ext, 'antigravity-manager');
     accountStore.add(stored);
     imported++;
