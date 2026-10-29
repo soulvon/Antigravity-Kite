@@ -486,6 +486,14 @@ class SidebarProvider implements vscode.WebviewViewProvider {
                 this._pushAccounts();
                 statusBarManager?.refreshUsage();
                 logPanel.pushLogPanelData(this._context, usageTracker);
+                // 补全切号协议：触发 authentication 层重读 session（身份/凭证缓存刷新）
+                try {
+                  await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
+                } catch (e) {
+                  console.warn('[Kite] handleAuthRefresh failed:', e instanceof Error ? e.message : e);
+                }
+                // 联动规则：切号后优先刷新目标号额度
+                this._refreshUsage(msg.email);
               } else {
                 this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: result.message || '切号失败' });
               }
@@ -1001,17 +1009,6 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         </button>
         <button class="toolbar-icon-btn" id="privacyModeBtn" title="隐私模式：隐藏邮箱">
           <svg class="privacy-eye" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
-        </button>
-        <button class="preflight-toggle-btn" id="preflightToggleBtn" title="切号预检：开启后切号前先检测当前模型限速">
-          <span class="preflight-label">切号预检</span>
-          <span class="preflight-switch" aria-hidden="true">
-            <span class="preflight-switch-thumb"></span>
-          </span>
-        </button>
-        <button class="balance-filter-btn" id="balanceFilterBtn" title="筛选有额外余额的账号">
-          <span class="balance-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
-          <span class="balance-label">有余额</span>
-          <span class="balance-count" id="balanceCount">(0)</span>
         </button>
         <div style="flex:1"></div>
         <select class="page-size-select" id="pageSizeSelect" title="每页显示">
@@ -1681,24 +1678,8 @@ if (_recommendBtn) _recommendBtn.onclick = () => {
   renderAccounts();
 };
 
-// 切号预检
+// 切号预检（状态保留供后端同步，UI 控件已移除）
 let preflightEnabled = false;
-const _preflightBtn = document.getElementById('preflightToggleBtn');
-if (_preflightBtn) _preflightBtn.onclick = () => {
-  preflightEnabled = !preflightEnabled;
-  _preflightBtn.classList.toggle('is-active', preflightEnabled);
-  vscode.postMessage({ type: 'setPreflight', enabled: preflightEnabled });
-};
-
-// 有余额过滤
-let balanceFilter = false;
-const _balanceBtn = document.getElementById('balanceFilterBtn');
-if (_balanceBtn) _balanceBtn.onclick = () => {
-  balanceFilter = !balanceFilter;
-  _balanceBtn.classList.toggle('is-active', balanceFilter);
-  currentPage = 1;
-  renderAccounts();
-};
 
 // 筛选下拉（套餐 / 标签 / 状态三组，接活过滤逻辑）
 let filterPlans = new Set(); // 套餐（tierId 大写）
@@ -2531,8 +2512,8 @@ function renderAccounts() {
       });
       quotasHtml = '<div class="quota-groups">' + items.join('') + '</div>';
     } else {
-      // 无数据时占位：显示 3 组骨架；有错误则错误可见，绝不让占位符吞掉失败
-      const placeholderGroups = ['Claude', 'Gemini Pro', 'Gemini Flash'];
+      // 无数据时占位：CPA 同款四窗骨架；有错误则错误可见，绝不让占位符吞掉失败
+      const placeholderGroups = ['Claude 5h', 'Claude 周额度', 'Gemini 5h', 'Gemini 周额度'];
       const placeholderItems = placeholderGroups.map(name => {
         return '<div class="quota-group-item">'
           + '<div class="quota-group-head"><span class="quota-group-name">' + name + '</span><span class="quota-group-val" style="opacity:0.4">—</span></div>'
@@ -2564,17 +2545,6 @@ function renderAccounts() {
       + '</div>'
       + '<div class="grid-card-meta">'
         + '<span class="grid-plan-chip ' + tierClass + '">' + tierLabel + '</span>'
-        + (function() {
-            const accTags = getAccTags(a);
-            if (accTags.length > 0) {
-              return accTags.map(function(t) {
-                const tc = getTagColor(t);
-                const active = filterTags.has(t);
-                return '<span class="grid-tag-chip' + (active ? ' is-active' : '') + '" data-tag="' + escHtml(t) + '" style="background:' + tc + '2E;color:' + tc + ';border:1px solid ' + tc + '59" title="点击筛选 / 右键改色">' + escHtml(t) + '</span>';
-              }).join('');
-            }
-            return '';
-          })()
       + '</div>'
       + '<div class="grid-card-quotas">' + quotasHtml + '</div>'
       + extraHtml

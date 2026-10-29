@@ -330,34 +330,48 @@ async function fetchAvailableModels(
   return fetchModelsRequest<CloudCodeQuotaResponse>(payload, accessToken);
 }
 
-/** 黑名单模型（不计入配额显示） */
+/** 黑名单模型（不计入配额显示）：后台 tab 预览与内置 chat 占位模型 */
 const MODEL_BLACKLIST = new Set([
   'chat_20706', 'chat_23310',
   'gemini-2.5-flash', 'gemini-2.5-flash-thinking', 'gemini-2.5-flash-lite', 'gemini-2.5-pro',
   'model_chat_20706', 'model_chat_23310',
   'model_google_gemini_2_5_flash', 'model_google_gemini_2_5_flash_thinking',
   'model_google_gemini_2_5_flash_lite', 'model_google_gemini_2_5_pro',
-  'model_placeholder_m19',
+  'model_placeholder_m19', 'model_placeholder_m28',
 ]);
 
-const GEMINI_PRO_PATTERN = /^gemini-\d+(?:\.\d+)?-pro-(high|low)/;
-const GEMINI_FLASH_PATTERN = /^gemini-\d+(?:\.\d+)?-flash/;
+const WEEKLY_WINDOW_MS = 24 * 60 * 60 * 1000; // reset 距今超过 24h 视为周窗（CPA 同款语义：Claude 5h 窗 / Gemini 周窗）
 
-/** 分组模型为 Claude / Gemini Pro / Gemini Flash，取每组最低百分比 */
+interface FamilyWindow {
+  family: 'claude' | 'gemini';
+  window: '5h' | 'weekly';
+  minPct: number;
+  resetTime?: string;
+}
+
+/**
+ * 按模型族 × 时间窗口分组（对齐 CPA Manager Plus 的显示语义）：
+ * - 族：Claude（claude/anthropic/gpt/openai）与 Gemini（gemini）
+ * - 窗口：resetTime 距今 < 24h 视为 5 小时窗，否则视为周窗
+ * 每族每窗取最低百分比。
+ */
 function extractQuotaFromModels(response: CloudCodeQuotaResponse['models']): UsageSnapshot {
-  const groups: Record<string, { minPct: number; resetTime?: string }> = {
-    claude: { minPct: -1 },
-    geminiPro: { minPct: -1 },
-    geminiFlash: { minPct: -1 },
-  };
+  const windows = new Map<string, FamilyWindow>();
 
   if (response) {
     for (const [key, model] of Object.entries(response)) {
-      const modelId = (model.model || key).toLowerCase();
+      const rawKey = key.toLowerCase();
+      const rawModel = (model.model || '').toLowerCase();
+      // 响应里 model 字段可能是服务端占位符 ID（MODEL_PLACEHOLDER_*），以 key 为正规模型 ID
+      const modelId = rawKey.startsWith('model_') ? rawModel : rawKey;
       const displayName = (model.displayName || '').toLowerCase();
+      const haystack = `${rawKey} ${rawModel} ${displayName}`;
 
-      // 黑名单过滤
-      if (MODEL_BLACKLIST.has(modelId)) continue;
+      if (MODEL_BLACKLIST.has(rawKey) || MODEL_BLACKLIST.has(rawModel)) continue;
+
+      const isClaudeFamily = /claude|anthropic|gpt|openai/.test(haystack);
+      const isGeminiFamily = /gemini/.test(haystack);
+      if (!isClaudeFamily && !isGeminiFamily) continue;
 
       const quota = model.quotaInfo;
       const fraction = quota?.remainingFraction;
@@ -365,45 +379,42 @@ function extractQuotaFromModels(response: CloudCodeQuotaResponse['models']): Usa
         ? Math.round(fraction * 100)
         : 100;
 
-      // 分组
-      let groupKey: string | null = null;
-      if (modelId.startsWith('claude-') || modelId.startsWith('model_claude') || displayName.startsWith('claude ') || modelId.includes('gpt-oss')) {
-        groupKey = 'claude';
-      } else if (GEMINI_PRO_PATTERN.test(modelId) || displayName.includes(' pro')) {
-        groupKey = 'geminiPro';
-      } else if (GEMINI_FLASH_PATTERN.test(modelId) || displayName.includes(' flash')) {
-        groupKey = 'geminiFlash';
-      }
+      const resetMs = quota?.resetTime ? Date.parse(quota.resetTime) : NaN;
+      const window: '5h' | 'weekly' = Number.isFinite(resetMs) && (resetMs - Date.now()) > WEEKLY_WINDOW_MS ? 'weekly' : '5h';
+      const family: 'claude' | 'gemini' = isClaudeFamily ? 'claude' : 'gemini';
+      const mapKey = `${family}:${window}`;
 
-      if (groupKey) {
-        const g = groups[groupKey];
-        if (g.minPct === -1 || percent < g.minPct) {
-          g.minPct = percent;
-          g.resetTime = quota?.resetTime;
-        }
+      const existing = windows.get(mapKey);
+      if (!existing || percent < existing.minPct) {
+        windows.set(mapKey, { family, window, minPct: percent, resetTime: quota?.resetTime });
       }
     }
   }
 
   const modelQuotas: import('./types').ModelQuota[] = [];
-  const groupDefs: Array<{ key: string; label: string }> = [
-    { key: 'claude', label: 'Claude' },
-    { key: 'geminiPro', label: 'Gemini Pro' },
-    { key: 'geminiFlash', label: 'Gemini Flash' },
+  const familyOrder: Array<{ family: 'claude' | 'gemini'; label: string }> = [
+    { family: 'claude', label: 'Claude' },
+    { family: 'gemini', label: 'Gemini' },
+  ];
+  const windowOrder: Array<{ window: '5h' | 'weekly'; label: string }> = [
+    { window: '5h', label: '5h' },
+    { window: 'weekly', label: '周额度' },
   ];
 
   let minPercent = 100;
-  for (const def of groupDefs) {
-    const g = groups[def.key];
-    if (g.minPct === -1) continue; // 没有该组模型
-    const pct = g.minPct;
-    modelQuotas.push({
-      label: def.label,
-      modelId: def.key,
-      remainingPercent: pct,
-      resetTime: g.resetTime,
-    });
-    if (pct < minPercent) minPercent = pct;
+  for (const f of familyOrder) {
+    for (const w of windowOrder) {
+      const entry = windows.get(`${f.family}:${w.window}`);
+      if (!entry) continue;
+      const label = w.window === '5h' ? `${f.label} 5h` : `${f.label} 周额度`;
+      modelQuotas.push({
+        label,
+        modelId: `${f.family}:${w.window}`,
+        remainingPercent: entry.minPct,
+        resetTime: entry.resetTime,
+      });
+      if (entry.minPct < minPercent) minPercent = entry.minPct;
+    }
   }
 
   return {
