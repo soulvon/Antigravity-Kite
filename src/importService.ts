@@ -35,15 +35,35 @@ function getAntigravityManagerDir(): string {
   return path.join(getHomeDir(), '.antigravity_tools');
 }
 
+function tokenExpiryToIso(token: ExternalAccount['token']): string | undefined {
+  if (typeof token.expiry_timestamp === 'number' && Number.isFinite(token.expiry_timestamp)) {
+    return new Date(token.expiry_timestamp * 1000).toISOString();
+  }
+  if (typeof token.expires_in === 'number' && Number.isFinite(token.expires_in)) {
+    return new Date(Date.now() + token.expires_in * 1000).toISOString();
+  }
+  return undefined;
+}
+
+function normalizeExpiryToIso(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) {
+    const expiryMs = Date.parse(value);
+    return Number.isNaN(expiryMs) ? undefined : new Date(expiryMs).toISOString();
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const seconds = value > 10_000_000_000 ? value / 1000 : value;
+    return new Date(seconds * 1000).toISOString();
+  }
+  return undefined;
+}
+
 function convertToStoredAccount(ext: ExternalAccount, source: string): StoredAccount {
   return {
     email: ext.email,
     name: ext.name,
     accessToken: ext.token.access_token,
     refreshToken: ext.token.refresh_token,
-    expiresAt: ext.token.expiry_timestamp 
-      ? new Date(ext.token.expiry_timestamp * 1000).toISOString()
-      : undefined,
+    expiresAt: tokenExpiryToIso(ext.token),
     disabled: ext.disabled,
     importMeta: {
       source: 'local',
@@ -187,7 +207,17 @@ export async function importFromJsonFile(): Promise<{ imported: number; skipped:
   }
 
   // 支持多种格式
-  let accounts: Array<{ email: string; refresh_token?: string; refreshToken?: string; access_token?: string; accessToken?: string }> = [];
+  let accounts: Array<{
+    email: string;
+    refresh_token?: string;
+    refreshToken?: string;
+    access_token?: string;
+    accessToken?: string;
+    expiresAt?: string;
+    expires_at?: string;
+    expiry_timestamp?: number;
+    expires_in?: number;
+  }> = [];
   
   if (Array.isArray(data)) {
     accounts = data;
@@ -215,6 +245,10 @@ export async function importFromJsonFile(): Promise<{ imported: number; skipped:
       email: acc.email,
       accessToken: acc.access_token || acc.accessToken || '',
       refreshToken: acc.refresh_token || acc.refreshToken,
+      expiresAt: normalizeExpiryToIso(acc.expiresAt ?? acc.expires_at ?? acc.expiry_timestamp)
+        ?? (typeof acc.expires_in === 'number' && Number.isFinite(acc.expires_in)
+          ? new Date(Date.now() + acc.expires_in * 1000).toISOString()
+          : undefined),
       importMeta: {
         source: 'manual',
         importedAt: new Date().toISOString(),

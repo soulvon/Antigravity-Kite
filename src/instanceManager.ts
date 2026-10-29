@@ -41,13 +41,15 @@ const COPY_EXCLUDE = ['GPUCache', 'Cache', 'CachedData', 'Code Cache', 'blob_sto
 const isWindows = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
 
+import { migrateDataIfNeeded, getSharedStorageDir } from './storage';
+
 // ─── 路径 ───────────────────────────────────────────────
 
 let _storageDir = '';
 
 export function init(context: vscode.ExtensionContext): void {
-  _storageDir = context.globalStorageUri.fsPath;
-  try { fs.mkdirSync(_storageDir, { recursive: true }); } catch {}
+  migrateDataIfNeeded(context, INSTANCES_FILE);
+  _storageDir = getSharedStorageDir();
 }
 
 function getInstancesRoot(): string {
@@ -287,8 +289,16 @@ export function updateInstanceBind(instanceId: string, bindEmail: string): void 
 
 let _exePathCache: { path: string | null; ts: number } | null = null;
 
-async function detectExePath(): Promise<string | null> {
-  if (_exePathCache && Date.now() - _exePathCache.ts < 60000) {
+export async function detectExePath(): Promise<string | null> {
+  // 1. 优先使用用户手动设置的自定义主程序路径
+  const config = vscode.workspace.getConfiguration('antigravityKite');
+  const customPath = config.get<string>('customIdeExePath');
+  if (customPath && fs.existsSync(customPath)) {
+    return customPath;
+  }
+
+  // 2. 自动探测与缓存
+  if (_exePathCache && Date.now() - _exePathCache.ts < 10000) {
     if (!_exePathCache.path || fs.existsSync(_exePathCache.path)) return _exePathCache.path;
   }
   const found = isWindows ? await detectExeWindows() : await detectExeUnix();
@@ -299,26 +309,49 @@ async function detectExePath(): Promise<string | null> {
 async function detectExeWindows(): Promise<string | null> {
   // 1. 从 vscode.env.appRoot 推导
   const appRoot = vscode.env.appRoot; // e.g. F:\Program\Antigravity IDE\resources\app
-  const fromAppRoot = path.resolve(appRoot, '..', '..', 'Antigravity IDE.exe');
-  if (fs.existsSync(fromAppRoot)) return fromAppRoot;
+  const exeNames = ['Antigravity IDE.exe', 'Antigravity.exe'];
+  for (const name of exeNames) {
+    const fromAppRoot = path.resolve(appRoot, '..', '..', name);
+    if (fs.existsSync(fromAppRoot)) return fromAppRoot;
+  }
 
-  // 2. 常见安装路径
+  // 2. 常见安装路径及智能模糊匹配 (兼容 F:\Program\Antigravity1.18.4\Antigravity.exe 等多版本情况)
   const localAppData = process.env.LOCALAPPDATA || '';
   const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
-  const candidates = [
-    path.join(localAppData, 'Programs', 'Antigravity IDE', 'Antigravity IDE.exe'),
-    path.join(programFiles, 'Antigravity IDE', 'Antigravity IDE.exe'),
-    'C:\\Program Files\\Antigravity IDE\\Antigravity IDE.exe',
-    'D:\\Program Files\\Antigravity IDE\\Antigravity IDE.exe',
-    'D:\\Program\\Antigravity IDE\\Antigravity IDE.exe',
-    'E:\\Program\\Antigravity IDE\\Antigravity IDE.exe',
-    'F:\\Program\\Antigravity IDE\\Antigravity IDE.exe',
-  ];
+  const candidates: string[] = [];
+
+  for (const name of exeNames) {
+    const mainDir = name.slice(0, -4); // 'Antigravity IDE' 或 'Antigravity'
+    candidates.push(
+      path.join(localAppData, 'Programs', mainDir, name),
+      path.join(programFiles, mainDir, name)
+    );
+    
+    // 增加各盘区 Program / Program Files 下的匹配与模糊子目录扫描
+    const drives = ['C', 'D', 'E', 'F'];
+    const roots = ['Program Files', 'Program'];
+    for (const drive of drives) {
+      for (const root of roots) {
+        const rootPath = path.join(`${drive}:\\`, root);
+        if (fs.existsSync(rootPath)) {
+          try {
+            const subdirs = fs.readdirSync(rootPath);
+            for (const sub of subdirs) {
+              if (sub.toLowerCase().startsWith('antigravity')) {
+                candidates.push(path.join(rootPath, sub, name));
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+  }
+
   for (const c of candidates) {
     if (c && fs.existsSync(c)) return c;
   }
 
-  // 3. 从正在运行的进程获取
+  // 3. 从正在运行的进程获取 (支持两种进程名)
   const entries = await getRunningEntries();
   for (const [pid] of entries) {
     const out = await runShellAsync(`wmic process where "ProcessId=${pid}" get ExecutablePath /FORMAT:LIST`, 3000);
@@ -328,11 +361,13 @@ async function detectExeWindows(): Promise<string | null> {
   }
 
   // 4. PATH
-  try {
-    const out = cp.execSync('where "Antigravity IDE.exe"', { encoding: 'utf8', timeout: 3000, windowsHide: true });
-    const first = out.split('\n').map(l => l.trim()).find(l => l && fs.existsSync(l));
-    if (first) return first;
-  } catch {}
+  for (const name of exeNames) {
+    try {
+      const out = cp.execSync(`where "${name}"`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
+      const first = out.split('\n').map(l => l.trim()).find(l => l && fs.existsSync(l));
+      if (first) return first;
+    } catch {}
+  }
 
   return null;
 }
@@ -548,7 +583,7 @@ async function getRunningEntriesWindows(): Promise<Array<[number, string | null]
   // wmic 查询
   try {
     const stdout = await runShellAsync(
-      'wmic process where "name=\'Antigravity IDE.exe\'" get ProcessId,CommandLine /FORMAT:LIST',
+      'wmic process where "name=\'Antigravity IDE.exe\' or name=\'Antigravity.exe\'" get ProcessId,CommandLine /FORMAT:LIST',
       10000
     );
     if (stdout && stdout.trim()) {
@@ -569,7 +604,7 @@ async function getRunningEntriesWindows(): Promise<Array<[number, string | null]
 
   // PowerShell 回退
   try {
-    const psCmd = `Get-CimInstance Win32_Process -Filter "name='Antigravity IDE.exe'" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`;
+    const psCmd = `Get-CimInstance Win32_Process -Filter "name='Antigravity IDE.exe' or name='Antigravity.exe'" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`;
     const stdout = await runPowerShellAsync(psCmd, 10000);
     if (stdout && stdout.trim()) {
       const parsed = JSON.parse(stdout);
@@ -662,8 +697,8 @@ function getCockpitInstancesDir(): string {
   } catch {
     base = path.join(os.homedir(), '.antigravity_cockpit', 'instances');
   }
-  // 优先 antigravity 子目录，其次 windsurf，最后回退到 base 本身
-  for (const sub of ['antigravity', 'windsurf']) {
+  // 优先 antigravity 子目录，其次 codex，最后 windsurf
+  for (const sub of ['antigravity', 'codex', 'windsurf']) {
     const candidate = path.join(base, sub);
     if (fs.existsSync(candidate)) return candidate;
   }

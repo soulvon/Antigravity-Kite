@@ -76,13 +76,13 @@ function httpsGet(url: string, headers: Record<string, string> = {}): Promise<{ 
 function successHtml(): string {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>授权成功</title>
 <style>body{font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#1a1a2e;color:#eee}.box{max-width:400px;padding:24px;border-radius:12px;background:#16213e;text-align:center}h1{color:#4ade80;margin:0 0 10px;font-size:24px}p{margin:0;opacity:.85}</style></head>
-<body><div class="box"><h1>✓ 授权成功</h1><p>可以关闭此页面，返回 Antigravity Kite。</p></div></body></html>`;
+<body><div class="box"><h1>授权成功</h1><p>可以关闭此页面，返回 Antigravity Kite。</p></div></body></html>`;
 }
 
 function failHtml(message: string): string {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>授权失败</title>
 <style>body{font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#1a1a2e;color:#eee}.box{max-width:400px;padding:24px;border-radius:12px;background:#16213e;text-align:center}h1{color:#ef4444;margin:0 0 10px;font-size:24px}p{margin:0;opacity:.85}</style></head>
-<body><div class="box"><h1>✗ 授权失败</h1><p>${message}</p></div></body></html>`;
+<body><div class="box"><h1>授权失败</h1><p>${message}</p></div></body></html>`;
 }
 
 async function findAvailablePort(): Promise<number> {

@@ -3,10 +3,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { StoredAccount } from './types';
 
+import { migrateDataIfNeeded, getSharedStorageDir } from './storage';
+
 let _accounts: StoredAccount[] = [];
 let _storageDir: string = '';
 let _watcher: fs.FSWatcher | null = null;
-let _onChangeCallback: (() => void) | null = null;
+const _onChangeCallbacks = new Set<() => void>();
 
 const ACCOUNTS_FILE = 'accounts.json';
 
@@ -15,18 +17,18 @@ function getFilePath(): string {
 }
 
 export function init(context: vscode.ExtensionContext): void {
-  _storageDir = context.globalStorageUri.fsPath;
-  try {
-    fs.mkdirSync(_storageDir, { recursive: true });
-  } catch (e) { console.warn('[accountStore] mkdir failed:', e); }
+  // 进行可能的数据迁移，并确定共享存储目录
+  migrateDataIfNeeded(context, ACCOUNTS_FILE);
+  _storageDir = getSharedStorageDir();
+
   load();
-  
+
   // 监听文件变化（多窗口同步）
   try {
     _watcher = fs.watch(_storageDir, (event, filename) => {
       if (filename === ACCOUNTS_FILE) {
         load();
-        _onChangeCallback?.();
+        notifyChange();
       }
     });
   } catch (e) { console.warn('[accountStore] watch failed:', e); }
@@ -35,10 +37,26 @@ export function init(context: vscode.ExtensionContext): void {
 export function dispose(): void {
   _watcher?.close();
   _watcher = null;
+  _onChangeCallbacks.clear();
 }
 
-export function onChange(callback: () => void): void {
-  _onChangeCallback = callback;
+export function onChange(callback: () => void): { dispose(): void } {
+  _onChangeCallbacks.add(callback);
+  return {
+    dispose: () => {
+      _onChangeCallbacks.delete(callback);
+    },
+  };
+}
+
+function notifyChange(): void {
+  for (const callback of _onChangeCallbacks) {
+    try {
+      callback();
+    } catch (error) {
+      console.warn('[accountStore] onChange callback failed:', error);
+    }
+  }
 }
 
 function load(): void {

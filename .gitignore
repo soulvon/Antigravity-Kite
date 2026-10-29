@@ -20,3 +20,6 @@ scripts/test_*
 *.md
 !README.md
 spec/
+
+# Local preview harness (offline webview renderer)
+.preview/

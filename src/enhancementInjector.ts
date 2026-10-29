@@ -24,6 +24,9 @@ export interface EnhancementSettings {
   autoAcceptUnlimited: boolean;
   bannedCommands: string[];
   autoAcceptStats: { clicks: number; blocked: number; verified: number };
+  autoRetryEnabled: boolean;
+  autoRetryMaxAttempts: number;
+  autoRetryDelay: number;
 }
 
 export const DEFAULT_SETTINGS: EnhancementSettings = {
@@ -52,6 +55,9 @@ export const DEFAULT_SETTINGS: EnhancementSettings = {
   autoAcceptUnlimited: true,
   bannedCommands: ['rm -rf /', 'rm -rf ~', 'rm -rf *', 'format c:', 'del /f /s /q', 'rmdir /s /q', ':(){:|:&};:', 'dd if=', 'mkfs.', '> /dev/sda', 'chmod -R 777 /'],
   autoAcceptStats: { clicks: 0, blocked: 0, verified: 0 },
+  autoRetryEnabled: true,
+  autoRetryMaxAttempts: 5,
+  autoRetryDelay: 3,
 };
 
 /** 解析 IDE 主目录到 resources/app 目录，支持 Win/Mac/Linux */
@@ -318,14 +324,34 @@ function generateJS(settings: EnhancementSettings): string {
 'use strict';
 // Kite Enhancement Runtime
 const KITE_SETTINGS = ${settingsJSON};
-const INPUT_SELECTOR = 'div[contenteditable="true"][data-lexical-editor="true"]';
-const SEND_BTN_SELECTOR = 'button[data-tooltip-id="input-send-button-send-tooltip"]';
+const INPUT_SELECTOR = [
+  'div[contenteditable="true"][data-lexical-editor="true"]',
+  'textarea.monaco-editor-background',
+  '.antigravity-chat-input',
+  'textarea[placeholder*="Ask"]',
+  'textarea[placeholder*="输入"]',
+  'textarea'
+].join(',');
+const SEND_BTN_SELECTOR = [
+  'button[data-tooltip-id="input-send-button-send-tooltip"]',
+  'button[aria-label="Send"]',
+  'button[aria-label="发送"]',
+  '.antigravity-send-button',
+  'button.input-send-button'
+].join(',');
 
 // TrustedTypes policy
 let kitePolicy = null;
 try { if (window.trustedTypes && window.trustedTypes.createPolicy) { kitePolicy = window.trustedTypes.createPolicy('kiteEnhancement', { createHTML: s => s, createScriptURL: s => s }); } } catch(e) {}
 function safeSetHTML(el, html) { if (kitePolicy) { el.innerHTML = kitePolicy.createHTML(html); } else { el.innerHTML = html; } }
 
+function getChatPanel() {
+  return document.querySelector('.antigravity-agent-side-panel') 
+      || document.querySelector('.antigravity-chat-panel') 
+      || document.querySelector('.ag-chat-container') 
+      || document.querySelector('[data-view-id="antigravity.chatPanel"]')
+      || document.querySelector('.antigravity-chat-view');
+}
 `;
 
   // LaTeX Runtime
@@ -348,6 +374,11 @@ function safeSetHTML(el, html) { if (kitePolicy) { el.innerHTML = kitePolicy.cre
     js += generateAutoAcceptJS();
   }
 
+  // Auto Retry Runtime
+  if (settings.autoRetryEnabled) {
+    js += generateAutoRetryJS(settings);
+  }
+
   // Lifecycle
   js += `
 function kiteOnPanelReady(panelEl) {
@@ -358,21 +389,55 @@ ${settings.autoAcceptEnabled ? '  applyAutoAcceptSettings(panelEl);' : ''}
 }
 
 function kiteWaitForPanel() {
-  const p = document.querySelector('.antigravity-agent-side-panel');
+  const p = getChatPanel();
   if (p) { kiteOnPanelReady(p); return; }
   const obs = new MutationObserver((_, o) => {
-    const p = document.querySelector('.antigravity-agent-side-panel');
+    const p = getChatPanel();
     if (p) { o.disconnect(); kiteOnPanelReady(p); }
   });
   obs.observe(document.body, { childList: true, subtree: true });
   console.log('[Kite] ⏳ 等待 AI 面板...');
 }
 
+function suppressCorruptWarning() {
+  const targetTexts = ['安装似乎损坏', 'appears to be corrupt', 'checksums'];
+  function checkAndHide(node) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+    const isToast = node.classList.contains('notification-toast') || 
+                    node.classList.contains('notification-list-item') ||
+                    node.classList.contains('monaco-list-row');
+    if (isToast) {
+      const text = node.textContent || '';
+      if (targetTexts.some(t => text.includes(t))) {
+        node.style.setProperty('display', 'none', 'important');
+        const closeBtn = node.querySelector('.action-label.codicon-close, .notification-toast-close, a.clear-action, button[aria-label*="Close"]');
+        if (closeBtn) { try { closeBtn.click(); } catch(e){} }
+        return true;
+      }
+    }
+    return false;
+  }
+  document.querySelectorAll('.notification-toast, .notification-list-item, .monaco-list-row').forEach(node => { checkAndHide(node); });
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        if (checkAndHide(node)) continue;
+        node.querySelectorAll('.notification-toast, .notification-list-item, .monaco-list-row').forEach(t => checkAndHide(t));
+      }
+    }
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+}
+
 function kiteBootstrap() {
+  try { suppressCorruptWarning(); } catch(e) {}
   // 汉化独立启动，不依赖 AI 面板（设置窗口等也需要汉化）
 ${settings.localizationEnabled ? '  try { startLocalization(); } catch (e) { console.warn("[Kite] 汉化启动失败:", e); }' : ''}
   // LaTeX / 气泡 / 自动操作 等仍需等待 AI 面板
 ${settings.latexEnabled || settings.bubblesEnabled || settings.autoAcceptEnabled ? '  setTimeout(kiteWaitForPanel, 1000);' : ''}
+  // 自动重试独立启动，不依赖 AI 面板（错误弹窗在全局范围）
+${settings.autoRetryEnabled ? '  try { startAutoRetry(); } catch (e) { console.warn("[Kite] 自动重试启动失败:", e); }' : ''}
 }
 
 if (document.body) { setTimeout(kiteBootstrap, 300); }
@@ -535,7 +600,7 @@ function processLatexCodeBlocks(scope) {
 
 function scanAndRenderLatex(panelEl) {
   if (!katexLoaded) return;
-  const scope = panelEl || document.querySelector('.antigravity-agent-side-panel');
+  const scope = panelEl || getChatPanel();
   if (!scope) return;
   const proseSelectors = [
     '.leading-relaxed.select-text:not(.opacity-70)',
@@ -559,7 +624,7 @@ async function applyLatexSettings(panelEl) {
   if (latexObserver) { latexObserver.disconnect(); latexObserver = null; }
   try {
     await loadKaTeX();
-    const scope = panelEl || document.querySelector('.antigravity-agent-side-panel');
+    const scope = panelEl || getChatPanel();
     if (scope) {
       latexObserver = new MutationObserver(() => { clearTimeout(window._kiteLTTimer); window._kiteLTTimer = setTimeout(() => scanAndRenderLatex(panelEl), 300); });
       latexObserver.observe(scope, { childList: true, subtree: true });
@@ -580,6 +645,12 @@ async function setInputText(text) {
   const inputEl = document.querySelector(INPUT_SELECTOR);
   if (!inputEl) return false;
   inputEl.focus();
+  if (inputEl.tagName === 'TEXTAREA') {
+    inputEl.value = text;
+    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+    inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
   const sel = window.getSelection();
   const range = document.createRange();
   range.selectNodeContents(inputEl);
@@ -708,7 +779,7 @@ function parseBubbleMetaFromText(text, data) {
 }
 
 function scanForBubbles(panelEl) {
-  const scope = panelEl || document.querySelector('.antigravity-agent-side-panel');
+  const scope = panelEl || getChatPanel();
   if (!scope) return;
   const allPs = scope.querySelectorAll('p');
   allPs.forEach(p => {
@@ -765,7 +836,7 @@ function scanForBubbles(panelEl) {
 
 function applyBubblesSettings(panelEl) {
   if (bubblesObserver) { bubblesObserver.disconnect(); bubblesObserver = null; }
-  const scope = panelEl || document.querySelector('.antigravity-agent-side-panel');
+  const scope = panelEl || getChatPanel();
   if (scope) {
     bubblesObserver = new MutationObserver(() => { clearTimeout(window._kiteBubTimer); window._kiteBubTimer = setTimeout(() => scanForBubbles(panelEl), 500); });
     bubblesObserver.observe(scope, { childList: true, subtree: true });
@@ -868,7 +939,7 @@ function isDiffConfirmationArea(btn) {
 }
 
 function findDiffAcceptAllTarget(scope) {
-  const root = scope || document.querySelector('.antigravity-agent-side-panel');
+  const root = scope || getChatPanel();
   if (!root) return null;
   return Array.from(root.querySelectorAll('span')).find(el => {
     const text = (el.textContent || '').trim().toLowerCase();
@@ -898,7 +969,7 @@ function resolvePermissionClickTarget(candidate, root) {
 }
 
 function findScopedPermissionTarget(scope, expectedText) {
-  const root = scope || document.querySelector('.antigravity-agent-side-panel');
+  const root = scope || getChatPanel();
   if (!root) return null;
   const normalizedExpected = normalizeAutoAcceptText(expectedText);
   const candidates = Array.from(root.querySelectorAll('button, [role="button"], span, div')).filter(el => {
@@ -965,7 +1036,7 @@ async function performAutoAccept(panelEl) {
   if (!KITE_SETTINGS.autoAcceptEnabled) return;
   const ds = loadDynamicSettings();
   if (!ds.unlimited && ds.remaining <= 0) return;
-  const scope = panelEl || document.querySelector('.antigravity-agent-side-panel');
+  const scope = panelEl || getChatPanel();
   if (!scope) return;
   const buttons = scope.querySelectorAll('button');
   for (const btn of buttons) {
@@ -1009,7 +1080,7 @@ function applyAutoAcceptSettings(panelEl) {
   if (autoAcceptPermissionTimer) { clearInterval(autoAcceptPermissionTimer); autoAcceptPermissionTimer = null; }
   if (autoAcceptCommandTimer) { clearInterval(autoAcceptCommandTimer); autoAcceptCommandTimer = null; }
   if (!KITE_SETTINGS.autoAcceptEnabled) return;
-  const scope = panelEl || document.querySelector('.antigravity-agent-side-panel');
+  const scope = panelEl || getChatPanel();
   if (!scope) return;
   
   autoAcceptObserver = new MutationObserver(() => {
@@ -1024,3 +1095,145 @@ function applyAutoAcceptSettings(panelEl) {
 `;
 }
 
+
+function generateAutoRetryJS(settings: EnhancementSettings): string {
+  return `
+// ===== 自动重试 =====
+const AUTO_RETRY_STORAGE_KEY = 'kite-auto-retry-settings';
+let _autoRetryObserver = null;
+let _autoRetryConsecutive = 0; // 连续重试计数
+let _autoRetryLastErrorHash = ''; // 上次错误的 hash，用于去重
+let _autoRetryPending = false; // 防止并发重试
+
+function loadRetrySettings() {
+  try {
+    const saved = localStorage.getItem(AUTO_RETRY_STORAGE_KEY);
+    if (saved) return JSON.parse(saved);
+  } catch(e){}
+  return { totalRetries: 0 };
+}
+
+function saveRetrySettings(rs) {
+  try { localStorage.setItem(AUTO_RETRY_STORAGE_KEY, JSON.stringify(rs)); } catch(e){}
+  window.dispatchEvent(new Event('storage'));
+}
+
+/**
+ * 检测错误状态区域并点击重试按钮
+ * 目标：底部错误弹窗中的「重试」/「Retry」按钮
+ */
+function findRetryButton() {
+  // 策略1: 查找包含错误信息的区域内的重试按钮
+  const errorKeywords = [
+    '因错误终止', 'error', 'failed', 'high traffic', 'try again',
+    '请重试', '出错', '错误', 'terminated', 'aborted',
+    'rate limit', 'timeout', 'timed out', '超时'
+  ];
+  const retryTexts = ['重试', 'retry', 'try again'];
+
+  // 搜索所有按钮
+  const allButtons = document.querySelectorAll('button, [role="button"]');
+  for (const btn of allButtons) {
+    const btnText = (btn.textContent || '').trim().toLowerCase();
+    if (!retryTexts.some(rt => btnText === rt || btnText.includes(rt))) continue;
+    // 确保按钮可见且可点击
+    const style = window.getComputedStyle(btn);
+    const rect = btn.getBoundingClientRect();
+    if (style.display === 'none' || style.visibility === 'hidden' || rect.width === 0 || rect.height === 0) continue;
+    if (btn.disabled) continue;
+
+    // 向上查找是否在错误上下文中（最多 15 层）
+    let parent = btn.parentElement;
+    let depth = 0;
+    while (parent && depth < 15) {
+      const parentText = (parent.textContent || '').toLowerCase();
+      if (errorKeywords.some(kw => parentText.includes(kw))) {
+        return btn;
+      }
+      parent = parent.parentElement;
+      depth++;
+    }
+  }
+  return null;
+}
+
+/**
+ * 生成一个简易 hash 用于标记「同一错误」
+ */
+function errorContextHash(btn) {
+  let parent = btn.parentElement;
+  for (let d = 0; d < 10 && parent; d++) {
+    const text = (parent.textContent || '').trim();
+    if (text.length > 20) {
+      // 取前100字符作为 hash 源
+      return text.slice(0, 100);
+    }
+    parent = parent.parentElement;
+  }
+  return 'unknown';
+}
+
+function attemptAutoRetry() {
+  if (_autoRetryPending) return;
+  const maxAttempts = ${settings.autoRetryMaxAttempts};
+  const delayMs = ${settings.autoRetryDelay} * 1000;
+
+  const retryBtn = findRetryButton();
+  if (!retryBtn) {
+    // 没有找到重试按钮，重置连续计数
+    _autoRetryConsecutive = 0;
+    _autoRetryLastErrorHash = '';
+    return;
+  }
+
+  const hash = errorContextHash(retryBtn);
+
+  // 如果是同一个错误，递增连续计数；否则重置
+  if (hash === _autoRetryLastErrorHash) {
+    _autoRetryConsecutive++;
+  } else {
+    _autoRetryConsecutive = 1;
+    _autoRetryLastErrorHash = hash;
+  }
+
+  // 检查是否超过最大重试次数
+  if (_autoRetryConsecutive > maxAttempts) {
+    console.warn('[Kite] ⛔ 自动重试已达上限 (' + maxAttempts + ' 次)，停止重试');
+    return;
+  }
+
+  _autoRetryPending = true;
+  const attempt = _autoRetryConsecutive;
+  console.log('[Kite] 🔄 检测到错误，' + (delayMs / 1000) + '秒后自动重试 (' + attempt + '/' + maxAttempts + ')');
+
+  setTimeout(() => {
+    _autoRetryPending = false;
+    // 再次确认按钮还在
+    const btn = findRetryButton();
+    if (btn) {
+      console.log('[Kite] 🔄 执行自动重试 (' + attempt + '/' + maxAttempts + ')');
+      btn.click();
+      // 更新统计
+      const rs = loadRetrySettings();
+      rs.totalRetries = (rs.totalRetries || 0) + 1;
+      saveRetrySettings(rs);
+    }
+  }, delayMs);
+}
+
+function startAutoRetry() {
+  if (_autoRetryObserver) { _autoRetryObserver.disconnect(); _autoRetryObserver = null; }
+  console.log('[Kite] 🔄 自动重试已启动 (最大 ${settings.autoRetryMaxAttempts} 次, 间隔 ${settings.autoRetryDelay}s)');
+
+  // 使用 MutationObserver 监听全局 DOM 变化来检测错误弹窗
+  _autoRetryObserver = new MutationObserver(() => {
+    clearTimeout(window._kiteRetryTimer);
+    window._kiteRetryTimer = setTimeout(attemptAutoRetry, 800);
+  });
+  _autoRetryObserver.observe(document.body, { childList: true, subtree: true, attributes: true });
+
+  // 初始扫描一次
+  setTimeout(attemptAutoRetry, 2000);
+}
+`;
+}

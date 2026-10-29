@@ -396,7 +396,7 @@ export async function showUpdateNotesOnStartup(context: vscode.ExtensionContext)
       ? `检测到您已成功升级至新版本 v${currentVersion}（从 v${lastVersion}）。\n由于当前版本的更新日志信息尚不完整或未能从 GitHub 加载成功，您可以点击下方按钮前往 GitHub 查看或反馈信息！`
       : `核心更新内容：\n\n${releaseBody}`;
 
-    const modalTitle = `🎉 Antigravity Kite 成功更新至 v${currentVersion}！`;
+    const modalTitle = `Antigravity Kite 已更新至 v${currentVersion}`;
 
     const actions = isInfoIncomplete
       ? ['前往 GitHub 反馈/完善信息', '知道了']
