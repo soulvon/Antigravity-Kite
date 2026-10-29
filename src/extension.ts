@@ -2570,7 +2570,7 @@ function renderAccounts() {
               return accTags.map(function(t) {
                 const tc = getTagColor(t);
                 const active = filterTags.has(t);
-                return '<span class="grid-tag-chip' + (active ? ' is-active' : '') + '" data-tag="' + escHtml(t) + '" style="background:' + tc + '" title="点击筛选 / 右键改色">' + escHtml(t) + '</span>';
+                return '<span class="grid-tag-chip' + (active ? ' is-active' : '') + '" data-tag="' + escHtml(t) + '" style="background:' + tc + '2E;color:' + tc + ';border:1px solid ' + tc + '59" title="点击筛选 / 右键改色">' + escHtml(t) + '</span>';
               }).join('');
             }
             return '';

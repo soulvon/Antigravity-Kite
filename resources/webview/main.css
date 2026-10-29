@@ -10186,3 +10186,251 @@ body.vscode-dark .toast {
     color: var(--gh-red, #f85149);
     word-break: break-all;
 }
+
+/* ═══════ 0.9.3 BuddyRelay Visual Parity ═══════
+   卡片体系与 E:\project\BuddyRelay 逐字节对齐（值均为 BuddyRelay 源真值），
+   压过 0.9/0.9.1 的本地漂移。 */
+
+:root {
+    --ui-radius: 10px;
+}
+
+/* ── 卡片本体 ── */
+.account-grid { gap: 9px !important; }
+.grid-card {
+    padding: 10px 12px !important;
+    gap: 6px !important;
+    border: 1px solid var(--ui-border, rgba(255,255,255,0.14)) !important;
+    border-radius: var(--ui-radius) !important;
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--vscode-foreground) 4%, transparent), transparent),
+        var(--ui-surface-raised, color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 74%, var(--vscode-foreground) 10%)) !important;
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--vscode-foreground) 5%, transparent) !important;
+}
+.grid-card:hover {
+    transform: none !important;
+    border-color: color-mix(in srgb, var(--ac-blue, #3b82f6) 34%, transparent) !important;
+    box-shadow: var(--ui-shadow-soft, 0 8px 22px rgba(0,0,0,0.12)) !important;
+}
+.grid-card.is-active {
+    border-color: color-mix(in srgb, var(--ac-emerald, #10b981) 48%, transparent) !important;
+    background:
+        linear-gradient(135deg, var(--ui-emerald-soft, color-mix(in srgb, var(--ac-emerald, #10b981) 14%, transparent)), transparent 62%),
+        var(--ui-surface-raised, color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 74%, var(--vscode-foreground) 10%)) !important;
+    box-shadow: var(--ui-shadow-active, 0 0 0 1px color-mix(in srgb, var(--ac-emerald, #10b981) 28%, transparent), 0 9px 24px rgba(16,185,129,0.18)) !important;
+}
+.grid-card.is-disabled { opacity: 0.62; }
+
+/* ── 头行：邮箱 12px/600 ── */
+.grid-card-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.grid-card-email {
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0 !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+}
+
+/* ── 徽章：999px 药丸 ── */
+.grid-active-tag, .grid-disabled-tag {
+    border-radius: 999px !important;
+    font-size: 10px !important;
+    font-weight: 500 !important;
+    padding: 2px 8px !important;
+    line-height: 1.3 !important;
+    white-space: nowrap !important;
+    flex-shrink: 0;
+}
+.grid-active-tag { color: #fff !important; background: var(--gh-green, #3fb950) !important; }
+.grid-disabled-tag { color: var(--gh-red, #f85149) !important; background: rgba(248, 81, 73, 0.18) !important; }
+
+/* ── 套餐 chip：BuddyRelay tier 配色 ── */
+.grid-plan-chip {
+    font-size: 10px !important;
+    font-weight: 500 !important;
+    padding: 3px 10px !important;
+    border-radius: 999px !important;
+    line-height: 1.3 !important;
+    white-space: nowrap !important;
+    background: rgba(167, 139, 250, 0.22) !important;
+    color: var(--gh-purple, #a78bfa) !important;
+    border: 1px solid rgba(167, 139, 250, 0.35) !important;
+}
+.grid-plan-chip.tier-free, .grid-plan-chip.tier-unknown {
+    background: rgba(139, 148, 158, 0.18) !important;
+    color: var(--gh-gray, #8b949e) !important;
+    border-color: rgba(139, 148, 158, 0.3) !important;
+}
+.grid-plan-chip.tier-trial {
+    background: rgba(210, 153, 34, 0.2) !important;
+    color: var(--gh-yellow, #d29922) !important;
+    border-color: rgba(210, 153, 34, 0.35) !important;
+}
+.grid-plan-chip.tier-pro {
+    background: rgba(88, 166, 255, 0.2) !important;
+    color: var(--gh-blue-light, #58a6ff) !important;
+    border-color: rgba(88, 166, 255, 0.35) !important;
+}
+.app .grid-plan-chip.tier-ultra {
+    background: rgba(167, 139, 250, 0.22) !important;
+    color: var(--gh-purple, #a78bfa) !important;
+    border-color: rgba(167, 139, 250, 0.35) !important;
+}
+.grid-card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* ── 标签 chip：软色调（与 grid-card-tag 同构） ── */
+.grid-tag-chip {
+    font-size: 10px !important;
+    font-weight: 600 !important;
+    padding: 2px 8px !important;
+    border-radius: 999px !important;
+    line-height: 1.3 !important;
+    cursor: pointer;
+}
+
+/* ── 配额条：7px 胶囊 + BuddyRelay 四色渐变 ── */
+.quota-bar {
+    position: relative !important;
+    height: 7px !important;
+    border-radius: 999px !important;
+    background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent) !important;
+    overflow: hidden !important;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2) !important;
+}
+.quota-bar-fill.is-ok {
+    background: linear-gradient(90deg, var(--gh-blue, #0e639c) 0%, var(--gh-green, #3fb950) 100%) !important;
+    box-shadow: 0 0 6px rgba(14, 99, 156, 0.5) !important;
+}
+.quota-bar-fill.is-warn {
+    background: linear-gradient(90deg, var(--gh-orange, #d19a66) 0%, var(--gh-yellow-soft, #e3b341) 100%) !important;
+    box-shadow: 0 0 6px rgba(209, 154, 102, 0.5) !important;
+}
+.quota-bar-fill.is-danger {
+    background: linear-gradient(90deg, var(--gh-red, #f85149) 0%, var(--ac-red, #ef4444) 100%) !important;
+    box-shadow: 0 0 6px rgba(248, 81, 73, 0.5) !important;
+}
+.quota-bar-fill.is-info {
+    background: linear-gradient(90deg, var(--gh-blue-light, #58a6ff) 0%, var(--gh-blue-soft, #79c0ff) 100%) !important;
+    box-shadow: 0 0 6px rgba(88, 166, 255, 0.5) !important;
+}
+.quota-group-item { display: flex; flex-direction: column; gap: 3px; }
+.quota-group-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.quota-group-name {
+    font-size: 10.5px !important;
+    color: var(--muted) !important;
+    font-weight: 500 !important;
+}
+.quota-group-val {
+    font-size: 10.5px !important;
+    font-weight: 600 !important;
+    font-variant-numeric: tabular-nums !important;
+}
+.quota-group-reset {
+    font-size: 10px !important;
+    color: var(--muted) !important;
+    opacity: 0.85;
+}
+
+/* ── 元信息区：label 左灰 / 值右等宽（BuddyRelay grid-extra 同构） ── */
+.grid-card-extra {
+    margin-top: 6px !important;
+    padding-top: 6px !important;
+    border-top: 1px solid var(--card-border) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 3px !important;
+}
+.grid-extra-row {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    font-size: 10.5px !important;
+    color: var(--muted) !important;
+}
+.grid-extra-val {
+    font-size: 10.5px !important;
+    font-weight: 500 !important;
+    color: var(--vscode-foreground) !important;
+    font-family: var(--font-mono, "Cascadia Code", Consolas, monospace) !important;
+    font-variant-numeric: tabular-nums !important;
+    letter-spacing: 0.1px;
+}
+
+/* ── 底栏：分隔线 + 渐变切换按钮 + 24px 图标钮 ── */
+.grid-card-actions {
+    margin-top: 2px;
+    border-top: 1px solid var(--card-border) !important;
+    padding-top: 6px !important;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+.grid-switch-btn {
+    font-size: 11px !important;
+    padding: 4px 12px !important;
+    border-radius: 999px !important;
+    border: 1px solid color-mix(in srgb, var(--ac-emerald, #10b981) 65%, transparent) !important;
+    background: linear-gradient(135deg, #10b981, #14b8a6) !important;
+    color: #fff !important;
+    box-shadow: 0 5px 14px rgba(16, 185, 129, 0.18) !important;
+}
+.grid-switch-btn:hover {
+    background: linear-gradient(135deg, #059669, #0d9488) !important;
+    filter: none !important;
+}
+.grid-switch-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.grid-current-label {
+    font-size: 10px !important;
+    font-weight: 600 !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    color: var(--ac-emerald, #10b981) !important;
+}
+.grid-actions-right { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.icon-btn {
+    width: 24px !important;
+    height: 24px !important;
+    border-radius: 4px !important;
+    background: transparent !important;
+    border: none !important;
+    color: var(--muted) !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: all 0.15s !important;
+    padding: 0 !important;
+    cursor: pointer;
+}
+.icon-btn:hover { color: var(--vscode-foreground) !important; background: var(--hover-bg) !important; }
+.icon-btn.danger:hover { color: var(--gh-red, #f85149) !important; }
+
+/* ── 头部：计数粉紫胶囊 + 添加按钮翡翠实心 ── */
+.app .grid-count,
+.kite-tab-badge.grid-count {
+    font-size: 12px !important;
+    font-weight: 700 !important;
+    color: #fff !important;
+    font-family: var(--font-mono, "Cascadia Code", Consolas, monospace) !important;
+    background: linear-gradient(135deg, #ec4899, #a855f7) !important;
+    padding: 3px 10px !important;
+    border-radius: 12px !important;
+    line-height: 1.4 !important;
+    border: none !important;
+    min-height: 0 !important;
+}
+.add-account-btn {
+    padding: 4px 10px !important;
+    font-size: 10px !important;
+    font-weight: 600 !important;
+    border-radius: var(--radius-sm, 4px) !important;
+    background: var(--ac-emerald, #10b981) !important;
+    color: #fff !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+.add-account-btn:hover { background: #059669 !important; }
