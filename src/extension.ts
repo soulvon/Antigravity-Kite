@@ -4,7 +4,8 @@ import { startOAuth } from './oauthService';
 import { previewLocalAccount, confirmImport, cancelImport } from './localReader';
 import * as importService from './importService';
 import { WebviewMessage, UsageSnapshot, StoredAccount } from './types';
-import { seamlessSwitch, isSeamlessSwitchAvailable, autoSwitchInstanceBoundAccount } from './seamlessSwitcher';
+import { seamlessSwitch, isSeamlessSwitchAvailable, autoSwitchInstanceBoundAccount, getCurrentHostToken } from './seamlessSwitcher';
+import { switchIdeStateIdentity } from './ideStateDb';
 import { StatusBarManager } from './statusBar';
 import { fetchUsage } from './usageService';
 import * as enhancer from './enhancementInjector';
@@ -491,6 +492,23 @@ class SidebarProvider implements vscode.WebviewViewProvider {
                   await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
                 } catch (e) {
                   console.warn('[Kite] handleAuthRefresh failed:', e instanceof Error ? e.message : e);
+                }
+                // 持久身份：直写 IDE 状态库（oauthToken + userStatus），重启后登录身份保持目标号
+                try {
+                  const applied = await getCurrentHostToken();
+                  if (applied && applied.accessToken) {
+                    const dbRes = switchIdeStateIdentity(account.email, {
+                      accessToken: applied.accessToken,
+                      refreshToken: applied.refreshToken,
+                      expiryDateSeconds: applied.expiryDateSeconds,
+                      isGcpTos: applied.isGcpTos,
+                    });
+                    if (!dbRes.dbWritten) {
+                      console.warn('[Kite] 状态库身份写入失败:', dbRes.error);
+                    }
+                  }
+                } catch (e) {
+                  console.warn('[Kite] 状态库身份写入异常:', e instanceof Error ? e.message : e);
                 }
                 // 联动规则：切号后优先刷新目标号额度
                 this._refreshUsage(msg.email);
