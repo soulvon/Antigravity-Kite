@@ -42,6 +42,8 @@ export interface UsageSnapshot {
   tierId?: string;
   /** 可用 AI 积分 */
   availableAICredits?: number;
+  /** 拉取过程中的非致命失败明细（部分成功也必须暴露） */
+  loadError?: string;
   /** 更新时间戳 */
   updatedAt?: number;
 }

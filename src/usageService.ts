@@ -252,6 +252,8 @@ interface ProjectInfo {
   projectId?: string;
   tierId: string;  // FREE / PRO / ULTRA
   availableAICredits?: number;
+  /** 拉取过程中的非致命失败明细（读失败=未知，必须暴露而不是静默兜底） */
+  loadError?: string;
 }
 
 /**
@@ -259,63 +261,62 @@ interface ProjectInfo {
  * 需要两次调用：第一次获取 projectId，第二次带上 projectId 获取 credits
  */
 async function loadProjectInfo(accessToken: string): Promise<ProjectInfo> {
-  try {
-    // 第一次调用：获取 projectId
-    const data1 = await loadCodeAssistRequest<LoadCodeAssistResponse>(
-      {
-        metadata: getCloudCodeMetadata(),
-        mode: 'FULL_ELIGIBILITY_CHECK',
-      },
-      accessToken,
-    );
-    
-    // 提取 projectId
-    let projectId: string | undefined;
-    const proj = data1.cloudaicompanionProject;
-    if (typeof proj === 'string' && proj) {
-      projectId = proj;
-    } else if (proj && typeof proj === 'object' && 'id' in proj) {
-      projectId = (proj as { id?: string }).id;
-    }
-    
-    // 提取订阅级别
-    let tierId: string;
-    if (data1.paidTier?.id) {
-      const paidId = data1.paidTier.id.toLowerCase();
-      if (paidId.includes('ultra')) {
-        tierId = 'ULTRA';
-      } else if (paidId.includes('pro')) {
-        tierId = 'PRO';
-      } else {
-        tierId = data1.paidTier.name || data1.paidTier.id;
-      }
-    } else {
-      tierId = 'FREE';
-    }
-    
-    // 第二次调用：带上 projectId 获取 credits（使用 prod URL）
-    let availableAICredits: number | undefined;
-    if (projectId && tierId !== 'FREE') {
-      try {
-        const data2 = await loadCodeAssistRequest<LoadCodeAssistResponse>(
-          {
-            metadata: getCloudCodeMetadata(),
-            mode: 'FULL_ELIGIBILITY_CHECK',
-            cloudaicompanionProject: projectId,
-          },
-          accessToken,
-          true, // 使用 prod URL
-        );
-        availableAICredits = sumAvailableCredits(data2.paidTier?.availableCredits);
-      } catch {
-        // 忽略第二次调用的错误
-      }
-    }
-    
-    return { projectId, tierId, availableAICredits };
-  } catch {
-    return { tierId: 'FREE' };
+  // 第一次调用：获取 projectId
+  const data1 = await loadCodeAssistRequest<LoadCodeAssistResponse>(
+    {
+      metadata: getCloudCodeMetadata(),
+      mode: 'FULL_ELIGIBILITY_CHECK',
+    },
+    accessToken,
+  );
+
+  // 提取 projectId
+  let projectId: string | undefined;
+  const proj = data1.cloudaicompanionProject;
+  if (typeof proj === 'string' && proj) {
+    projectId = proj;
+  } else if (proj && typeof proj === 'object' && 'id' in proj) {
+    projectId = (proj as { id?: string }).id;
   }
+
+  // 提取订阅级别
+  let tierId: string;
+  if (data1.paidTier?.id) {
+    const paidId = data1.paidTier.id.toLowerCase();
+    if (paidId.includes('ultra')) {
+      tierId = 'ULTRA';
+    } else if (paidId.includes('pro')) {
+      tierId = 'PRO';
+    } else {
+      tierId = data1.paidTier.name || data1.paidTier.id;
+    }
+  } else {
+    tierId = 'FREE';
+  }
+
+  // 第二次调用：带上 projectId 获取 credits（使用 prod URL）
+  let availableAICredits: number | undefined;
+  let loadError: string | undefined;
+  if (projectId && tierId !== 'FREE') {
+    try {
+      const data2 = await loadCodeAssistRequest<LoadCodeAssistResponse>(
+        {
+          metadata: getCloudCodeMetadata(),
+          mode: 'FULL_ELIGIBILITY_CHECK',
+          cloudaicompanionProject: projectId,
+        },
+        accessToken,
+        true, // 使用 prod URL
+      );
+      availableAICredits = sumAvailableCredits(data2.paidTier?.availableCredits);
+    } catch (e) {
+      // 积分拉取失败不再静默：进快照 loadError，卡片可见
+      loadError = 'AI积分拉取失败: ' + (e instanceof Error ? e.message : String(e));
+      console.warn('[UsageService]', loadError);
+    }
+  }
+
+  return { projectId, tierId, availableAICredits, loadError };
 }
 
 /**
@@ -431,11 +432,17 @@ export async function fetchUsage(account: StoredAccount): Promise<UsageSnapshot>
 
   // 3. 提取配额信息
   const snapshot = extractQuotaFromModels(modelsResponse.models);
-  
+
   // 4. 补充订阅级别和 AI 积分
   snapshot.tierId = projectInfo.tierId;
   snapshot.availableAICredits = projectInfo.availableAICredits;
-  
+  if (projectInfo.loadError) {
+    snapshot.loadError = projectInfo.loadError;
+  }
+  if (snapshot.models.length === 0 && !snapshot.loadError) {
+    snapshot.loadError = '响应中无可用配额模型（models 为空）';
+  }
+
   return snapshot;
 }
 

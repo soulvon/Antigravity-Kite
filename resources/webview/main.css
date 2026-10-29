@@ -10173,3 +10173,16 @@ body.vscode-dark .toast {
     background: color-mix(in srgb, var(--vscode-foreground) 7%, transparent) !important;
     border: 1px solid color-mix(in srgb, var(--vscode-foreground) 14%, transparent) !important;
 }
+
+/* ── 配额拉取失败可见化（禁止无反馈占位） ── */
+.quota-load-error {
+    margin-top: 6px;
+    padding: 5px 8px;
+    font-size: 10.5px;
+    line-height: 1.5;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--gh-red, #f85149) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--gh-red, #f85149) 26%, transparent);
+    color: var(--gh-red, #f85149);
+    word-break: break-all;
+}

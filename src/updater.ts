@@ -216,8 +216,14 @@ export async function checkForUpdates(silent: boolean = false): Promise<boolean>
 
     return true;
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('not found')) {
+      // 仓库尚未发布任何 Release：不算故障，静默视为无更新
+      console.log('[antigravity-kite] GitHub 上还没有发布版本，跳过更新检查');
+      return false;
+    }
     if (!silent) {
-      vscode.window.showErrorMessage(`检查更新失败: ${err instanceof Error ? err.message : String(err)}`);
+      vscode.window.showErrorMessage(`检查更新失败: ${msg}`);
     }
     return false;
   }

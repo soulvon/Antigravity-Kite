@@ -129,7 +129,10 @@ async function backgroundRefreshAllUsage(context: vscode.ExtensionContext) {
       // 实时推送给当前活动的侧栏
       sidebarProvider?.postMessage({ type: 'usage', email: account.email, snapshot });
     } catch (e) {
-      console.warn(`[Kite-Background] 刷新账号 ${account.email} 额度失败:`, e);
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[Kite-Background] 刷新账号 ${account.email} 额度失败:`, msg);
+      // 失败同步给卡片，杜绝无反馈占位
+      sidebarProvider?.postMessage({ type: 'usage', email: account.email, error: msg });
     }
   }
   usageCacheLastRefresh = Date.now();
@@ -328,6 +331,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
           this._context.globalState.update('currentEmail', account.email);
           this._pushAccounts();
           vscode.window.showInformationMessage(`已添加账号: ${account.email}`);
+          this._refreshUsage(account.email);
         } catch (err) {
           vscode.window.showErrorMessage(`登录失败: ${err instanceof Error ? err.message : err}`);
         }
@@ -357,6 +361,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             this._context.globalState.update('currentEmail', account.email);
             this._pushAccounts();
             vscode.window.showInformationMessage(`已导入账号: ${account.email}`);
+            this._refreshUsage(account.email);
           }
         } catch (err) {
           vscode.window.showErrorMessage(`导入失败: ${err instanceof Error ? err.message : err}`);
@@ -372,17 +377,18 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         try {
           const result1 = await importService.importFromCockpitTools();
           this._pushAccounts();
-          this._view?.webview.postMessage({ 
-            type: 'importStatus', 
-            status: 'success', 
+          this._view?.webview.postMessage({
+            type: 'importStatus',
+            status: 'success',
             source: 'Cockpit Tools',
-            imported: result1.imported, 
-            skipped: result1.skipped 
+            imported: result1.imported,
+            skipped: result1.skipped
           });
+          if (result1.imported > 0) this._refreshAllUsage();
         } catch (err) {
-          this._view?.webview.postMessage({ 
-            type: 'importStatus', 
-            status: 'error', 
+          this._view?.webview.postMessage({
+            type: 'importStatus',
+            status: 'error',
             source: 'Cockpit Tools',
             message: err instanceof Error ? err.message : String(err)
           });
@@ -394,17 +400,18 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         try {
           const result2 = await importService.importFromAntigravityManager();
           this._pushAccounts();
-          this._view?.webview.postMessage({ 
-            type: 'importStatus', 
-            status: 'success', 
+          this._view?.webview.postMessage({
+            type: 'importStatus',
+            status: 'success',
             source: 'Antigravity Manager',
-            imported: result2.imported, 
-            skipped: result2.skipped 
+            imported: result2.imported,
+            skipped: result2.skipped
           });
+          if (result2.imported > 0) this._refreshAllUsage();
         } catch (err) {
-          this._view?.webview.postMessage({ 
-            type: 'importStatus', 
-            status: 'error', 
+          this._view?.webview.postMessage({
+            type: 'importStatus',
+            status: 'error',
             source: 'Antigravity Manager',
             message: err instanceof Error ? err.message : String(err)
           });
@@ -416,18 +423,19 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         try {
           const result3 = await importService.importFromJsonFile();
           this._pushAccounts();
-          this._view?.webview.postMessage({ 
-            type: 'importStatus', 
-            status: 'success', 
+          this._view?.webview.postMessage({
+            type: 'importStatus',
+            status: 'success',
             source: '本地文件',
-            imported: result3.imported, 
-            skipped: result3.skipped 
+            imported: result3.imported,
+            skipped: result3.skipped
           });
+          if (result3.imported > 0) this._refreshAllUsage();
         } catch (err) {
           if ((err as Error).message !== '未选择文件') {
-            this._view?.webview.postMessage({ 
-              type: 'importStatus', 
-              status: 'error', 
+            this._view?.webview.postMessage({
+              type: 'importStatus',
+              status: 'error',
               source: '本地文件',
               message: err instanceof Error ? err.message : String(err)
             });
@@ -2125,7 +2133,7 @@ window.addEventListener('message', e => {
     if (idx >= 0) {
       if (msg.snapshot) {
         accounts[idx].usage = msg.snapshot;
-        accounts[idx]._usageError = null;
+        accounts[idx]._usageError = msg.snapshot.loadError || null;
       } else if (msg.error) {
         accounts[idx]._usageError = msg.error;
       }
@@ -2523,7 +2531,7 @@ function renderAccounts() {
       });
       quotasHtml = '<div class="quota-groups">' + items.join('') + '</div>';
     } else {
-      // 无数据时占位：显示 3 组骨架
+      // 无数据时占位：显示 3 组骨架；有错误则错误可见，绝不让占位符吞掉失败
       const placeholderGroups = ['Claude', 'Gemini Pro', 'Gemini Flash'];
       const placeholderItems = placeholderGroups.map(name => {
         return '<div class="quota-group-item">'
@@ -2532,7 +2540,10 @@ function renderAccounts() {
           + '<div class="quota-group-reset" style="opacity:0.3">&nbsp;</div>'
           + '</div>';
       });
-      quotasHtml = '<div class="quota-groups">' + placeholderItems.join('') + '</div>';
+      const loadErrorHtml = a._usageError
+        ? '<div class="quota-load-error">' + escHtml(String(a._usageError)) + '</div>'
+        : '';
+      quotasHtml = '<div class="quota-groups">' + placeholderItems.join('') + loadErrorHtml + '</div>';
     }
     
     // 额外信息区（windsurf-pool 风格：AI 积分 / 额外用量余额 / 会员期限 / 今日切号）
