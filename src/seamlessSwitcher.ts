@@ -5,7 +5,7 @@
 
 import * as vscode from 'vscode';
 import { StoredAccount } from './types';
-import { ensureFreshToken } from './usageService';
+import { ensureFreshToken, refreshAccessToken } from './usageService';
 import * as instanceMgr from './instanceManager';
 import * as accountStore from './accountStore';
 import { createUserStatusPayloadBase64 } from './ideStateDb';
@@ -136,35 +136,32 @@ export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: 
   }
 
   const beforeAccessToken = account.accessToken || '';
-  const refreshRequired = shouldRefreshForSwitch(account);
-  let freshAccessToken = '';
 
+  // 关键：切号必须「强制刷新」——号池缓存的 AT 可能是其它工具换取、scope 不含
+  // agent 所需的 aicode 权限（真机实证：403 ACCESS_TOKEN_SCOPE_INSUFFICIENT 导致
+  // agy 进程 process_exit_nonzero 崩溃）。用 RT 现场刷新出的 AT 才带正确授权范围。
+  // 刷新失败宁可取消切号，也不能写入权限不足的 token 把 agent 后端搞崩。
+  let refreshedToken: Awaited<ReturnType<typeof refreshAccessToken>> = null;
   try {
-    // 与 shouldRefreshForSwitch 同阈值：切号要求 5 分钟有效期，
-    // 否则剩 1~5 分钟时这里会误判"刷新失败"（实际 refreshToken 完全可用）
-    freshAccessToken = await ensureFreshToken(account, TOKEN_REFRESH_BUFFER_MS);
+    refreshedToken = await refreshAccessToken(account.refreshToken);
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
     return { ok: false, message: `刷新 accessToken 失败：${err}` };
   }
-
-  const latestAccount = accountStore.getByEmail(account.email) || account;
-  const accessToken = freshAccessToken || latestAccount.accessToken || account.accessToken;
-  if (!accessToken) {
-    return { ok: false, message: 'accessToken 无效且刷新失败' };
-  }
-
-  const expiryMs = parseExpiryMs(latestAccount.expiresAt || account.expiresAt);
-  const expiryReady = !!expiryMs && expiryMs - Date.now() >= TOKEN_REFRESH_BUFFER_MS;
-  const refreshed = accessToken !== beforeAccessToken;
-
-  if (refreshRequired && !refreshed && !expiryReady) {
+  if (!refreshedToken || !refreshedToken.accessToken) {
     return {
       ok: false,
-      message: '目标账号 accessToken 已过期或即将过期，且 refreshToken 刷新失败，请重新授权该账号',
+      message: '刷新 accessToken 失败（网络或代理不可用）：已取消切号，避免写入权限不足的 token 导致 agent 后端崩溃',
     };
   }
 
+  const newExpiry = new Date(Date.now() + 3600000).toISOString();
+  const updates: Partial<StoredAccount> = { accessToken: refreshedToken.accessToken, expiresAt: newExpiry };
+  if (refreshedToken.idToken) updates.idToken = refreshedToken.idToken;
+  accountStore.update(account.email, updates);
+
+  const latestAccount = accountStore.getByEmail(account.email) || account;
+  const expiryMs = parseExpiryMs(latestAccount.expiresAt || newExpiry);
   if (!expiryMs) {
     return {
       ok: false,
@@ -175,11 +172,11 @@ export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: 
   return {
     ok: true,
     token: {
-      accessToken,
+      accessToken: refreshedToken.accessToken,
       refreshToken: account.refreshToken,
       expiryDateSeconds: Math.floor(expiryMs / 1000),
-      refreshed,
-      idToken: latestAccount.idToken || account.idToken,
+      refreshed: refreshedToken.accessToken !== beforeAccessToken,
+      idToken: refreshedToken.idToken || latestAccount.idToken || account.idToken,
     },
   };
 }

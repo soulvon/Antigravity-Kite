@@ -89,7 +89,7 @@ function getCloudCodeUA(): string {
 }
 
 /** 刷新 accessToken（Google 刷新响应可能携带 id_token，一并取回） */
-async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; idToken?: string } | null> {
+export async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; idToken?: string } | null> {
   return new Promise((resolve) => {
     const postData = new URLSearchParams({
       client_id: CLIENT_ID,

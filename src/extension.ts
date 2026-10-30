@@ -10,6 +10,7 @@ import { seamlessSwitch, isSeamlessSwitchAvailable, prepareSwitchToken, autoSwit
 import { switchIdeStateIdentity, resolveIdeStateDbPathFromUserData } from './ideStateDb';
 import { readSwitchRestartResult, clearSwitchRestartResult, writeAgyActiveAccount } from './switchRestart';
 import { logInfo, logWarn, logError } from './logger';
+import { startDeclarationSuppressor } from './declarationSuppressor';
 import { readIdeCredential, buildIdeCredentialBlob, writeIdeCredentialBlob, syncGeminiAccountFiles } from './winCredential';
 import { getSharedStorageDir } from './storage';
 import { StatusBarManager } from './statusBar';
@@ -59,6 +60,9 @@ export function activate(context: vscode.ExtensionContext) {
   accountStore.init(context);
   instanceMgr.init(context);
   logInfo('activate.init-done', { accounts: accountStore.count(), storageDir: accountStore.getStorageDirPath() });
+
+  // 安全声明弹窗自动关闭器：CDP 可用时给 hub 页面注入自动接受（切换账号必弹的那一个）
+  startDeclarationSuppressor();
 
   // 上次切号重启的结果反馈（助手在 IDE 之外执行，结果落盘到共享目录）
   const lastRestart = readSwitchRestartResult();
@@ -533,6 +537,9 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             logInfo('switch.start', { email: account.email });
 
             // token 准备：刷新失败（离线等）时回退号池存储值——IDE 启动后会用 RT 自刷新
+            // 切号必须用 RT 现场刷新出的 token（号池缓存 AT 的 scope 可能不含 aicode 权限，
+            // 写入会导致 agy 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT 后崩溃）。
+            // 刷新失败即取消切号——不做 stored-fallback，那是把 agent 搞崩的元凶。
             let switchToken = {
               accessToken: '',
               refreshToken: '',
@@ -540,28 +547,21 @@ class SidebarProvider implements vscode.WebviewViewProvider {
               isGcpTos: false,
               idToken: undefined as string | undefined,
             };
-            let tokenSource = '';
             const prepared = await prepareSwitchToken(account);
-            if (prepared.ok) {
-              switchToken = {
-                accessToken: prepared.token.accessToken,
-                refreshToken: prepared.token.refreshToken,
-                expiryDateSeconds: prepared.token.expiryDateSeconds,
-                isGcpTos: false,
-                idToken: prepared.token.idToken,
-              };
-              tokenSource = prepared.token.refreshed ? 'refreshed' : 'cached-valid';
-            } else {
-              switchToken = {
-                accessToken: account.accessToken,
-                refreshToken: account.refreshToken || '',
-                expiryDateSeconds: Math.floor(new Date(account.expiresAt || 0).getTime() / 1000) || Math.floor(Date.now() / 1000) + 3600,
-                isGcpTos: false,
-                idToken: account.idToken,
-              };
-              tokenSource = 'stored-fallback';
+            if (!prepared.ok) {
+              switchInFlight = false;
+              logWarn('switch.token.fail', { email: account.email, message: prepared.message });
+              this._view?.webview.postMessage({ type: 'toast', status: 'error', message: `切号已取消：${prepared.message}` });
+              break;
             }
-            logInfo('switch.token', { source: tokenSource, prepareOk: prepared.ok, message: prepared.ok ? undefined : prepared.message });
+            switchToken = {
+              accessToken: prepared.token.accessToken,
+              refreshToken: prepared.token.refreshToken,
+              expiryDateSeconds: prepared.token.expiryDateSeconds,
+              isGcpTos: false,
+              idToken: prepared.token.idToken,
+            };
+            logInfo('switch.token', { source: 'refreshed', prepareOk: true });
 
             // 备份当前凭据（可回滚），并取出 writer_id / auth_method / userName 保持一致
             const credBackup = await readIdeCredential();
