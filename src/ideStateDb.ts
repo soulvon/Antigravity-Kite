@@ -168,6 +168,49 @@ function createMinimalUserStatus(email: string): Buffer {
   return Buffer.concat([encodeStringField(3, email), encodeStringField(7, email)]);
 }
 
+/**
+ * 字段级更新 UserStatus：只替换 email 字段（3/7），planStatus 等其他字段原样保留。
+ * 全量替换成 minimal 会抹掉套餐权益（IDE 模型列表因此丢失 Gemini 系），严禁。
+ */
+function updateUserStatusEmail(payload: Buffer, email: string): Buffer {
+  const parts: Buffer[] = [];
+  let off = 0;
+  let emailFieldFound = false;
+  while (off < payload.length) {
+    const tag = readVarint(payload, off);
+    const fieldNum = tag.value >> 3;
+    const wireType = tag.value & 7;
+    const fieldStart = off;
+    off = tag.next;
+    if (wireType === 2) {
+      const v = readLenDelim(payload, off);
+      off = v.next;
+      if (fieldNum === 3 || fieldNum === 7) {
+        emailFieldFound = true;
+        parts.push(encodeLenDelim(fieldNum, Buffer.from(email, 'utf8')));
+      } else {
+        parts.push(payload.subarray(fieldStart, off));
+      }
+    } else if (wireType === 0) {
+      const v = readVarint(payload, off);
+      off = v.next;
+      parts.push(payload.subarray(fieldStart, off));
+    } else if (wireType === 5) {
+      off += 4;
+      parts.push(payload.subarray(fieldStart, off));
+    } else if (wireType === 1) {
+      off += 8;
+      parts.push(payload.subarray(fieldStart, off));
+    } else {
+      break;
+    }
+  }
+  if (!emailFieldFound) {
+    return createMinimalUserStatus(email);
+  }
+  return Buffer.concat(parts);
+}
+
 // ── 状态库定位与写入 ──
 
 function resolveIdeStateDbPaths(): string[] {
@@ -237,8 +280,22 @@ export function switchIdeStateIdentity(email: string, token: IdeTokenInfo): IdeS
     const newBlob = replaceTopicEntry(blob, OAUTH_SENTINEL, createOAuthInfo(token));
     upsertItem(db, OAUTH_TOKEN_KEY, newBlob.toString('base64'));
 
-    // 2) userStatus topic：全量替换为最小身份载荷（与官方登出/登录语义一致）
-    const statusEntry = createTopicEntry(USER_STATUS_SENTINEL, createMinimalUserStatus(email));
+    // 2) userStatus topic：字段级更新身份 email，保留 planStatus 等套餐权益字段
+    const statusRow = db.prepare(`SELECT value FROM ItemTable WHERE key = '${USER_STATUS_KEY}'`).get();
+    const existingStatusBlob = statusRow && statusRow.value
+      ? Buffer.from(String(statusRow.value), 'base64')
+      : null;
+    let statusPayload: Buffer;
+    if (existingStatusBlob && existingStatusBlob.length > 0) {
+      const existingEntries = decodeTopicEntries(existingStatusBlob);
+      const existing = existingEntries.find(e => e.sentinelKey === USER_STATUS_SENTINEL);
+      statusPayload = existing
+        ? updateUserStatusEmail(existing.payload, email)
+        : createMinimalUserStatus(email);
+    } else {
+      statusPayload = createMinimalUserStatus(email);
+    }
+    const statusEntry = createTopicEntry(USER_STATUS_SENTINEL, statusPayload);
     const statusB64 = statusEntry.toString('base64');
     upsertItem(db, USER_STATUS_KEY, statusB64);
 
