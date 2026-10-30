@@ -7,6 +7,7 @@ import { StoredAccount } from './types';
 const CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
 const CLIENT_SECRET = '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';
 const SCOPES = [
+  'openid',
   'https://www.googleapis.com/auth/cloud-platform',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
@@ -205,6 +206,7 @@ export async function startOAuth(): Promise<StoredAccount> {
           refreshToken,
           expiresAt,
           name,
+          idToken: typeof tokenJson.id_token === 'string' ? tokenJson.id_token : undefined,
           importMeta: {
             source: 'oauth',
             importedAt: new Date().toISOString()

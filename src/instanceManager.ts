@@ -662,6 +662,14 @@ export function getCurrentUserDataDir(): string {
   return getDefaultUserDataDir();
 }
 
+/** 当前实例主进程 PID（切号重启流程用它关闭 IDE 主进程） */
+export async function getCurrentInstanceMainPid(): Promise<number | null> {
+  const entries = await getRunningEntries(true);
+  const currentDir = normalizePath(getCurrentUserDataDir());
+  const match = entries.find(([, dir]) => dir && normalizePath(dir) === currentDir);
+  return match ? match[0] : null;
+}
+
 // ─── Shell 工具 ──────────────────────────────────────────
 
 function runShellAsync(cmd: string, timeoutMs: number): Promise<string | null> {

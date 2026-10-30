@@ -1,11 +1,13 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import * as accountStore from './accountStore';
 import { startOAuth } from './oauthService';
 import { previewLocalAccount, confirmImport, cancelImport } from './localReader';
 import * as importService from './importService';
 import { WebviewMessage, UsageSnapshot, StoredAccount } from './types';
-import { seamlessSwitch, isSeamlessSwitchAvailable, autoSwitchInstanceBoundAccount, getCurrentHostToken } from './seamlessSwitcher';
-import { switchIdeStateIdentity } from './ideStateDb';
+import { isSeamlessSwitchAvailable, prepareSwitchToken, autoSwitchInstanceBoundAccount } from './seamlessSwitcher';
+import { resolveIdeStateDbPathFromUserData } from './ideStateDb';
+import { scheduleSwitchRestart, readSwitchRestartResult, clearSwitchRestartResult } from './switchRestart';
 import { StatusBarManager } from './statusBar';
 import { fetchUsage } from './usageService';
 import * as enhancer from './enhancementInjector';
@@ -46,6 +48,17 @@ export function activate(context: vscode.ExtensionContext) {
 
   accountStore.init(context);
   instanceMgr.init(context);
+
+  // 上次切号重启的结果反馈（助手在 IDE 之外执行，结果落盘到共享目录）
+  const lastRestart = readSwitchRestartResult();
+  if (lastRestart) {
+    clearSwitchRestartResult();
+    if (!lastRestart.ok) {
+      void vscode.window.showErrorMessage(
+        `Kite 切号重启未完成：${lastRestart.error || '未知错误'}（状态库未写入，账号未切换）`
+      );
+    }
+  }
 
   usageTracker = new UsageTracker(context);
   loadUsageCache(context);
@@ -477,54 +490,41 @@ class SidebarProvider implements vscode.WebviewViewProvider {
                 break;
               }
             }
-            // 尝试无感换号
-            if (isSeamlessSwitchAvailable()) {
-              // 注：不做登出语义清空——身份空窗期 IDE 自身 createSession 会抛
-              // "No auth token found"（0.8.21 实测），模型列表随身份异步重建后由
-              // 下方延迟 handleAuthRefresh 对账刷新
-              const result = await seamlessSwitch(account);
-              if (result.success) {
-                this._view?.webview.postMessage({ type: 'toast', status: 'success', message: '无感切号成功：额度与 agent 已切换，账号菜单身份在重启 Antigravity IDE 后同步' });
-                await this._context.globalState.update('currentEmail', msg.email);
-                usageTracker.recordSwitch(msg.email);
-                this._pushAccounts();
-                statusBarManager?.refreshUsage();
-                logPanel.pushLogPanelData(this._context, usageTracker);
-                // 补全切号协议：触发 authentication 层重读 session（身份/凭证缓存刷新）
-                try {
-                  await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
-                } catch (e) {
-                  console.warn('[Kite] handleAuthRefresh failed:', e instanceof Error ? e.message : e);
-                }
-                // 持久身份：直写 IDE 状态库（oauthToken + userStatus），重启后登录身份保持目标号
-                try {
-                  const applied = await getCurrentHostToken();
-                  if (applied && applied.accessToken) {
-                    const dbRes = switchIdeStateIdentity(account.email, {
-                      accessToken: applied.accessToken,
-                      refreshToken: applied.refreshToken,
-                      expiryDateSeconds: applied.expiryDateSeconds,
-                      isGcpTos: applied.isGcpTos,
-                    });
-                    if (!dbRes.dbWritten) {
-                      console.warn('[Kite] 状态库身份写入失败:', dbRes.error);
-                    }
-                  }
-                } catch (e) {
-                  console.warn('[Kite] 状态库身份写入异常:', e instanceof Error ? e.message : e);
-                }
-                // 联动规则：切号后优先刷新目标号额度
-                this._refreshUsage(msg.email);
-                // 兜底：主进程异步重建身份（从新 token 拉取）完成后，再刷一次 session
-                setTimeout(() => {
-                  vscode.commands.executeCommand('antigravity.handleAuthRefresh').then(() => {}, () => {});
-                }, 3000);
-              } else {
-                this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: result.message || '切号失败' });
-              }
-            } else {
-              this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: '无感切号 API 不可用，未切换当前宿主账号' });
+            // IDE 款运行中身份热切是平台级死路（UserStatus 写入口只在 workbench，运行中写库
+            // 会被退出钩子回写覆盖），权威流程：确认 → 关 IDE → 进程退出后干净写库 → 原样重启
+            const confirmed = await vscode.window.showWarningMessage(
+              `切换到 ${account.email} 需要重启 Antigravity IDE 生效，未保存内容请先保存。`,
+              { modal: true },
+              '切换并重启'
+            );
+            if (confirmed !== '切换并重启') {
+              break;
             }
+            const prepared = await prepareSwitchToken(account);
+            if (!prepared.ok) {
+              this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: prepared.message });
+              break;
+            }
+            const mainPid = await instanceMgr.getCurrentInstanceMainPid();
+            const exePath = await instanceMgr.detectExePath();
+            // 分身实例的状态库在各自 user-data-dir 下，必须显式定位，不能只认 APPDATA 默认库
+            const userDataDir = path.resolve(this._context.globalStorageUri.fsPath, '..', '..', '..');
+            const sched = await scheduleSwitchRestart({
+              email: account.email,
+              token: prepared.token,
+              dbPath: resolveIdeStateDbPathFromUserData(userDataDir),
+              exePath: exePath || '',
+              launchArgs: ['--user-data-dir', userDataDir],
+              mainPid,
+            });
+            if (!sched.scheduled) {
+              this._view?.webview.postMessage({ type: 'toast', status: 'error', message: `切号重启调度失败：${sched.error}` });
+              break;
+            }
+            await this._context.globalState.update('currentEmail', msg.email);
+            usageTracker.recordSwitch(msg.email);
+            this._pushAccounts();
+            this._view?.webview.postMessage({ type: 'toast', status: 'success', message: '正在关闭并重启 Antigravity IDE 以应用账号切换…' });
           }
         }
         break;

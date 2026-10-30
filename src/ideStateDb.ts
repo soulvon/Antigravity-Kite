@@ -169,7 +169,7 @@ function createMinimalUserStatus(email: string): Buffer {
 }
 
 /**
- * 字段级更新 UserStatus：只替换 email 字段（3/7），planStatus 等其他字段原样保留。
+ * 字段级更新 UserStatus：只替换 email 字段（当前 IDE 实测为 2），其余字段原样保留。
  * 全量替换成 minimal 会抹掉套餐权益（IDE 模型列表因此丢失 Gemini 系），严禁。
  */
 function updateUserStatusEmail(payload: Buffer, email: string): Buffer {
@@ -249,19 +249,36 @@ function upsertItem(db: any, key: string, value: string): void {
   ).run(key, value);
 }
 
+/** 分身实例的状态库位于各自 user-data-dir 下，必须按实例定位，不能只认 APPDATA 默认库 */
+export function resolveIdeStateDbPathFromUserData(userDataDir: string): string {
+  return path.join(userDataDir, 'User', 'globalStorage', 'state.vscdb');
+}
+
+export interface IdeStateSwitchOptions {
+  /** 显式指定状态库路径；分身实例务必传入，否则会写到默认实例的库 */
+  dbPath?: string;
+}
+
 /**
  * 将指定账号身份写入 IDE 状态库（oauthToken + userStatus）。
  * 失败返回 { dbWritten: false, error }，绝不静默吞掉。
  */
-export function switchIdeStateIdentity(email: string, token: IdeTokenInfo): IdeStateSwitchResult {
+export function switchIdeStateIdentity(
+  email: string,
+  token: IdeTokenInfo,
+  options: IdeStateSwitchOptions = {},
+): IdeStateSwitchResult {
   const sqlite = loadSqlite();
   if (!sqlite) {
     return { dbWritten: false, dbPath: '', error: 'node:sqlite 不可用（ext host Node 版本过低）' };
   }
 
-  const dbPath = resolveIdeStateDbPaths().find(p => fs.existsSync(p));
+  const dbPath = options.dbPath || resolveIdeStateDbPaths().find(p => fs.existsSync(p));
   if (!dbPath) {
     return { dbWritten: false, dbPath: '', error: '未找到 IDE 状态库 state.vscdb' };
+  }
+  if (!fs.existsSync(dbPath)) {
+    return { dbWritten: false, dbPath, error: `状态库不存在：${dbPath}` };
   }
 
   let db: any;
@@ -298,6 +315,11 @@ export function switchIdeStateIdentity(email: string, token: IdeTokenInfo): IdeS
     const statusEntry = createTopicEntry(USER_STATUS_SENTINEL, statusPayload);
     const statusB64 = statusEntry.toString('base64');
     upsertItem(db, USER_STATUS_KEY, statusB64);
+
+    // 3) 官方对齐的两项：引导标记 + 清理旧会话 UserID 缓存
+    //    残留的 jetskiStateSync.agentManagerInitState 会让 IDE 读到过期 UserID，导致历史/会话拉取失败
+    upsertItem(db, 'antigravityOnboarding', 'true');
+    db.prepare('DELETE FROM ItemTable WHERE key = ?').run('jetskiStateSync.agentManagerInitState');
 
     // 写入确认：整串读回比对（payload 由本模块构造，字节级一致即写入成功）
     const back = db.prepare(`SELECT value FROM ItemTable WHERE key = '${USER_STATUS_KEY}'`).get();

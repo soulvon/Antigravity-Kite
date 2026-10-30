@@ -3,6 +3,8 @@ export interface StoredAccount {
   accessToken: string;
   refreshToken?: string;
   expiresAt?: string;
+  /** OpenID 身份令牌（IDE 状态库 OAuthInfo f5），缺失时身份/头像显示可能滞后 */
+  idToken?: string;
   apiServerUrl?: string;
   name?: string;
   disabled?: boolean;

@@ -88,8 +88,8 @@ function getCloudCodeUA(): string {
   return `antigravity/${OFFICIAL_IDE_VERSION} ${getOsName()}/${getArchName()}`;
 }
 
-/** 刷新 accessToken */
-async function refreshAccessToken(refreshToken: string): Promise<string | null> {
+/** 刷新 accessToken（Google 刷新响应可能携带 id_token，一并取回） */
+async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; idToken?: string } | null> {
   return new Promise((resolve) => {
     const postData = new URLSearchParams({
       client_id: CLIENT_ID,
@@ -108,12 +108,17 @@ async function refreshAccessToken(refreshToken: string): Promise<string | null> 
       }
     };
     const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', (chunk: Buffer | string) => body += chunk);
+      // 严禁字符串拼接 chunk：多字节 UTF-8 跨切片会被截断成乱码
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
       res.on('end', () => {
         try {
-          const json = JSON.parse(body);
-          resolve(json.access_token || null);
+          const json = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          if (!json.access_token) { resolve(null); return; }
+          resolve({
+            accessToken: json.access_token,
+            idToken: typeof json.id_token === 'string' ? json.id_token : undefined,
+          });
         } catch { resolve(null); }
       });
     });
@@ -135,12 +140,14 @@ export async function ensureFreshToken(account: StoredAccount): Promise<string> 
   }
   // 尝试刷新
   if (account.refreshToken) {
-    const newToken = await refreshAccessToken(account.refreshToken);
-    if (newToken) {
+    const refreshed = await refreshAccessToken(account.refreshToken);
+    if (refreshed) {
       // 更新存储
       const newExpiry = new Date(Date.now() + 3600000).toISOString();
-      accountStore.update(account.email, { accessToken: newToken, expiresAt: newExpiry });
-      return newToken;
+      const updates: Partial<StoredAccount> = { accessToken: refreshed.accessToken, expiresAt: newExpiry };
+      if (refreshed.idToken) updates.idToken = refreshed.idToken;
+      accountStore.update(account.email, updates);
+      return refreshed.accessToken;
     }
   }
   return account.accessToken; // 无法刷新，用旧的试试

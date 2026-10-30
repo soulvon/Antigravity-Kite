@@ -35,10 +35,20 @@ interface AntigravityVsCodeApi {
   antigravityAuth?: OAuthPreferencesApi;
 }
 
+/** 本次切号已落定的 token，供状态库持久化直接复用（不依赖宿主读回 API） */
+export interface SwitchToken {
+  accessToken: string;
+  refreshToken?: string;
+  expiryDateSeconds?: number;
+  isGcpTos?: boolean;
+  idToken?: string;
+}
+
 export interface SwitchResult {
   success: boolean;
   email?: string;
   message?: string;
+  token?: SwitchToken;
 }
 
 export interface AutoSwitchOptions {
@@ -52,6 +62,7 @@ interface PreparedSwitchToken {
   refreshToken: string;
   expiryDateSeconds: number;
   refreshed: boolean;
+  idToken?: string;
 }
 
 /**
@@ -118,7 +129,7 @@ function shouldRefreshForSwitch(account: StoredAccount): boolean {
   return expiryMs - Date.now() < TOKEN_REFRESH_BUFFER_MS;
 }
 
-async function prepareTokenForSwitch(account: StoredAccount): Promise<{ ok: true; token: PreparedSwitchToken } | { ok: false; message: string }> {
+export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: true; token: PreparedSwitchToken } | { ok: false; message: string }> {
   if (!account.refreshToken) {
     return { ok: false, message: '缺少 refreshToken' };
   }
@@ -165,6 +176,7 @@ async function prepareTokenForSwitch(account: StoredAccount): Promise<{ ok: true
       refreshToken: account.refreshToken,
       expiryDateSeconds: Math.floor(expiryMs / 1000),
       refreshed,
+      idToken: latestAccount.idToken || account.idToken,
     },
   };
 }
@@ -189,7 +201,7 @@ export async function seamlessSwitch(account: StoredAccount): Promise<SwitchResu
     };
   }
 
-  const prepared = await prepareTokenForSwitch(account);
+  const prepared = await prepareSwitchToken(account);
   if (!prepared.ok) {
     return {
       success: false,
@@ -244,7 +256,14 @@ export async function seamlessSwitch(account: StoredAccount): Promise<SwitchResu
     return {
       success: true,
       email: account.email,
-      message: '无感切号成功'
+      message: '无感切号成功',
+      token: {
+        accessToken: prepared.token.accessToken,
+        refreshToken: prepared.token.refreshToken,
+        expiryDateSeconds: prepared.token.expiryDateSeconds,
+        isGcpTos: false,
+        idToken: prepared.token.idToken
+      }
     };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
