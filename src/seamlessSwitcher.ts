@@ -335,6 +335,8 @@ export async function pushLiveIdentityUpdate(email: string): Promise<{ ok: boole
     } catch (e) {
       return { ok: false, error: `身份推送后读回失败：${e instanceof Error ? e.message : String(e)}` };
     }
+    // 读回值无论是否一致都记录，作为总线是否真正接收的证据
+    console.log('[Kite] 身份总线读回:', JSON.stringify({ expect: email, actual: current }));
     if (current && current !== email) {
       return { ok: false, error: `身份推送读回不一致：期望 ${email}，实际 ${current}` };
     }

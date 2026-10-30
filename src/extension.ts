@@ -1,14 +1,17 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import * as accountStore from './accountStore';
 import { startOAuth } from './oauthService';
 import { previewLocalAccount, confirmImport, cancelImport } from './localReader';
 import * as importService from './importService';
 import { WebviewMessage, UsageSnapshot, StoredAccount } from './types';
-import { seamlessSwitch, isSeamlessSwitchAvailable, prepareSwitchToken, autoSwitchInstanceBoundAccount, pushLiveIdentityUpdate } from './seamlessSwitcher';
-import { switchIdeStateIdentity, resolveIdeStateDbPathFromUserData } from './ideStateDb';
-import { scheduleSwitchRestart, readSwitchRestartResult, clearSwitchRestartResult, writeAgyActiveAccount } from './switchRestart';
+import { isSeamlessSwitchAvailable, prepareSwitchToken, autoSwitchInstanceBoundAccount } from './seamlessSwitcher';
+import { resolveIdeStateDbPathFromUserData } from './ideStateDb';
+import { scheduleSwitchRestart, readSwitchRestartResult, clearSwitchRestartResult } from './switchRestart';
 import { logInfo, logWarn, logError } from './logger';
+import { readIdeCredential, buildIdeCredentialBlob } from './winCredential';
+import { getSharedStorageDir } from './storage';
 import { StatusBarManager } from './statusBar';
 import { fetchUsage } from './usageService';
 import * as enhancer from './enhancementInjector';
@@ -515,100 +518,127 @@ class SidebarProvider implements vscode.WebviewViewProvider {
                 break;
               }
             }
-            // IDE 账号菜单/头像的身份写入口只在 workbench（平台墙，扩展侧只读/清）；
-            // 无感切覆盖 agent 引擎与会话层，「切换并重启」保证三处全部立即一致
+            // 身份权威来源 = Windows 凭据管理器 gemini:antigravity 的 id_token_email
+            // （真机实验证实：写它 + 重启 = 账号菜单/头像/名字/额度完整切换）。
+            // 流程：备份当前凭据 → 构造目标凭据 → 助手关 IDE 后写凭据/状态库/agy 指针/gemini 文件 → 原参数重启。
             const choice = await vscode.window.showWarningMessage(
-              `切换到 ${account.email}：无感切立即生效于 agent 面板；切换并重启则身份完全一致（未保存内容请先保存）。`,
+              `切换到 ${account.email}：IDE 将自动重启（约 5 秒）以完整应用身份，未保存内容受热退出保护。`,
               { modal: true },
-              '无感切',
-              '切换并重启'
+              '切换账号'
             );
+            logInfo('switch.choice', { email: account.email, choice });
             if (!choice) {
               break;
             }
-            const prepared = await prepareSwitchToken(account);
-            if (!prepared.ok) {
-              this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: prepared.message });
-              break;
-            }
 
-            if (choice === '切换并重启') {
-              const launch = await instanceMgr.getCurrentInstanceLaunchInfo();
-              const exePath = launch.exePath || (await instanceMgr.detectExePath()) || '';
-              // 分身实例的状态库在各自 user-data-dir 下，必须显式定位，不能只认 APPDATA 默认库
-              const userDataDir = path.resolve(this._context.globalStorageUri.fsPath, '..', '..', '..');
-              const sched = await scheduleSwitchRestart({
-                email: account.email,
-                token: prepared.token,
-                dbPath: resolveIdeStateDbPathFromUserData(userDataDir),
-                exePath,
-                // 复用原进程完整启动参数（保留 --remote-debugging-port 等用户附加配置）
-                launchArgs: launch.args.length > 0 ? launch.args : ['--user-data-dir', userDataDir],
-                mainPid: launch.pid,
-              });
-              if (!sched.scheduled) {
-                this._view?.webview.postMessage({ type: 'toast', status: 'error', message: `切号重启调度失败：${sched.error}` });
-                break;
-              }
-              await this._context.globalState.update('currentEmail', msg.email);
-              usageTracker.recordSwitch(msg.email);
-              this._pushAccounts();
-              this._view?.webview.postMessage({ type: 'toast', status: 'success', message: '正在关闭并重启 Antigravity IDE 以应用账号切换…' });
-              break;
-            }
-
-            // 无感切：会话内换 token → 持久化（状态库 + agy 引擎账号指针）→ 热重载 agent 引擎
-            const hotResult = await seamlessSwitch(account);
-            if (!hotResult.success) {
-              this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: hotResult.message || '切号失败' });
-              break;
-            }
-            // 实时身份：推 uss-userStatus 到 state-sync 总线（账号菜单/头像/名字立即切换）
-            const identity = await pushLiveIdentityUpdate(account.email);
-            if (!identity.ok) {
-              console.warn('[Kite] 实时身份推送失败:', identity.error);
-            }
-            const hotUserDataDir = path.resolve(this._context.globalStorageUri.fsPath, '..', '..', '..');
-            const dbRes = switchIdeStateIdentity(account.email, {
-              accessToken: prepared.token.accessToken,
-              refreshToken: prepared.token.refreshToken,
-              expiryDateSeconds: prepared.token.expiryDateSeconds,
+            // token 准备：刷新失败（离线等）时回退号池存储值——IDE 启动后会用 RT 自刷新
+            let switchToken = {
+              accessToken: '',
+              refreshToken: '',
+              expiryDateSeconds: 0,
               isGcpTos: false,
-              idToken: prepared.token.idToken,
-            }, { dbPath: resolveIdeStateDbPathFromUserData(hotUserDataDir) });
-            if (!dbRes.dbWritten) {
-              console.warn('[Kite] 状态库身份写入失败:', dbRes.error);
+              idToken: undefined as string | undefined,
+            };
+            let tokenSource = '';
+            const prepared = await prepareSwitchToken(account);
+            if (prepared.ok) {
+              switchToken = {
+                accessToken: prepared.token.accessToken,
+                refreshToken: prepared.token.refreshToken,
+                expiryDateSeconds: prepared.token.expiryDateSeconds,
+                isGcpTos: false,
+                idToken: prepared.token.idToken,
+              };
+              tokenSource = prepared.token.refreshed ? 'refreshed' : 'cached-valid';
+            } else {
+              switchToken = {
+                accessToken: account.accessToken,
+                refreshToken: account.refreshToken || '',
+                expiryDateSeconds: Math.floor(new Date(account.expiresAt || 0).getTime() / 1000) || Math.floor(Date.now() / 1000) + 3600,
+                isGcpTos: false,
+                idToken: account.idToken,
+              };
+              tokenSource = 'stored-fallback';
             }
-            const agyPtr = writeAgyActiveAccount(account.email);
-            const agyReload = await instanceMgr.killAgyForCurrentInstance();
+            logInfo('switch.token', { source: tokenSource, prepareOk: prepared.ok, message: prepared.ok ? undefined : prepared.message });
+
+            // 备份当前凭据（可回滚），并取出 writer_id / auth_method / userName 保持一致
+            const credBackup = await readIdeCredential();
+            let writerId = '';
+            let authMethod = 'consumer';
+            let credUser = 'antigravity';
+            if (credBackup.ok && credBackup.blobBase64 && credBackup.parsed) {
+              const backupPath = path.join(getSharedStorageDir(), 'credential-backup.json');
+              fs.writeFileSync(backupPath, JSON.stringify({
+                savedAt: Date.now(),
+                user: credBackup.user,
+                blob: credBackup.parsed,
+              }, null, 2), 'utf8');
+              writerId = credBackup.parsed.writer_id || '';
+              authMethod = credBackup.parsed.auth_method || 'consumer';
+              credUser = credBackup.user || 'antigravity';
+              logInfo('switch.cred.backup', { path: backupPath, prevEmail: credBackup.parsed.id_token_email });
+            } else {
+              logWarn('switch.cred.backup.unavailable', { error: credBackup.error });
+            }
+
+            // 构造目标凭据（AT 过期无妨：IDE 启动后用 RT 自刷新）
+            const expiryMs = switchToken.expiryDateSeconds > Math.floor(Date.now() / 1000)
+              ? switchToken.expiryDateSeconds * 1000
+              : Date.now() + 3600000;
+            const blob = buildIdeCredentialBlob({
+              email: account.email,
+              accessToken: switchToken.accessToken,
+              refreshToken: switchToken.refreshToken,
+              expiryMs,
+              authMethod,
+              writerId,
+            });
+            logInfo('switch.cred.build', { email: account.email, expiryMs, writerId: blob.parsed.writer_id.slice(0, 10) });
+
+            const launch = await instanceMgr.getCurrentInstanceLaunchInfo();
+            const exePath = launch.exePath || (await instanceMgr.detectExePath()) || '';
+            // 分身实例的状态库在各自 user-data-dir 下，必须显式定位，不能只认 APPDATA 默认库
+            const userDataDir = path.resolve(this._context.globalStorageUri.fsPath, '..', '..', '..');
+            const sched = await scheduleSwitchRestart({
+              email: account.email,
+              token: {
+                accessToken: switchToken.accessToken,
+                refreshToken: switchToken.refreshToken,
+                expiryDateSeconds: switchToken.expiryDateSeconds,
+                isGcpTos: false,
+                idToken: switchToken.idToken,
+              },
+              dbPath: resolveIdeStateDbPathFromUserData(userDataDir),
+              exePath,
+              // 复用原进程完整启动参数（保留 --remote-debugging-port 等用户附加配置）
+              launchArgs: launch.args.length > 0 ? launch.args : ['--user-data-dir', userDataDir],
+              mainPid: launch.pid,
+              credential: { blobBase64: blob.blobBase64, user: credUser },
+              geminiSync: {
+                email: account.email,
+                accessToken: switchToken.accessToken,
+                refreshToken: switchToken.refreshToken,
+                expiryMs,
+              },
+            });
+            logInfo('switch.restart.schedule', {
+              scheduled: sched.scheduled,
+              error: sched.error,
+              mainPid: launch.pid,
+              exePath,
+              launchArgs: launch.args,
+              dbPath: resolveIdeStateDbPathFromUserData(userDataDir),
+              hasCredential: true,
+            });
+            if (!sched.scheduled) {
+              this._view?.webview.postMessage({ type: 'toast', status: 'error', message: `切号调度失败：${sched.error}` });
+              break;
+            }
             await this._context.globalState.update('currentEmail', msg.email);
             usageTracker.recordSwitch(msg.email);
             this._pushAccounts();
-            statusBarManager?.refreshUsage();
-            logPanel.pushLogPanelData(this._context, usageTracker);
-            // 补全切号协议：触发 authentication 层重读 session（模型列表随 session 变化重置）
-            try {
-              await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
-            } catch (e) {
-              console.warn('[Kite] handleAuthRefresh failed:', e instanceof Error ? e.message : e);
-            }
-            // 联动规则：切号后优先刷新目标号额度；延迟兜底再刷一次 session
-            this._refreshUsage(msg.email);
-            setTimeout(() => {
-              vscode.commands.executeCommand('antigravity.handleAuthRefresh').then(() => {}, () => {});
-            }, 3000);
-            const notes: string[] = [];
-            if (!identity.ok) notes.push(`实时身份推送失败：${identity.error}`);
-            if (!agyPtr.ok) notes.push(`agy 指针写入失败：${agyPtr.error}`);
-            if (agyReload.error) notes.push(agyReload.error);
-            if (notes.length === 0) {
-              notes.push('无感切号完成：身份与 agent 面板已切至新号');
-            }
-            this._view?.webview.postMessage({
-              type: 'toast',
-              status: notes.length === 1 ? 'success' : 'warning',
-              message: notes.join('；')
-            });
+            this._view?.webview.postMessage({ type: 'toast', status: 'success', message: '正在重启 Antigravity IDE 应用账号切换（约 5 秒）…' });
           }
         }
         break;

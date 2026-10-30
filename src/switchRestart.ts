@@ -27,6 +27,10 @@ export interface SwitchRestartPlan {
   launchArgs: string[];
   /** IDE 主进程 PID */
   mainPid: number | null;
+  /** 凭据管理器 blob（身份唯一权威来源，助手在 IDE 关闭后写入） */
+  credential?: { blobBase64: string; user: string };
+  /** ~/.gemini 账号文件同步参数 */
+  geminiSync?: { email: string; accessToken: string; refreshToken: string; expiryMs: number };
 }
 
 export function getResultFilePath(): string {
