@@ -636,7 +636,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
 
             // 5) 热重载 agent 引擎（agy 重建时读凭据管理器，即时切到新号）
             const agyReload = await instanceMgr.killAgyForCurrentInstance();
-            logInfo('switch.hot.agyReload', { killed: agyReload.killed, error: agyReload.error });
+            logInfo('switch.hot.agyReload', { killed: agyReload.killed, agyWasRunning: agyReload.agyWasRunning, error: agyReload.error });
 
             await this._context.globalState.update('currentEmail', msg.email);
             usageTracker.recordSwitch(msg.email);

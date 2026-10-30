@@ -759,37 +759,58 @@ export async function getCurrentInstanceLaunchInfo(): Promise<InstanceLaunchInfo
 
 /**
  * 杀掉当前实例进程树下的 agy.exe（IDE 内置 agent 引擎）。
- * agy 由 IDE 的 NodeService 子进程拉起，被杀后 IDE 会按需以新凭据重建，
- * 这是 agent 面板无感切号的机制（与参考实现经典款热切同源）。
+ * agy 由 IDE 的 NodeService 孙子进程拉起（主进程 → utility → agy），
+ * 匹配必须沿进程树 BFS 收集全部后代，单层父子匹配会漏杀（0.8.34 真机实证）。
+ * 被杀后 IDE 按需以新凭据重建引擎——agent 面板无感切号的机制。
  */
-export async function killAgyForCurrentInstance(): Promise<{ killed: number; error?: string }> {
-  const idePids = new Set<number>();
-  for (const p of await listIdeProcesses()) {
-    if (processMatchesInstance(p.cmd)) idePids.add(p.pid);
-  }
-  if (idePids.size === 0) {
-    return { killed: 0, error: '未定位到当前实例的 IDE 进程树' };
+export async function killAgyForCurrentInstance(): Promise<{ killed: number; error?: string; agyWasRunning: boolean }> {
+  // 1) 全量进程快照（一次 PowerShell 拿 Name/PID/PPID/CommandLine）
+  const all = await listAllProcesses();
+
+  // 2) 定位当前实例主进程（无 --type= 且 user-data-dir 匹配；匹配不到则取唯一主进程兜底）
+  const mains = all.filter((p) => isIdeMainProcess(p));
+  let mainPid: number | null = null;
+  const matched = mains.filter((p) => processMatchesInstance(p.cmd));
+  if (matched.length > 0) {
+    mainPid = matched[0].pid;
+  } else if (mains.length === 1) {
+    mainPid = mains[0].pid;
   }
 
-  const agyPids: number[] = [];
-  try {
-    const stdout = await runShellAsync(
-      "wmic process where \"name='agy.exe'\" get ProcessId,ParentProcessId /FORMAT:LIST",
-      10000
-    );
-    if (stdout && stdout.trim()) {
-      for (const block of stdout.split(/\r?\n\r?\n/)) {
-        const pidMatch = block.match(/ProcessId=(\d+)/);
-        const ppidMatch = block.match(/ParentProcessId=(\d+)/);
-        if (!pidMatch || !ppidMatch) continue;
-        const ppid = parseInt(ppidMatch[1], 10);
-        if (idePids.has(ppid)) agyPids.push(parseInt(pidMatch[1], 10));
+  // 3) BFS 收集主进程全部后代
+  const ppidMap = new Map<number, number[]>();
+  for (const p of all) {
+    const list = ppidMap.get(p.ppid) || [];
+    list.push(p.pid);
+    ppidMap.set(p.ppid, list);
+  }
+  const descendants = new Set<number>();
+  if (mainPid !== null) {
+    const queue = [mainPid];
+    while (queue.length > 0) {
+      const pid = queue.shift()!;
+      for (const child of ppidMap.get(pid) || []) {
+        if (!descendants.has(child)) {
+          descendants.add(child);
+          queue.push(child);
+        }
       }
     }
-  } catch { /* 枚举失败按未找到处理 */ }
+  }
+
+  // 4) 后代里的 agy.exe
+  let agyPids = all.filter((p) => /(^|\\)agy\.exe$/i.test(p.name) && descendants.has(p.pid)).map((p) => p.pid);
+
+  // 5) 兜底：树内没找到但系统里有 agy.exe（单实例场景安全）
+  const allAgy = all.filter((p) => /(^|\\)agy\.exe$/i.test(p.name)).map((p) => p.pid);
+  const agyWasRunning = allAgy.length > 0;
+  if (agyPids.length === 0 && allAgy.length > 0) {
+    agyPids = allAgy;
+  }
 
   if (agyPids.length === 0) {
-    return { killed: 0, error: '未在本实例进程树下找到 agy.exe' };
+    // agy 本就没运行：不算错误，下次面板拉起时自动用新凭据
+    return { killed: 0, agyWasRunning: false };
   }
 
   let killed = 0;
@@ -797,7 +818,60 @@ export async function killAgyForCurrentInstance(): Promise<{ killed: number; err
     await runShellAsync(`taskkill /PID ${pid} /T /F`, 5000);
     killed += 1;
   }
-  return { killed };
+  return { killed, agyWasRunning };
+}
+
+interface ProcSnapshot {
+  name: string;
+  pid: number;
+  ppid: number;
+  cmd: string;
+}
+
+async function listAllProcesses(): Promise<ProcSnapshot[]> {
+  const psCmd = `Get-CimInstance Win32_Process | Select-Object Name,ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress`;
+  const stdout = await runPowerShellAsync(psCmd, 15000);
+  const out: ProcSnapshot[] = [];
+  if (stdout && stdout.trim()) {
+    try {
+      const parsed = JSON.parse(stdout);
+      const list = Array.isArray(parsed) ? parsed : [parsed];
+      for (const p of list) {
+        const pid = Number(p.ProcessId);
+        if (!pid) continue;
+        out.push({
+          name: String(p.Name || ''),
+          pid,
+          ppid: Number(p.ParentProcessId) || 0,
+          cmd: String(p.CommandLine || ''),
+        });
+      }
+    } catch { /* 解析失败由调用方兜底 */ }
+  }
+  if (out.length === 0) {
+    // wmic 回退
+    const stdout2 = await runShellAsync(
+      'wmic process get Name,ProcessId,ParentProcessId,CommandLine /FORMAT:CSV',
+      15000
+    );
+    if (stdout2 && stdout2.trim()) {
+      for (const line of stdout2.split(/\r?\n/)) {
+        // CSV: Node,CommandLine,Name,ParentProcessId,ProcessId
+        const m = line.match(/^[^,]*,(.*),([^,]+),(\d+),(\d+)\s*$/);
+        if (!m) continue;
+        const pid = parseInt(m[4], 10);
+        if (!pid) continue;
+        out.push({ name: m[2], pid, ppid: parseInt(m[3], 10), cmd: m[1] || '' });
+      }
+    }
+  }
+  return out;
+}
+
+function isIdeMainProcess(p: ProcSnapshot): boolean {
+  if (!/antigravity(\s|\.)/i.test(p.name) && !/antigravity.*ide\.exe/i.test(p.name)) return false;
+  if (/--type=/i.test(p.cmd)) return false;
+  return /antigravity/i.test(p.cmd);
 }
 
 // ─── Shell 工具 ──────────────────────────────────────────
