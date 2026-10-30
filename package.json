@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "Antigravity Kite",
   "description": "为 Antigravity IDE 量身打造的无感多账号切换与号池管理插件",
-  "version": "0.8.37",
+  "version": "0.8.39",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -80,6 +80,16 @@
           "type": "string",
           "default": "",
           "description": "自定义 Antigravity 主程序可执行文件路径 (用于多版本启动分身)"
+        },
+        "antigravityKite.autoConfirmDeclaration": {
+          "type": "boolean",
+          "default": true,
+          "description": "切换账号时自动确认安全声明（Security Notice & Data Use），切号不再弹窗。前提：IDE 以调试端口启动——首次切号时会引导开启一次（自动修改快捷方式并重启 IDE，仅此一次）。未开启调试端口时，每次切换会弹一次声明，需手动点击。"
+        },
+        "antigravityKite.cdpPort": {
+          "type": "number",
+          "default": 9333,
+          "description": "调试端口号（--remote-debugging-port）。9222 会作为兜底自动尝试。通常无需修改。"
         }
       }
     }

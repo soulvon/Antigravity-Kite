@@ -11,7 +11,9 @@ import { switchIdeStateIdentity, resolveIdeStateDbPathFromUserData } from './ide
 import { readSwitchRestartResult, clearSwitchRestartResult, writeAgyActiveAccount } from './switchRestart';
 import { logInfo, logWarn, logError } from './logger';
 import { startDeclarationSuppressor } from './declarationSuppressor';
+import { ensureCdpGate } from './cdpGate';
 import { readIdeCredential, buildIdeCredentialBlob, writeIdeCredentialBlob, syncGeminiAccountFiles } from './winCredential';
+import { syncGeminiLocalCreds } from './geminiFiles';
 import { getSharedStorageDir } from './storage';
 import { StatusBarManager } from './statusBar';
 import { fetchUsage } from './usageService';
@@ -536,6 +538,15 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             switchInFlight = true;
             logInfo('switch.start', { email: account.email });
 
+            // CDP 门控：首次切号探测调试端口；未开启则一次性引导（改快捷方式 + 重启）。
+            // 'relaunching' = IDE 正在重启，中止本次切号；ready/manual 均照常执行。
+            const gate = await ensureCdpGate(this._context);
+            logInfo('switch.gate', { result: gate });
+            if (gate === 'relaunching') {
+              switchInFlight = false;
+              break;
+            }
+
             // token 准备：刷新失败（离线等）时回退号池存储值——IDE 启动后会用 RT 自刷新
             // 切号必须用 RT 现场刷新出的 token（号池缓存 AT 的 scope 可能不含 aicode 权限，
             // 写入会导致 agy 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT 后崩溃）。
@@ -627,6 +638,17 @@ class SidebarProvider implements vscode.WebviewViewProvider {
               expiryMs,
             });
             logInfo('switch.hot.files', { agyPtr: agyPtr.ok, gemini: gs.ok, error: agyPtr.error || gs.error });
+
+            // 3.5) ~/.gemini 两处凭据文件同步（弹窗根因修复）
+            //     对照矩阵实证：google_accounts.active + oauth_creds 的 token 必须同时指向
+            //     目标账号，缺任一项 → agent 面板判定账号变更 → 每次切号弹安全声明。
+            const geminiLocal = syncGeminiLocalCreds({
+              email: account.email,
+              accessToken: switchToken.accessToken,
+              refreshToken: switchToken.refreshToken,
+              expiryMs,
+            });
+            logInfo('switch.hot.gemini', { ok: geminiLocal.ok, error: geminiLocal.error });
 
             // 4) 会话层 token 热切 + 总线身份推送（尽力而为，失败不阻塞）
             const hot = await seamlessSwitch(account);

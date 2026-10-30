@@ -1,23 +1,82 @@
 /**
- * 安全声明弹窗自动关闭器（CDP 注入）
+ * 安全声明自动确认器（CDP 注入，社区同款架构）
  *
  * 背景（真机实证）：
- * - 声明弹窗由 agy.exe 的 hub 页面渲染（IDE 内的跨源 iframe），前端资源编译进 agy.exe，
- *   磁盘无对应文件，无法像扩展那样注入；唯一通道是 `--remote-debugging-port` + CDP
- *   （与 AnyBridge 处理这两个界面的方式一致）。
- * - 弹窗判定 = 面板存储里的 lastLoginUsername ≠ 当前账号 → 切号必弹一次。
- * - 该记录握在 IDE 主进程内存里，外部写 state.vscdb 无效；接受动作由页面自己写回。
+ * - 声明弹窗由 agy.exe 的 hub 页面渲染（IDE 内跨源 iframe，资源编译进二进制），
+ *   扩展 API 无法触及，CDP 是唯一通道（同类 1 万+ 安装插件同结论）。
+ * - 弹窗判定 = 页面存储记录的账号 ≠ 当前账号；接受 = 页面自身代码写入存储。
+ * - 页面重建（agy 重启换端口）即重新判定，因此需要常驻守护。
  *
- * 因此：注入一个常驻 MutationObserver，弹窗出现即勾选并点「接受并继续」，
- * 用户感知为"一闪而过"。页面重建（agy 重启/换端口）后靠轮询补注入。
+ * 架构（对齐 AntiGravity-AutoAccept）：
+ * - 每 10s 心跳：枚举 targets → 对未注入的注入一次性 MutationObserver（幂等标记）
+ * - observer 死亡（页面重建/上下文清除）→ 标记消失 → 心跳自动重注入
+ * - 端口：主端口（设置）→ 兜底 9222（IDE 自带浏览器功能）
  */
 import * as http from 'http';
+import * as vscode from 'vscode';
 import { logInfo, logWarn } from './logger';
 
-const CDP_PORT = 9333;
-const POLL_MS = 2000;
+const HEARTBEAT_MS = 10000;
+const INJECTED = new Set<string>(); // CDP target id（/json/list 的 id）
 
-/** 注入脚本：幂等安装，弹窗出现即自动接受 */
+let timer: NodeJS.Timeout | null = null;
+let running = false;
+
+function getPort(): number {
+  return vscode.workspace.getConfiguration('antigravityKite').get<number>('cdpPort', 9333);
+}
+
+function cdpAlive(port: number, timeoutMs = 1500): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/json/version`, { timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+/** 探测可用端口：主端口 → 9222 兜底 */
+export async function probeCdpPort(): Promise<number | null> {
+  const primary = getPort();
+  if (await cdpAlive(primary)) return primary;
+  if (primary !== 9222 && (await cdpAlive(9222))) return 9222;
+  return null;
+}
+
+interface TargetInfo { id: string; ws: string }
+
+async function listAppTargets(port: number): Promise<TargetInfo[]> {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/json/list`, { timeout: 2500 }, (res) => {
+      let d = '';
+      res.on('data', (c) => (d += c));
+      res.on('end', () => {
+        try {
+          const list = JSON.parse(d) as Array<Record<string, unknown>>;
+          const out: TargetInfo[] = [];
+          for (const t of list) {
+            const url = String(t.url || '');
+            const id = String(t.id || '');
+            const ws = String(t.webSocketDebuggerUrl || '');
+            if (!id || !ws) continue;
+            if (!url.startsWith('http://127.0.0.1:')) continue;
+            if (!(url.includes('/settings-standalone') || url.includes('extensionView=true'))) continue;
+            out.push({ id, ws });
+          }
+          resolve(out);
+        } catch {
+          resolve([]);
+        }
+      });
+    });
+    req.on('error', () => resolve([]));
+    req.on('timeout', () => { req.destroy(); resolve([]); });
+  });
+}
+
+/** 注入脚本：幂等；弹窗出现即勾选并点接受（页面自身代码路径写存储） */
 const GUARD_SCRIPT = `(() => {
   if (window.__kiteDeclGuard) return 'already';
   window.__kiteDeclGuard = true;
@@ -33,65 +92,16 @@ const GUARD_SCRIPT = `(() => {
         if (!ck) cb.click();
       }
       btn.click();
-    } catch (e) { /* 页面结构变化不影响主流程 */ }
+    } catch (e) { /* DOM 结构变化不影响主流程 */ }
   };
   try {
     new MutationObserver(tryAccept).observe(document.documentElement, { childList: true, subtree: true });
   } catch (e) { /* 忽略 */ }
-  setInterval(tryAccept, 1200);
+  setInterval(tryAccept, 1500);
   return 'installed';
 })()`;
 
-interface CdpTarget {
-  url: string;
-  ws: string;
-}
-
-let timer: NodeJS.Timeout | null = null;
-let running = false;
-
-function getJson(url: string, timeoutMs = 2500): Promise<unknown | null> {
-  return new Promise((resolve) => {
-    const req = http.get(url, { timeout: timeoutMs }, (res) => {
-      let d = '';
-      res.on('data', (c) => (d += c));
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(d));
-        } catch {
-          resolve(null);
-        }
-      });
-    });
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(null);
-    });
-  });
-}
-
-function isAppTarget(url: string): boolean {
-  return url.startsWith('http://127.0.0.1:')
-    && (url.includes('/settings-standalone') || url.includes('extensionView=true'));
-}
-
-async function listTargets(): Promise<CdpTarget[]> {
-  const list = (await getJson(`http://127.0.0.1:${CDP_PORT}/json/list`)) as Array<Record<string, unknown>> | null;
-  if (!Array.isArray(list)) return [];
-  const out: CdpTarget[] = [];
-  for (const item of list) {
-    const url = String(item.url || '');
-    const ws = String(item.webSocketDebuggerUrl || '');
-    if (!url || !ws) continue;
-    if (!isAppTarget(url)) continue;
-    out.push({ url, ws });
-  }
-  return out;
-}
-
-/** 在单个 target 上执行注入（幂等；失败静默） */
-function inject(target: CdpTarget): Promise<boolean> {
+function inject(target: TargetInfo): Promise<boolean> {
   return new Promise((resolve) => {
     let ws: WebSocket;
     let settled = false;
@@ -101,16 +111,12 @@ function inject(target: CdpTarget): Promise<boolean> {
       try { ws.close(); } catch { /* 已关闭 */ }
       resolve(ok);
     };
-    try {
-      ws = new WebSocket(target.ws);
-    } catch {
-      resolve(false);
-      return;
-    }
+    try { ws = new WebSocket(target.ws); } catch { resolve(false); return; }
     const watchdog = setTimeout(() => done(false), 6000);
     ws.onopen = () => {
       try {
-        ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: GUARD_SCRIPT, returnByValue: true } }));
+        ws.send(JSON.stringify({ id: 1, method: 'Runtime.enable', params: {} }));
+        ws.send(JSON.stringify({ id: 2, method: 'Runtime.evaluate', params: { expression: GUARD_SCRIPT, returnByValue: true } }));
       } catch {
         clearTimeout(watchdog);
         done(false);
@@ -118,38 +124,46 @@ function inject(target: CdpTarget): Promise<boolean> {
     };
     ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(String((ev as MessageEvent).data));
-        if (msg.id === 1) {
+        const m = JSON.parse(String((ev as MessageEvent).data));
+        if (m.id === 2) {
           clearTimeout(watchdog);
-          done(!!(msg.result && msg.result.result));
+          done(!!(m.result && m.result.result));
         }
       } catch {
         clearTimeout(watchdog);
         done(false);
       }
     };
-    ws.onerror = () => {
-      clearTimeout(watchdog);
-      done(false);
-    };
-    ws.onclose = () => {
-      clearTimeout(watchdog);
-      done(false);
-    };
+    ws.onerror = () => { clearTimeout(watchdog); done(false); };
+    ws.onclose = () => { clearTimeout(watchdog); done(false); };
   });
+}
+
+async function heartbeat(): Promise<void> {
+  const port = await probeCdpPort();
+  if (!port) {
+    // 端口不在：清空已注入记录，下次端口回来会重新注入
+    if (INJECTED.size) INJECTED.clear();
+    return;
+  }
+  const targets = await listAppTargets(port);
+  const alive = new Set<string>();
+  let injected = 0;
+  for (const t of targets) {
+    alive.add(t.id);
+    if (INJECTED.has(t.id)) continue;
+    if (await inject(t)) { INJECTED.add(t.id); injected += 1; }
+  }
+  // 清理已消失的 target
+  for (const id of [...INJECTED]) if (!alive.has(id)) INJECTED.delete(id);
+  if (injected > 0) logInfo('declGuard.injected', { port, targets: targets.length, injected });
 }
 
 async function tick(): Promise<void> {
   if (running) return;
   running = true;
   try {
-    const targets = await listTargets();
-    if (targets.length === 0) return;
-    let ok = 0;
-    for (const t of targets) {
-      if (await inject(t)) ok += 1;
-    }
-    if (ok > 0) logInfo('declGuard.injected', { targets: targets.length, ok });
+    await heartbeat();
   } catch (e) {
     logWarn('declGuard.tick', e);
   } finally {
@@ -157,16 +171,12 @@ async function tick(): Promise<void> {
   }
 }
 
-/**
- * 启动守护：静默轮询 CDP，给设置页/Agent 面板注入自动接受脚本。
- * 未开启调试端口时自动空转（每 8 秒一次探测，几乎零开销）。
- */
+/** 启动守护（静默轮询；端口不可用时自动空转） */
 export function startDeclarationSuppressor(): void {
   if (timer) return;
-  timer = setInterval(() => { void tick(); }, POLL_MS);
-  // 首次延迟 5 秒（等 IDE 面板就绪）
+  timer = setInterval(() => { void tick(); }, HEARTBEAT_MS);
   setTimeout(() => { void tick(); }, 5000);
-  logInfo('declGuard.start', { port: CDP_PORT, intervalMs: POLL_MS });
+  logInfo('declGuard.start', { heartbeatMs: HEARTBEAT_MS });
 }
 
 export function stopDeclarationSuppressor(): void {
