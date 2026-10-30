@@ -8,6 +8,7 @@ import { WebviewMessage, UsageSnapshot, StoredAccount } from './types';
 import { seamlessSwitch, isSeamlessSwitchAvailable, prepareSwitchToken, autoSwitchInstanceBoundAccount, pushLiveIdentityUpdate } from './seamlessSwitcher';
 import { switchIdeStateIdentity, resolveIdeStateDbPathFromUserData } from './ideStateDb';
 import { scheduleSwitchRestart, readSwitchRestartResult, clearSwitchRestartResult, writeAgyActiveAccount } from './switchRestart';
+import { logInfo, logWarn, logError } from './logger';
 import { StatusBarManager } from './statusBar';
 import { fetchUsage } from './usageService';
 import * as enhancer from './enhancementInjector';
@@ -45,9 +46,16 @@ function saveUsageCache(context: vscode.ExtensionContext) {
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('Antigravity Kite activated');
+  logInfo('activate.start', {
+    version: context.extension.packageJSON.version,
+    extensionId: context.extension.id,
+    extensionPath: context.extensionPath,
+    globalStorage: context.globalStorageUri.fsPath,
+  });
 
   accountStore.init(context);
   instanceMgr.init(context);
+  logInfo('activate.init-done', { accounts: accountStore.count(), storageDir: accountStore.getStorageDirPath() });
 
   // 上次切号重启的结果反馈（助手在 IDE 之外执行，结果落盘到共享目录）
   const lastRestart = readSwitchRestartResult();
@@ -183,6 +191,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     _token: vscode.CancellationToken,
   ) {
     this._view = webviewView;
+    logInfo('webview.resolve', { viewType: SidebarProvider.viewType });
 
     webviewView.webview.options = {
       enableScripts: true,
@@ -190,6 +199,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     };
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+    logInfo('webview.html-set', { bytes: webviewView.webview.html.length });
 
     webviewView.webview.onDidReceiveMessage(async (msg: WebviewMessage) => {
       await this._handleMessage(msg);
@@ -226,8 +236,10 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     webviewView.webview.postMessage({ type: 'preflightSync', enabled: this._context.globalState.get<boolean>('preflightEnabled') || false });
 
     // 推送扩展版本号（侧栏头部胶囊展示）
-    const extVersion = vscode.extensions.getExtension('soulvon.antigravity-kite')?.packageJSON?.version
+    const ext = vscode.extensions.getExtension('soulvon.antigravity-kite');
+    const extVersion = ext?.packageJSON?.version
       || vscode.extensions.getExtension('antigravity-kite')?.packageJSON?.version || '';
+    logInfo('webview.version', { extensionFound: !!ext, extVersion, webviewReady: !!webviewView.webview });
     webviewView.webview.postMessage({ type: 'versionSync', version: extVersion });
   }
 
@@ -246,7 +258,17 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       ...a,
       usage: usageCache.get(a.email),
     }));
-    this._view?.webview.postMessage({ type: 'accounts', accounts: accountsWithUsage, currentEmail });
+    const payload = { type: 'accounts', accounts: accountsWithUsage, currentEmail };
+    const res = this._view?.webview.postMessage(payload);
+    // postMessage 返回 Thenable<boolean>：false/拒绝 表示 webview 未接收（桥接断开），必须留痕
+    if (res && typeof (res as unknown as PromiseLike<boolean>).then === 'function') {
+      (res as unknown as Promise<boolean>).then(
+        (ok) => logInfo('webview.pushAccounts', { count: accountsWithUsage.length, currentEmail, viewAttached: true, delivered: ok }),
+        (err) => logError('webview.pushAccounts.reject', { count: accountsWithUsage.length, error: err instanceof Error ? err.message : String(err) })
+      );
+    } else {
+      logWarn('webview.pushAccounts', { count: accountsWithUsage.length, currentEmail, viewAttached: false });
+    }
   }
 
   /** 导出账号（全部或指定邮箱集合）：完整含 Token / 脱敏仅邮箱标签 */
@@ -339,6 +361,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   private async _handleMessage(msg: WebviewMessage) {
+    logInfo('msg.in', { type: (msg as { type?: string }).type, email: (msg as { email?: string }).email });
     switch (msg.type) {
       case 'oauthLogin':
         try {

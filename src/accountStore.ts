@@ -4,6 +4,7 @@ import * as path from 'path';
 import { StoredAccount } from './types';
 
 import { migrateDataIfNeeded, getSharedStorageDir } from './storage';
+import { logInfo, logWarn, logError } from './logger';
 
 let _accounts: StoredAccount[] = [];
 let _storageDir: string = '';
@@ -31,7 +32,13 @@ export function init(context: vscode.ExtensionContext): void {
         notifyChange();
       }
     });
-  } catch (e) { console.warn('[accountStore] watch failed:', e); }
+    logInfo('accountStore.watch', { ok: true, dir: _storageDir });
+  } catch (e) { logWarn('accountStore.watch', e); }
+}
+
+/** 当前使用的共享存储目录（用于日志/诊断） */
+export function getStorageDirPath(): string {
+  return _storageDir;
 }
 
 export function dispose(): void {
@@ -62,12 +69,16 @@ function notifyChange(): void {
 function load(): void {
   try {
     const filePath = getFilePath();
-    if (fs.existsSync(filePath)) {
+    const exists = fs.existsSync(filePath);
+    if (exists) {
       const data = fs.readFileSync(filePath, 'utf8');
       _accounts = JSON.parse(data);
+      logInfo('accountStore.load', { file: filePath, exists, bytes: data.length, count: Array.isArray(_accounts) ? _accounts.length : 'not-array' });
+    } else {
+      logWarn('accountStore.load', { file: filePath, exists, count: 0 });
     }
   } catch (e) {
-    console.warn('[accountStore] load failed:', e);
+    logError('accountStore.load.fail', { file: getFilePath(), error: e instanceof Error ? e.message : String(e) });
     _accounts = [];
   }
 }
