@@ -1042,10 +1042,10 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       <!-- 汇总统计 -->
       <div id="summaryCard">
         <div class="summary-stats">
-          <div class="summary-stat" id="summaryDailyStat">
+          <div class="summary-stat" id="summaryDailyStat" title="所有启用账号中最紧张的模型剩余额度（瓶颈账号，脚注显示账号名）。≤10% 红、≤30% 橙。">
             <div class="summary-stat-head">
-              <svg class="summary-stat-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
-              <span class="summary-stat-label">本日</span>
+              <svg class="summary-stat-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>
+              <span class="summary-stat-label">最低额度</span>
               <span class="summary-stat-pct" id="summaryDailyPct">0%</span>
             </div>
             <div class="summary-bar"><div class="summary-bar-fill" id="summaryDailyBar" style="width:0%"></div></div>
@@ -1054,10 +1054,10 @@ class SidebarProvider implements vscode.WebviewViewProvider {
               <span class="summary-stat-max" id="summaryDailyMax">/ 0</span>
             </div>
           </div>
-          <div class="summary-stat" id="summaryWeeklyStat">
+          <div class="summary-stat" id="summaryWeeklyStat" title="启用账号全部模型剩余额度的平均值（号池健康度）。≤10% 红、≤30% 橙。">
             <div class="summary-stat-head">
-              <svg class="summary-stat-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-              <span class="summary-stat-label">本周</span>
+              <svg class="summary-stat-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              <span class="summary-stat-label">平均额度</span>
               <span class="summary-stat-pct" id="summaryWeeklyPct">0%</span>
             </div>
             <div class="summary-bar"><div class="summary-bar-fill" id="summaryWeeklyBar" style="width:0%"></div></div>
@@ -1067,66 +1067,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             </div>
           </div>
         </div>
-        <!-- 统计抽屉（BuddyRelay 同款：默认折叠，徽标常显） -->
-        <details class="usage-stats-details" id="usageStatsDetails">
-          <summary class="usage-drawer-summary">
-            <span class="usage-drawer-title">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-              <span>统计</span>
-            </span>
-            <span class="usage-summary-badges">
-              <span class="usage-badge-pill is-plus" id="usagePillSwitches">+0 切</span>
-              <span class="usage-badge-pill is-neutral" id="usagePillRefreshes">0 检</span>
-            </span>
-            <button class="as-open-panel-btn" id="openLogPanelBtn" title="打开统计面板" style="margin-left:auto;display:inline-flex;align-items:center;gap:3px;padding:2px 8px;font-size:11px;border-radius:4px;border:1px solid var(--border-subtle);background:transparent;color:var(--muted);cursor:pointer">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-              统计面板
-            </button>
-            <span class="usage-drawer-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
-          </summary>
-          <div class="usage-drawer-body">
-            <div class="summary-status-grid">
-              <div class="summary-status-row"><span class="summary-status-label">活跃 / 禁用</span><span class="summary-status-val" id="summaryActiveDisabled">0 / 0</span></div>
-              <div class="summary-status-row"><span class="summary-status-label">满额度账号</span><span class="summary-status-val ok" id="summaryHighQuota">0 个（≥ 80%）</span></div>
-              <div class="summary-status-row"><span class="summary-status-label">低额度账号</span><span class="summary-status-val warn" id="summaryLowQuota">0 个（≤ 30%）</span></div>
-              <div class="summary-status-row"><span class="summary-status-label">最近刷新</span><span class="summary-status-val off" id="summaryLastRefresh">--</span></div>
-            </div>
-            <div class="usage-stats-grid">
-              <div class="usage-stat-cell">
-                <div class="usage-stat-num" id="statSwitches">0</div>
-                <div class="usage-stat-label">切号次数</div>
-              </div>
-              <div class="usage-stat-cell">
-                <div class="usage-stat-num" id="statRefreshes">0</div>
-                <div class="usage-stat-label">配额检查</div>
-              </div>
-              <div class="usage-stat-cell">
-                <div class="usage-stat-num" id="statAvgUsed">0%</div>
-                <div class="usage-stat-label">平均用量</div>
-              </div>
-              <div class="usage-stat-cell">
-                <div class="usage-stat-num" id="statAccountCount">0</div>
-                <div class="usage-stat-label">统计账号</div>
-              </div>
-            </div>
-            <div class="usage-stats-bar-section">
-              <div class="usage-stats-bar-row">
-                <span class="usage-stats-bar-label">总用量</span>
-                <div class="usage-stats-bar"><div class="usage-stats-bar-fill daily" id="statUsedBar" style="width:0%"></div></div>
-                <span class="usage-stats-bar-val" id="statUsedVal">0</span>
-              </div>
-              <div class="usage-stats-bar-row">
-                <span class="usage-stats-bar-label">本次运行</span>
-                <span class="usage-stats-bar-val" id="statUptime" style="margin-left:auto">--</span>
-              </div>
-            </div>
-            <span class="usage-stats-date" id="usageStatsDate" style="font-size:10px;color:var(--muted);align-self:flex-end"></span>
-            <div style="margin-top:10px;padding:8px 10px;background:var(--vscode-textBlockQuote-background,rgba(127,127,127,.08));border-radius:6px;font-size:11px;color:var(--vscode-descriptionForeground,#888);display:flex;align-items:center;justify-content:space-between;gap:8px">
-              <span>配额变动已迁移到统计面板</span>
-              <button class="as-open-panel-btn" id="openLogPanelHintBtn" style="padding:2px 10px;font-size:11px;border-radius:4px;border:1px solid var(--border-subtle);background:transparent;color:inherit;cursor:pointer">查看详情 →</button>
-            </div>
-          </div>
-        </details>
+        <!-- 统计抽屉已移除 -->
       </div>
       <div class="panel-divider"></div>
       <!-- 搜索栏 -->
@@ -1135,12 +1076,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         <input type="text" class="search-input" id="searchInput" placeholder="搜索账号..." autocomplete="off">
         <button class="search-clear" id="searchClear" hidden>×</button>
       </div>
-      <!-- 过滤器（按风格化按钮） -->
-      <div class="tag-bar">
-        <button class="tag-chip is-active" id="filterAll">全部</button>
-        <button class="tag-chip" id="filterActive">● 活跃</button>
-        <button class="tag-chip" id="filterDisabled">○ 禁用</button>
-      </div>
+      <!-- 过滤器（已并入下方工具栏下拉） -->
       <!-- 工具栏（windsurf-pool 风格） -->
       <div class="toolbar-bar" id="toolbarBar">
         <div class="filter-wrap" id="filterWrap">
@@ -1217,11 +1153,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         <button class="batch-action-btn batch-action-delete" id="batchDeleteBtn" title="删除选中账号">删除</button>
         <button class="batch-action-btn" id="batchCancelBtn">取消</button>
       </div>
-      <!-- 标签栏 -->
-      <div class="tag-bar" id="tagBar">
-        <span class="tag-bar-label">标签:</span>
-        <div class="tag-list" id="tagList"></div>
-      </div>
+      <!-- 标签栏已移除（导入无需标签；标签筛选保留在工具栏下拉中） -->
       <!-- 添加账号模态框 -->
       <div class="add-account-modal" id="addAccountModal" style="display:none">
         <div class="add-modal-content">
@@ -1786,9 +1718,13 @@ document.getElementById('searchClear').onclick = () => {
 };
 
 // 过滤器
-document.getElementById('filterAll').onclick = () => setFilter('all');
-document.getElementById('filterActive').onclick = () => setFilter('active');
-document.getElementById('filterDisabled').onclick = () => setFilter('disabled');
+// 状态筛选按钮已移除（并入工具栏下拉）；setFilter 保留供下拉状态项使用
+const _chipAll = document.getElementById('filterAll');
+if (_chipAll) _chipAll.onclick = () => setFilter('all');
+const _chipActive = document.getElementById('filterActive');
+if (_chipActive) _chipActive.onclick = () => setFilter('active');
+const _chipDisabled = document.getElementById('filterDisabled');
+if (_chipDisabled) _chipDisabled.onclick = () => setFilter('disabled');
 
 function setFilter(filter) {
   activeFilter = filter;
@@ -2554,27 +2490,25 @@ function updateSummary() {
     else if (minPct <= 30) lowQuota++;
   }
 
-  // 本日 / 本周 大卡片:取所有账号的 min(本日)/avg(本周)
+  // 汇总卡：最低额度（瓶颈账号）/ 平均额度（号池健康度）——均为"剩余"语义
   const usable = accounts.filter(a => !a.disabled && a.usage?.models?.length);
-  const dailyPcts = usable.map(a => Math.min(...a.usage.models.map(m => m.remainingPercent)));
-  const weeklyPcts = usable.map(a => a.usage.models.reduce((s, m) => s + m.remainingPercent, 0) / a.usage.models.length);
-  const dailyPct = dailyPcts.length ? dailyPcts.reduce((s, v) => s + v, 0) / dailyPcts.length : 0;
-  const weeklyPct = weeklyPcts.length ? weeklyPcts.reduce((s, v) => s + v, 0) / weeklyPcts.length : 0;
+  const worst = usable
+    .map(a => ({ email: a.email, pct: Math.min(...a.usage.models.map(m => m.remainingPercent)) }))
+    .sort((x, y) => x.pct - y.pct)[0];
+  const minPct = worst ? worst.pct : 0;
+  const allPcts = usable.flatMap(a => a.usage.models.map(m => m.remainingPercent));
+  const avgPct = allPcts.length ? allPcts.reduce((s, v) => s + v, 0) / allPcts.length : 0;
 
   document.getElementById('gridCount').textContent = active + ' / ' + total + ' 个';
   setText('tabAccountCount', String(total));
-  document.getElementById('summaryActiveDisabled').textContent = active + ' / ' + disabled;
-  document.getElementById('summaryHighQuota').textContent = highQuota + ' 个（≥ 80%）';
-  document.getElementById('summaryLowQuota').textContent = lowQuota + ' 个（≤ 30%）';
-  document.getElementById('summaryLastRefresh').textContent = new Date().toLocaleTimeString().slice(0,5);
 
-  setText('summaryDailyPct', Math.round(dailyPct) + '%');
-  setBarWidth('summaryDailyBar', dailyPct);
-  setText('summaryDailyNum', Math.round(dailyPct));
-  setText('summaryDailyMax', '/ 100');
-  setText('summaryWeeklyPct', Math.round(weeklyPct) + '%');
-  setBarWidth('summaryWeeklyBar', weeklyPct);
-  setText('summaryWeeklyNum', Math.round(weeklyPct));
+  setText('summaryDailyPct', '剩 ' + Math.round(minPct) + '%');
+  setBarWidth('summaryDailyBar', minPct);
+  setText('summaryDailyNum', worst ? worst.email.split('@')[0].slice(0, 14) : '--');
+  setText('summaryDailyMax', '');
+  setText('summaryWeeklyPct', '剩 ' + Math.round(avgPct) + '%');
+  setBarWidth('summaryWeeklyBar', avgPct);
+  setText('summaryWeeklyNum', Math.round(avgPct));
   setText('summaryWeeklyMax', '/ 100');
 }
 
@@ -2584,7 +2518,13 @@ function setText(id, value) {
 }
 function setBarWidth(id, pct) {
   const el = document.getElementById(id);
-  if (el) el.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  if (!el) return;
+  const v = Math.max(0, Math.min(100, pct));
+  el.style.width = v + '%';
+  // 按余量分色（BuddyRelay 同款：≤10 红、≤30 橙、其余绿）
+  el.classList.remove('is-warn', 'is-danger');
+  if (v <= 10) el.classList.add('is-danger');
+  else if (v <= 30) el.classList.add('is-warn');
 }
 
 function renderAccounts() {
