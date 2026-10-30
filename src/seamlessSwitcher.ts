@@ -255,6 +255,21 @@ export async function seamlessSwitch(account: StoredAccount): Promise<SwitchResu
 }
 
 /**
+ * 登出语义：清空宿主 token 与身份（触发 session 移除与模型列表等缓存重置）
+ */
+export async function clearHostAuth(): Promise<void> {
+  const api = (vscode as unknown as AntigravityVsCodeApi);
+  const tokenApi = getTokenApi();
+  if (tokenApi) {
+    await Promise.resolve(tokenApi.setOAuthTokenInfo(null));
+  }
+  const userStatus = api.antigravityUnifiedStateSync?.UserStatus;
+  if (userStatus && typeof userStatus.clearUserStatus === 'function') {
+    await Promise.resolve(userStatus.clearUserStatus());
+  }
+}
+
+/**
  * 获取当前宿主的 token 信息
  */
 export async function getCurrentHostToken(): Promise<OAuthTokenInfoPayload | null> {

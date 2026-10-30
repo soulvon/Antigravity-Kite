@@ -479,6 +479,15 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             }
             // 尝试无感换号
             if (isSeamlessSwitchAvailable()) {
+              // 官方登出语义先行：清空旧 token 与身份，让 authentication 层移除旧 session、
+              // agent 模型列表等缓存重置，避免账号菜单积压与模型列表不刷新
+              try {
+                const { clearHostAuth } = await import('./seamlessSwitcher');
+                await clearHostAuth();
+                await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
+              } catch (e) {
+                console.warn('[Kite] 登出语义清理失败（继续切换）:', e instanceof Error ? e.message : e);
+              }
               const result = await seamlessSwitch(account);
               if (result.success) {
                 this._view?.webview.postMessage({ type: 'toast', status: 'success', message: '无感切号成功：额度与 agent 已切换，账号菜单身份在重启 Antigravity IDE 后同步' });
@@ -512,6 +521,10 @@ class SidebarProvider implements vscode.WebviewViewProvider {
                 }
                 // 联动规则：切号后优先刷新目标号额度
                 this._refreshUsage(msg.email);
+                // 兜底：主进程异步重建身份（从新 token 拉取）完成后，再刷一次 session
+                setTimeout(() => {
+                  vscode.commands.executeCommand('antigravity.handleAuthRefresh').catch(() => {});
+                }, 3000);
               } else {
                 this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: result.message || '切号失败' });
               }
