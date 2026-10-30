@@ -212,6 +212,8 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     };
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+    // 版本号放在视图标题栏（位置 1：Antigravity Kite 标题旁）
+    try { webviewView.title = 'Antigravity Kite v' + this._context.extension.packageJSON.version; } catch { /* 部分版本只读 */ }
     logInfo('webview.html-set', { bytes: webviewView.webview.html.length });
 
     webviewView.webview.onDidReceiveMessage(async (msg: WebviewMessage) => {
@@ -1035,7 +1037,6 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         <h3>我的账号</h3>
         <span class="list-arrow"></span>
         <div style="flex:1"></div>
-        <span class="version-tag-pill" id="versionPill" hidden></span>
         <span class="kite-tab-badge grid-count" id="gridCount">0 个</span>
         <button class="add-account-btn" id="addAccountBtn">添加账号</button>
       </div>
@@ -1139,7 +1140,6 @@ class SidebarProvider implements vscode.WebviewViewProvider {
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
           多选
         </button>
-        <span class="filter-count" id="filterCount">0 个</span>
       </div>
       <!-- 批量操作栏 -->
       <div class="batch-bar" id="batchBar" hidden>
@@ -2254,10 +2254,7 @@ window.addEventListener('message', e => {
     const btn = document.getElementById('preflightToggleBtn');
     if (btn) btn.classList.toggle('is-active', preflightEnabled);
   }
-  if (msg.type === 'versionSync' && msg.version) {
-    const pill = document.getElementById('versionPill');
-    if (pill) { pill.textContent = 'v' + msg.version; pill.hidden = false; }
-  }
+  // versionSync：版本号已由视图标题承载（webviewView.title），webview 内不再显示
 });
 
 // Toast 通知（BuddyRelay 同款：图标 + 消息，底部容器统一管理）
@@ -2593,7 +2590,7 @@ function renderAccounts() {
   const endIdx = pageSize > 0 ? startIdx + pageSize : totalFiltered;
   const paged = filtered.slice(startIdx, endIdx);
   
-  document.getElementById('filterCount').textContent = totalFiltered + ' / ' + accounts.length + ' 个';
+  // filterCount 徽标已移除
   
   if (totalFiltered === 0) {
     grid.innerHTML = '';
@@ -2618,46 +2615,41 @@ function renderAccounts() {
     const tierClass = planTierClass(tierId);
     const tierLabel = tierId ? tierId.toUpperCase() : '...';
     
-    // 模型配额（3 组：Claude / Gemini Pro / Gemini Flash）
+    // 模型配额（BuddyRelay 同款 2×2：Claude 5h/Weekly · Gemini 5h/Weekly）
     const models = usage?.models || [];
+    const fam = { claude: [], gemini: [] };
+    for (const m of models) {
+      const isClaude = /claude/i.test(m.label || '');
+      const bucket = isClaude ? fam.claude : fam.gemini;
+      const isWeekly = /周|week/i.test(m.label || '');
+      bucket.push({ label: isWeekly ? 'Weekly' : '5h', pct: m.remainingPercent, reset: m.resetTime ? formatResetTime(m.resetTime) : '' });
+    }
+    const q2Cell = (x) => {
+      const cls = pctClass(x.pct);
+      return '<div class="q2-cell">'
+        + '<div class="q2-head"><span class="q2-name">' + x.label + '</span><span class="q2-val ' + cls + '">' + x.pct + '%</span></div>'
+        + '<div class="quota-bar"><div class="quota-bar-fill ' + cls + '" style="width:' + x.pct + '%"></div></div>'
+        + (x.reset ? '<div class="q2-reset">' + x.reset + '</div>' : '')
+        + '</div>';
+    };
+    const q2Col = (title, list) =>
+      '<div class="q2-col"><div class="q2-title">' + title + '</div>'
+      + (list.length ? list.map(q2Cell).join('') : '<div class="q2-cell"><div class="q2-head"><span class="q2-name">—</span></div></div>')
+      + '</div>';
     let quotasHtml;
     if (models.length > 0) {
-      const items = models.map(m => {
-        const pct = m.remainingPercent;
-        const cls = pctClass(pct);
-        const resetText = m.resetTime ? formatResetTime(m.resetTime) : '';
-        return '<div class="quota-group-item">'
-          + '<div class="quota-group-head"><span class="quota-group-name">' + m.label + '</span><span class="quota-group-val ' + cls + '">' + pct + '%</span></div>'
-          + '<div class="quota-bar"><div class="quota-bar-fill ' + cls + '" style="width:' + pct + '%"></div></div>'
-          + (resetText ? '<div class="quota-group-reset">' + resetText + '</div>' : '')
-          + '</div>';
-      });
-      quotasHtml = '<div class="quota-groups">' + items.join('') + '</div>';
+      quotasHtml = '<div class="quota-grid2">' + q2Col('Claude', fam.claude) + q2Col('Gemini', fam.gemini) + '</div>';
     } else {
-      // 无数据时占位：CPA 同款四窗骨架；有错误则错误可见，绝不让占位符吞掉失败
-      const placeholderGroups = ['Claude 5h', 'Claude 周额度', 'Gemini 5h', 'Gemini 周额度'];
-      const placeholderItems = placeholderGroups.map(name => {
-        return '<div class="quota-group-item">'
-          + '<div class="quota-group-head"><span class="quota-group-name">' + name + '</span><span class="quota-group-val" style="opacity:0.4">—</span></div>'
-          + '<div class="quota-bar"><div class="quota-bar-fill" style="width:0%"></div></div>'
-          + '<div class="quota-group-reset" style="opacity:0.3">&nbsp;</div>'
-          + '</div>';
-      });
+      // 无数据占位：四窗骨架；错误可见，绝不让占位符吞掉失败
+      const ph = (title) => '<div class="q2-col"><div class="q2-title">' + title + '</div>'
+        + ['5h', 'Weekly'].map(w => '<div class="q2-cell"><div class="q2-head"><span class="q2-name">' + w + '</span><span class="q2-val" style="opacity:.4">—</span></div><div class="quota-bar"><div class="quota-bar-fill" style="width:0%"></div></div><div class="q2-reset" style="opacity:.3">&nbsp;</div></div>').join('')
+        + '</div>';
       const loadErrorHtml = a._usageError
         ? '<div class="quota-load-error">' + escHtml(String(a._usageError)) + '</div>'
         : '';
-      quotasHtml = '<div class="quota-groups">' + placeholderItems.join('') + loadErrorHtml + '</div>';
+      quotasHtml = '<div class="quota-grid2">' + ph('Claude') + ph('Gemini') + '</div>' + loadErrorHtml;
     }
-    
-    // 额外信息区（windsurf-pool 风格：AI 积分 / 额外用量余额 / 会员期限 / 今日切号）
-    const creditsVal = usage?.availableAICredits;
-    const extraHtml = '<div class="grid-card-extra">'
-      + '<div class="grid-extra-row"><span>AI 积分</span><span class="grid-extra-val' + (creditsVal ? ' is-balance' : '') + '">' + (creditsVal !== undefined ? creditsVal : '—') + '</span></div>'
-      + '<div class="grid-extra-row"><span>额外用量余额</span><span class="grid-extra-val">—</span></div>'
-      + '<div class="grid-extra-row"><span>会员期限</span><span class="grid-extra-val">—</span></div>'
-      + '<div class="grid-extra-row"><span>今日切号</span><span class="grid-extra-val">0 次</span></div>'
-      + '</div>';
-    
+
     return '<div class="grid-card ' + (isCurrent ? 'is-active' : '') + ' ' + (isDisabled ? 'is-disabled' : '') + (selectMode ? ' is-select-mode' : '') + '" data-email="' + safeEmail + '">'
       + (selectMode ? '<div class="grid-check-col"><input type="checkbox" class="grid-check-input" data-email="' + safeEmail + '" ' + (selectedEmails.has(rawEmail) ? 'checked' : '') + '></div>' : '')
       + '<div class="grid-card-head">'
@@ -2669,7 +2661,6 @@ function renderAccounts() {
         + '<span class="grid-plan-chip ' + tierClass + '">' + tierLabel + '</span>'
       + '</div>'
       + '<div class="grid-card-quotas">' + quotasHtml + '</div>'
-      + extraHtml
       + '<div class="grid-card-actions">'
         + (isCurrent
           ? '<span class="grid-current-label"><span style="color:#3fb950">●</span> 使用中</span>'

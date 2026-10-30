@@ -10469,19 +10469,19 @@ body.vscode-dark .toast {
 
 /* ═══════ Search（BuddyRelay 同款：圆角盒式，置尾覆盖历史层） ═══════ */
 #tabAccounts .search-bar {
-    min-height: 38px !important;
-    height: 38px !important;
-    margin: 10px 0 2px !important;
-    padding: 0 12px !important;
-    gap: 9px !important;
-    border: 1px solid var(--border-dim) !important;
-    border-radius: 10px !important;
+    min-height: 34px !important;
+    height: 34px !important;
+    margin: 8px 0 2px !important;
+    padding: 0 10px !important;
+    gap: 8px !important;
+    border: 1px solid var(--border-subtle) !important;
+    border-radius: 8px !important;
     background: var(--surface-bg) !important;
     box-shadow: none !important;
     transition: border-color 0.15s, background 0.15s;
 }
 #tabAccounts .search-bar:focus-within {
-    border-color: var(--accent, #10b981) !important;
+    border-color: var(--border-dim) !important;
     background: var(--elevated-bg) !important;
 }
 #tabAccounts .search-icon {
@@ -10494,8 +10494,8 @@ body.vscode-dark .toast {
 #tabAccounts .search-input {
     height: auto !important;
     min-height: 0 !important;
-    font-size: 13px !important;
-    font-weight: 500 !important;
+    font-size: 12.5px !important;
+    font-weight: 400 !important;
     color: var(--vscode-foreground) !important;
     font-family: var(--font-sans) !important;
 }
@@ -10511,3 +10511,30 @@ body.vscode-dark .toast {
     color: var(--muted) !important;
     font-size: 13px !important;
 }
+
+/* ═══════ Quota 2×2（BuddyRelay 同款四格） ═══════ */
+.quota-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.q2-col { min-width: 0; }
+.q2-title { font-size: 12px; font-weight: 700; color: var(--vscode-foreground); margin-bottom: 6px; }
+.q2-cell { margin-bottom: 8px; min-width: 0; }
+.q2-head { display: flex; align-items: baseline; gap: 6px; }
+.q2-name { font-size: 11px; color: var(--muted); }
+.q2-val { margin-left: auto; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.q2-val.is-ok { color: var(--gh-green, #3fb950); }
+.q2-val.is-warn { color: var(--gh-yellow-soft, #e3b341); }
+.q2-val.is-danger { color: var(--gh-red, #f85149); }
+.q2-reset { font-size: 10px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q2-col .quota-bar { height: 5px; border-radius: 3px; background: rgba(128,128,128,0.15); overflow: hidden; }
+
+/* ═══════ 卡片底栏（BuddyRelay 同款：细分隔线 + 幽灵图标） ═══════ */
+.grid-card-actions {
+    border-top: 1px solid var(--border-subtle);
+    margin-top: 10px;
+    padding-top: 8px;
+}
+.grid-card-actions .icon-btn {
+    background: transparent !important;
+    border: none !important;
+    opacity: 0.75;
+}
+.grid-card-actions .icon-btn:hover { opacity: 1; background: var(--hover-bg) !important; }
