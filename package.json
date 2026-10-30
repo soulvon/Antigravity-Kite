@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "Antigravity Kite",
   "description": "为 Antigravity IDE 量身打造的无感多账号切换与号池管理插件",
-  "version": "0.8.39",
+  "version": "0.8.40",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -90,6 +90,21 @@
           "type": "number",
           "default": 9333,
           "description": "调试端口号（--remote-debugging-port）。9222 会作为兜底自动尝试。通常无需修改。"
+        },
+        "antigravityKite.locale": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "zh-CN",
+            "en"
+          ],
+          "enumDescriptions": [
+            "跟随 IDE 语言（默认）",
+            "中文",
+            "English"
+          ],
+          "default": "auto",
+          "description": "提示文案语言。auto = 跟随 IDE 语言。当前覆盖：切号/门控等提示（侧边栏面板暂为中文）。"
         }
       }
     }

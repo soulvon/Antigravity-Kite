@@ -13,6 +13,7 @@ import * as path from 'path';
 import * as cp from 'child_process';
 import { logInfo, logWarn } from './logger';
 import { probeCdpPort } from './declarationSuppressor';
+import { t } from './i18n';
 import * as instanceMgr from './instanceManager';
 
 export type GateResult = 'ready' | 'manual' | 'relaunching';
@@ -114,9 +115,7 @@ export async function ensureCdpGate(context: vscode.ExtensionContext): Promise<G
     const toastShown = context.globalState.get<boolean>('cdpGate.declineToastShown', false);
     if (!toastShown) {
       await context.globalState.update('cdpGate.declineToastShown', true);
-      void vscode.window.showInformationMessage(
-        '切换账号将弹一次安全声明（需手动点击）。可在设置「自动确认安全声明」中开启自动确认。',
-      );
+      void vscode.window.showInformationMessage(t('gateManualToast'));
     }
     logInfo('cdpGate.manual', { asked: true });
     return 'manual';
@@ -126,13 +125,13 @@ export async function ensureCdpGate(context: vscode.ExtensionContext): Promise<G
   logInfo('cdpGate.firstAsk', {});
 
   const pick = await vscode.window.showWarningMessage(
-    '切换账号时自动确认安全声明，需要以调试端口启动 IDE（将修改快捷方式并重启一次，仅此一次）。',
+    t('gateModalTitle'),
     { modal: true },
-    '开启（推荐）',
-    '暂不',
+    t('gateEnable'),
+    t('gateLater'),
   );
 
-  if (pick === '开启（推荐）') {
+  if (pick === t('gateEnable')) {
     const p = cdpPort();
     const patched = await patchShortcuts(p);
     logInfo('cdpGate.shortcuts', { patched: patched.patched, details: patched.details.slice(0, 3) });
@@ -142,21 +141,19 @@ export async function ensureCdpGate(context: vscode.ExtensionContext): Promise<G
     try {
       const launch = await instanceMgr.getCurrentInstanceLaunchInfo();
       const exePath = launch.exePath || (await instanceMgr.detectExePath());
-      if (!exePath) throw new Error('未定位到 IDE 可执行文件');
-      if (!launch.pid) throw new Error('未定位到 IDE 主进程 PID');
-      void vscode.window.showInformationMessage('正在以调试端口重启 IDE，之后切号不再弹窗…');
+      if (!exePath) throw new Error(t('gateNoExe'));
+      if (!launch.pid) throw new Error(t('gateNoPid'));
+      void vscode.window.showInformationMessage(t('gateRelaunching'));
       relaunchWithPort({ exePath, args: launch.args, pid: launch.pid }, p);
       return 'relaunching';
     } catch (e) {
       logWarn('cdpGate.relaunch.fail', e);
-      void vscode.window.showErrorMessage('开启失败：' + (e instanceof Error ? e.message : String(e)));
+      void vscode.window.showErrorMessage(t('gateEnableFailed') + (e instanceof Error ? e.message : String(e)));
       return 'manual';
     }
   }
 
   // 拒绝：永久安静，本次切号照常
-  void vscode.window.showInformationMessage(
-    '已暂不开启：每次切换会弹一次安全声明（手动点击即可）。可在设置「自动确认安全声明」中开启。',
-  );
+  void vscode.window.showInformationMessage(t('gateDeclineInfo'));
   return 'manual';
 }

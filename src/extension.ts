@@ -12,6 +12,7 @@ import { readSwitchRestartResult, clearSwitchRestartResult, writeAgyActiveAccoun
 import { logInfo, logWarn, logError } from './logger';
 import { startDeclarationSuppressor } from './declarationSuppressor';
 import { ensureCdpGate } from './cdpGate';
+import { t } from './i18n';
 import { readIdeCredential, buildIdeCredentialBlob, writeIdeCredentialBlob, syncGeminiAccountFiles } from './winCredential';
 import { syncGeminiLocalCreds } from './geminiFiles';
 import { getSharedStorageDir } from './storage';
@@ -562,7 +563,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             if (!prepared.ok) {
               switchInFlight = false;
               logWarn('switch.token.fail', { email: account.email, message: prepared.message });
-              this._view?.webview.postMessage({ type: 'toast', status: 'error', message: `切号已取消：${prepared.message}` });
+              this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('switchCancelled', prepared.message) });
               break;
             }
             switchToken = {
@@ -614,7 +615,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             logInfo('switch.hot.cred', { ok: cw.ok, error: cw.error });
             if (!cw.ok) {
               switchInFlight = false;
-              this._view?.webview.postMessage({ type: 'toast', status: 'error', message: `凭据写入失败：${cw.error}` });
+              this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('switchCredFail', cw.error || '') });
               break;
             }
 
@@ -669,12 +670,12 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             switchInFlight = false;
 
             const notes: string[] = [];
-            if (!agyPtr.ok) notes.push(`agy 指针写入失败：${agyPtr.error}`);
-            if (gs.error) notes.push(`gemini 文件同步失败：${gs.error}`);
+            if (!agyPtr.ok) notes.push(t('switchAgyPtrFail', agyPtr.error || ''));
+            if (gs.error) notes.push(t('switchGeminiFail', gs.error));
             if (agyReload.error) notes.push(agyReload.error);
-            if (hot.success && !identity.ok) notes.push('账号菜单显示待下次重启对齐（不影响使用）');
+            if (hot.success && !identity.ok) notes.push(t('switchMenuAlignLater'));
             if (notes.length === 0) {
-              notes.push(`无感切换完成：agent/额度已切至 ${account.email}`);
+              notes.push(t('switchDone', account.email));
             }
             this._view?.webview.postMessage({
               type: 'toast',
