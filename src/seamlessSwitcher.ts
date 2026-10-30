@@ -8,6 +8,7 @@ import { StoredAccount } from './types';
 import { ensureFreshToken } from './usageService';
 import * as instanceMgr from './instanceManager';
 import * as accountStore from './accountStore';
+import { createUserStatusPayloadBase64 } from './ideStateDb';
 
 const SEAMLESS_TIMEOUT_MS = 8000;
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
@@ -291,6 +292,54 @@ export async function clearHostAuth(): Promise<void> {
   if (userStatus && typeof userStatus.clearUserStatus === 'function') {
     await Promise.resolve(userStatus.clearUserStatus());
   }
+}
+
+interface UssSyncApi {
+  pushUpdate?: (update: unknown) => Promise<void>;
+  getUserStatus?: () => Promise<string>;
+  subscribe?: (topic: string) => Promise<{ getState: () => Record<string, { value: string; eTag?: number }> }>;
+}
+
+/**
+ * 运行中实时推送身份到 uss-userStatus（state-sync 总线）。
+ *
+ * workbench 的 userStatusService 实时订阅该 topic（账号菜单/头像/名字由此驱动），
+ * 重建的 agy.exe 也从这里拿身份——这是「不重启切身份」的官方机制：
+ * antigravityUnifiedStateSync.pushUpdate 就是官方 setOAuthTokenInfo/clearUserStatus
+ * 背后的通用写入通道（逆向自 workbench.desktop.main.js / extensionHostProcess.js）。
+ * newRow.value 为 Row 的 base64 protobuf，与 state.vscdb 中的行同构。
+ */
+export async function pushLiveIdentityUpdate(email: string): Promise<{ ok: boolean; error?: string }> {
+  const uss = (vscode as unknown as { antigravityUnifiedStateSync?: UssSyncApi }).antigravityUnifiedStateSync;
+  if (!uss || typeof uss.pushUpdate !== 'function') {
+    return { ok: false, error: '宿主未暴露 antigravityUnifiedStateSync.pushUpdate' };
+  }
+
+  await uss.pushUpdate({
+    topicName: 'uss-userStatus',
+    appliedUpdate: {
+      key: 'userStatusSentinelKey',
+      newRow: {
+        value: createUserStatusPayloadBase64(email),
+        eTag: 0,
+      },
+    },
+  });
+
+  // 读回校验（内置 getUserStatus 直读总线），失败必须暴露
+  if (typeof uss.getUserStatus === 'function') {
+    await new Promise((r) => setTimeout(r, 300));
+    let current = '';
+    try {
+      current = (await uss.getUserStatus()) || '';
+    } catch (e) {
+      return { ok: false, error: `身份推送后读回失败：${e instanceof Error ? e.message : String(e)}` };
+    }
+    if (current && current !== email) {
+      return { ok: false, error: `身份推送读回不一致：期望 ${email}，实际 ${current}` };
+    }
+  }
+  return { ok: true };
 }
 
 /**

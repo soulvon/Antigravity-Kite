@@ -169,6 +169,14 @@ function createMinimalUserStatus(email: string): Buffer {
 }
 
 /**
+ * UserStatus payload 的 base64（Row.value 同构）。
+ * 供运行中经 antigravityUnifiedStateSync.pushUpdate 实时推送身份使用。
+ */
+export function createUserStatusPayloadBase64(email: string): string {
+  return createMinimalUserStatus(email).toString('base64');
+}
+
+/**
  * 字段级更新 UserStatus：只替换 email 字段（当前 IDE 实测为 2），其余字段原样保留。
  * 全量替换成 minimal 会抹掉套餐权益（IDE 模型列表因此丢失 Gemini 系），严禁。
  */

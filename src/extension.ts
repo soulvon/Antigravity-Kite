@@ -5,7 +5,7 @@ import { startOAuth } from './oauthService';
 import { previewLocalAccount, confirmImport, cancelImport } from './localReader';
 import * as importService from './importService';
 import { WebviewMessage, UsageSnapshot, StoredAccount } from './types';
-import { seamlessSwitch, isSeamlessSwitchAvailable, prepareSwitchToken, autoSwitchInstanceBoundAccount } from './seamlessSwitcher';
+import { seamlessSwitch, isSeamlessSwitchAvailable, prepareSwitchToken, autoSwitchInstanceBoundAccount, pushLiveIdentityUpdate } from './seamlessSwitcher';
 import { switchIdeStateIdentity, resolveIdeStateDbPathFromUserData } from './ideStateDb';
 import { scheduleSwitchRestart, readSwitchRestartResult, clearSwitchRestartResult, writeAgyActiveAccount } from './switchRestart';
 import { StatusBarManager } from './statusBar';
@@ -540,6 +540,11 @@ class SidebarProvider implements vscode.WebviewViewProvider {
               this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: hotResult.message || '切号失败' });
               break;
             }
+            // 实时身份：推 uss-userStatus 到 state-sync 总线（账号菜单/头像/名字立即切换）
+            const identity = await pushLiveIdentityUpdate(account.email);
+            if (!identity.ok) {
+              console.warn('[Kite] 实时身份推送失败:', identity.error);
+            }
             const hotUserDataDir = path.resolve(this._context.globalStorageUri.fsPath, '..', '..', '..');
             const dbRes = switchIdeStateIdentity(account.email, {
               accessToken: prepared.token.accessToken,
@@ -569,13 +574,16 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             setTimeout(() => {
               vscode.commands.executeCommand('antigravity.handleAuthRefresh').then(() => {}, () => {});
             }, 3000);
-            const notes: string[] = ['无感切号完成：agent 面板已切至新号'];
+            const notes: string[] = [];
+            if (!identity.ok) notes.push(`实时身份推送失败：${identity.error}`);
             if (!agyPtr.ok) notes.push(`agy 指针写入失败：${agyPtr.error}`);
             if (agyReload.error) notes.push(agyReload.error);
-            notes.push('IDE 账号菜单/头像待下次重启同步');
+            if (notes.length === 0) {
+              notes.push('无感切号完成：身份与 agent 面板已切至新号');
+            }
             this._view?.webview.postMessage({
               type: 'toast',
-              status: agyPtr.ok && !agyReload.error ? 'success' : 'warning',
+              status: notes.length === 1 ? 'success' : 'warning',
               message: notes.join('；')
             });
           }
