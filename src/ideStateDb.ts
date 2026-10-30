@@ -329,6 +329,16 @@ export function switchIdeStateIdentity(
     upsertItem(db, 'antigravityOnboarding', 'true');
     db.prepare('DELETE FROM ItemTable WHERE key = ?').run('jetskiStateSync.agentManagerInitState');
 
+    // 3.5) 声明接受状态对齐：agent 面板的「Security Notice & Data Use」弹窗判定
+    //      = storageService 里 agy.onboarding.lastLoginUsername 是否等于当前账号 email
+    //      （bundle b8b 组件 / X7b 判定函数，termsStorageScope=device）。
+    //      不写它，每次热切换号都会弹声明确认；写入后弹窗从根上消失。
+    //      SQLiteStorageDatabase 有外部变更轮询（~5s），运行中的 IDE 会自动吸收。
+    upsertItem(db, 'agy.onboarding.lastLoginUsername', email);
+    upsertItem(db, 'agy.onboarding.lastLoginIsGcpTos', 'false');
+    upsertItem(db, 'jetski.onboarding.lastLoginUsername', email);
+    upsertItem(db, 'jetski.onboarding.lastLoginIsGcpTos', 'false');
+
     // 写入确认：整串读回比对（payload 由本模块构造，字节级一致即写入成功）
     const back = db.prepare(`SELECT value FROM ItemTable WHERE key = '${USER_STATUS_KEY}'`).get();
     if (!back || String(back.value) !== statusB64) {
