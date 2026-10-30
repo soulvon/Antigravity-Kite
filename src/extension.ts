@@ -479,15 +479,9 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             }
             // 尝试无感换号
             if (isSeamlessSwitchAvailable()) {
-              // 官方登出语义先行：清空旧 token 与身份，让 authentication 层移除旧 session、
-              // agent 模型列表等缓存重置，避免账号菜单积压与模型列表不刷新
-              try {
-                const { clearHostAuth } = await import('./seamlessSwitcher');
-                await clearHostAuth();
-                await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
-              } catch (e) {
-                console.warn('[Kite] 登出语义清理失败（继续切换）:', e instanceof Error ? e.message : e);
-              }
+              // 注：不做登出语义清空——身份空窗期 IDE 自身 createSession 会抛
+              // "No auth token found"（0.8.21 实测），模型列表随身份异步重建后由
+              // 下方延迟 handleAuthRefresh 对账刷新
               const result = await seamlessSwitch(account);
               if (result.success) {
                 this._view?.webview.postMessage({ type: 'toast', status: 'success', message: '无感切号成功：额度与 agent 已切换，账号菜单身份在重启 Antigravity IDE 后同步' });
