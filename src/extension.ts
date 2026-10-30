@@ -212,8 +212,8 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     };
 
     webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
-    // 版本号放在视图标题栏（位置 1：Antigravity Kite 标题旁）
-    try { webviewView.title = 'Antigravity Kite v' + this._context.extension.packageJSON.version; } catch { /* 部分版本只读 */ }
+    // 版本号放在视图标题栏；容器名由 VS Code 自动前缀，这里只写版本号避免重名
+    try { webviewView.title = 'v' + this._context.extension.packageJSON.version; } catch { /* 部分版本只读 */ }
     logInfo('webview.html-set', { bytes: webviewView.webview.html.length });
 
     webviewView.webview.onDidReceiveMessage(async (msg: WebviewMessage) => {
