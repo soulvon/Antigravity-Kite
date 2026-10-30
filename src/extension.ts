@@ -481,7 +481,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             if (isSeamlessSwitchAvailable()) {
               const result = await seamlessSwitch(account);
               if (result.success) {
-                this._view?.webview.postMessage({ type: 'toast', status: 'success', message: '无感切号成功' });
+                this._view?.webview.postMessage({ type: 'toast', status: 'success', message: '无感切号成功：额度与 agent 已切换，账号菜单身份在重启 Antigravity IDE 后同步' });
                 await this._context.globalState.update('currentEmail', msg.email);
                 usageTracker.recordSwitch(msg.email);
                 this._pushAccounts();
