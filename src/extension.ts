@@ -167,6 +167,9 @@ async function backgroundRefreshAllUsage(context: vscode.ExtensionContext) {
   console.log('[Kite-Background] 后台定时静默全局额度刷新完成。');
 }
 
+/** 切号防连点：调度成功后 IDE 会关闭，无需重置；调度失败时重置 */
+let switchInFlight = false;
+
 class SidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'antigravityKite.sidebar';
   private _view?: vscode.WebviewView;
@@ -521,15 +524,13 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             // 身份权威来源 = Windows 凭据管理器 gemini:antigravity 的 id_token_email
             // （真机实验证实：写它 + 重启 = 账号菜单/头像/名字/额度完整切换）。
             // 流程：备份当前凭据 → 构造目标凭据 → 助手关 IDE 后写凭据/状态库/agy 指针/gemini 文件 → 原参数重启。
-            const choice = await vscode.window.showWarningMessage(
-              `切换到 ${account.email}：IDE 将自动重启（约 5 秒）以完整应用身份，未保存内容受热退出保护。`,
-              { modal: true },
-              '切换账号'
-            );
-            logInfo('switch.choice', { email: account.email, choice });
-            if (!choice) {
+            // 无感要求：无确认框，点击即切；用 in-flight 标记防连点重复调度。
+            if (switchInFlight) {
+              logWarn('switch.skip.inflight', { email: account.email });
               break;
             }
+            switchInFlight = true;
+            logInfo('switch.start', { email: account.email });
 
             // token 准备：刷新失败（离线等）时回退号池存储值——IDE 启动后会用 RT 自刷新
             let switchToken = {
@@ -632,13 +633,14 @@ class SidebarProvider implements vscode.WebviewViewProvider {
               hasCredential: true,
             });
             if (!sched.scheduled) {
+              switchInFlight = false;
               this._view?.webview.postMessage({ type: 'toast', status: 'error', message: `切号调度失败：${sched.error}` });
               break;
             }
             await this._context.globalState.update('currentEmail', msg.email);
             usageTracker.recordSwitch(msg.email);
             this._pushAccounts();
-            this._view?.webview.postMessage({ type: 'toast', status: 'success', message: '正在重启 Antigravity IDE 应用账号切换（约 5 秒）…' });
+            this._view?.webview.postMessage({ type: 'toast', status: 'success', message: `正在切换到 ${account.email}：IDE 将自动重启（约 5 秒）…` });
           }
         }
         break;
