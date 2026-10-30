@@ -163,9 +163,9 @@ function createOAuthInfo(token: IdeTokenInfo): Buffer {
   return Buffer.concat(parts);
 }
 
-/** 最小 UserStatus：身份字段 3 与 7 均为 email（AntigravityManager 同款） */
+/** 最小 UserStatus：官方 1.20.5 实采格式——身份字段 2 = email，写入两处 */
 function createMinimalUserStatus(email: string): Buffer {
-  return Buffer.concat([encodeStringField(3, email), encodeStringField(7, email)]);
+  return Buffer.concat([encodeStringField(2, email), encodeStringField(2, email)]);
 }
 
 /**
@@ -185,7 +185,7 @@ function updateUserStatusEmail(payload: Buffer, email: string): Buffer {
     if (wireType === 2) {
       const v = readLenDelim(payload, off);
       off = v.next;
-      if (fieldNum === 3 || fieldNum === 7) {
+      if (fieldNum === 2) {
         emailFieldFound = true;
         parts.push(encodeLenDelim(fieldNum, Buffer.from(email, 'utf8')));
       } else {
