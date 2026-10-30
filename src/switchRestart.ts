@@ -7,6 +7,7 @@
  * 参考 devloop: antigravity-seamless-switch-protocol 与 lbjlaq/Antigravity-Manager 的 IDE 分支。
  */
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as cp from 'child_process';
 import { getSharedStorageDir } from './storage';
@@ -30,6 +31,21 @@ export interface SwitchRestartPlan {
 
 export function getResultFilePath(): string {
   return path.join(getSharedStorageDir(), RESULT_FILE);
+}
+
+/**
+ * agy.exe（IDE 内置 agent 引擎）的账号指针，agent 面板账号跟随它。
+ * 无感切与重启助手共用同一文件语义（助手侧经 KITE_AGY_ACCOUNT_FILE 注入测试路径）。
+ */
+export function writeAgyActiveAccount(email: string): { ok: boolean; error?: string } {
+  const file = path.join(os.homedir(), '.gemini', 'antigravity', 'active-account.json');
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ email, updatedAt: Date.now() }), 'utf8');
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 export function readSwitchRestartResult(): { ok: boolean; error?: string; warning?: string; email?: string; finishedAt?: number } | null {

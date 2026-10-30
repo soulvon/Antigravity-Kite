@@ -694,15 +694,13 @@ function tokenizeCommandLine(cmd: string): string[] {
   return out;
 }
 
-/**
- * 快照当前实例主进程的 PID / exe / 完整启动参数。
- * 重启必须复用原参数（如 --remote-debugging-port），否则用户自行附加的启动配置会丢。
- */
-export async function getCurrentInstanceLaunchInfo(): Promise<InstanceLaunchInfo> {
-  const currentDir = normalizePath(getCurrentUserDataDir());
-  let cmdline = '';
-  let pid: number | null = null;
+interface IdeProcessInfo {
+  pid: number;
+  cmd: string;
+}
 
+async function listIdeProcesses(): Promise<IdeProcessInfo[]> {
+  const out: IdeProcessInfo[] = [];
   try {
     const stdout = await runShellAsync(
       'wmic process where "name=\'Antigravity IDE.exe\' or name=\'Antigravity.exe\'" get ProcessId,CommandLine /FORMAT:LIST',
@@ -713,45 +711,93 @@ export async function getCurrentInstanceLaunchInfo(): Promise<InstanceLaunchInfo
         const cmdMatch = block.match(/CommandLine=(.*)/);
         const pidMatch = block.match(/ProcessId=(\d+)/);
         if (!pidMatch) continue;
-        const cmd = cmdMatch ? cmdMatch[1].trim() : '';
-        if (cmd.includes('--type=')) continue;
-        const m = cmd.match(/--user-data-dir[= ]+["']?([^"']+?)["']?(?:\s+--|\s*$)/i);
-        const dir = m ? m[1].trim() : getDefaultUserDataDir();
-        if (normalizePath(dir) === currentDir) {
-          cmdline = cmd;
-          pid = parseInt(pidMatch[1], 10);
-          break;
-        }
+        out.push({ pid: parseInt(pidMatch[1], 10), cmd: cmdMatch ? cmdMatch[1].trim() : '' });
       }
+      if (out.length > 0) return out;
     }
   } catch { /* 走 PowerShell 回退 */ }
-
-  if (!cmdline) {
-    try {
-      const psCmd = `Get-CimInstance Win32_Process -Filter "name='Antigravity IDE.exe' or name='Antigravity.exe'" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`;
-      const stdout = await runPowerShellAsync(psCmd, 10000);
-      if (stdout && stdout.trim()) {
-        const parsed = JSON.parse(stdout);
-        const list = Array.isArray(parsed) ? parsed : [parsed];
-        for (const p of list) {
-          const ppid = Number(p.ProcessId);
-          const cmd: string = p.CommandLine || '';
-          if (!ppid || cmd.includes('--type=')) continue;
-          const m = cmd.match(/--user-data-dir[= ]+["']?([^"']+?)["']?(?:\s+--|\s*$)/i);
-          const dir = m ? m[1].trim() : getDefaultUserDataDir();
-          if (normalizePath(dir) === currentDir) {
-            cmdline = cmd;
-            pid = ppid;
-            break;
-          }
-        }
+  try {
+    const psCmd = `Get-CimInstance Win32_Process -Filter "name='Antigravity IDE.exe' or name='Antigravity.exe'" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`;
+    const stdout = await runPowerShellAsync(psCmd, 10000);
+    if (stdout && stdout.trim()) {
+      const parsed = JSON.parse(stdout);
+      const list = Array.isArray(parsed) ? parsed : [parsed];
+      for (const p of list) {
+        const pid = Number(p.ProcessId);
+        if (pid) out.push({ pid, cmd: p.CommandLine || '' });
       }
-    } catch { /* 快照失败由调用方走 detectExePath 兜底 */ }
-  }
+    }
+  } catch { /* 枚举失败由调用方处理 */ }
+  return out;
+}
 
+function processMatchesInstance(cmd: string): boolean {
+  const currentDir = normalizePath(getCurrentUserDataDir());
+  const m = cmd.match(/--user-data-dir[= ]+["']?([^"']+?)["']?(?:\s+--|\s*$)/i);
+  const dir = m ? m[1].trim() : getDefaultUserDataDir();
+  return normalizePath(dir) === currentDir;
+}
+
+/**
+ * 快照当前实例主进程的 PID / exe / 完整启动参数。
+ * 重启必须复用原参数（如 --remote-debugging-port），否则用户自行附加的启动配置会丢。
+ */
+export async function getCurrentInstanceLaunchInfo(): Promise<InstanceLaunchInfo> {
+  let cmdline = '';
+  let pid: number | null = null;
+  for (const p of await listIdeProcesses()) {
+    if (p.cmd.includes('--type=')) continue;
+    if (!processMatchesInstance(p.cmd)) continue;
+    cmdline = p.cmd;
+    pid = p.pid;
+    break;
+  }
   if (!cmdline) return { pid, exePath: null, args: [] };
   const tokens = tokenizeCommandLine(cmdline);
   return { pid, exePath: tokens[0] || null, args: tokens.slice(1) };
+}
+
+/**
+ * 杀掉当前实例进程树下的 agy.exe（IDE 内置 agent 引擎）。
+ * agy 由 IDE 的 NodeService 子进程拉起，被杀后 IDE 会按需以新凭据重建，
+ * 这是 agent 面板无感切号的机制（与参考实现经典款热切同源）。
+ */
+export async function killAgyForCurrentInstance(): Promise<{ killed: number; error?: string }> {
+  const idePids = new Set<number>();
+  for (const p of await listIdeProcesses()) {
+    if (processMatchesInstance(p.cmd)) idePids.add(p.pid);
+  }
+  if (idePids.size === 0) {
+    return { killed: 0, error: '未定位到当前实例的 IDE 进程树' };
+  }
+
+  const agyPids: number[] = [];
+  try {
+    const stdout = await runShellAsync(
+      "wmic process where \"name='agy.exe'\" get ProcessId,ParentProcessId /FORMAT:LIST",
+      10000
+    );
+    if (stdout && stdout.trim()) {
+      for (const block of stdout.split(/\r?\n\r?\n/)) {
+        const pidMatch = block.match(/ProcessId=(\d+)/);
+        const ppidMatch = block.match(/ParentProcessId=(\d+)/);
+        if (!pidMatch || !ppidMatch) continue;
+        const ppid = parseInt(ppidMatch[1], 10);
+        if (idePids.has(ppid)) agyPids.push(parseInt(pidMatch[1], 10));
+      }
+    }
+  } catch { /* 枚举失败按未找到处理 */ }
+
+  if (agyPids.length === 0) {
+    return { killed: 0, error: '未在本实例进程树下找到 agy.exe' };
+  }
+
+  let killed = 0;
+  for (const pid of agyPids) {
+    await runShellAsync(`taskkill /PID ${pid} /T /F`, 5000);
+    killed += 1;
+  }
+  return { killed };
 }
 
 // ─── Shell 工具 ──────────────────────────────────────────
