@@ -28,6 +28,9 @@ interface OAuthPreferencesApi {
 interface AntigravityVsCodeApi {
   antigravityUnifiedStateSync?: {
     OAuthPreferences?: OAuthPreferencesApi;
+    UserStatus?: {
+      clearUserStatus?(): Promise<void> | Thenable<void>;
+    };
   };
   antigravityAuth?: OAuthPreferencesApi;
 }

@@ -523,7 +523,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
                 this._refreshUsage(msg.email);
                 // 兜底：主进程异步重建身份（从新 token 拉取）完成后，再刷一次 session
                 setTimeout(() => {
-                  vscode.commands.executeCommand('antigravity.handleAuthRefresh').catch(() => {});
+                  vscode.commands.executeCommand('antigravity.handleAuthRefresh').then(() => {}, () => {});
                 }, 3000);
               } else {
                 this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: result.message || '切号失败' });
