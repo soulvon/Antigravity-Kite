@@ -57,6 +57,8 @@ export function activate(context: vscode.ExtensionContext) {
       void vscode.window.showErrorMessage(
         `Kite 切号重启未完成：${lastRestart.error || '未知错误'}（状态库未写入，账号未切换）`
       );
+    } else if (lastRestart.warning) {
+      void vscode.window.showWarningMessage(`Kite 切号重启已完成，但有警告：${lastRestart.warning}`);
     }
   }
 
@@ -505,17 +507,18 @@ class SidebarProvider implements vscode.WebviewViewProvider {
               this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: prepared.message });
               break;
             }
-            const mainPid = await instanceMgr.getCurrentInstanceMainPid();
-            const exePath = await instanceMgr.detectExePath();
+            const launch = await instanceMgr.getCurrentInstanceLaunchInfo();
+            const exePath = launch.exePath || (await instanceMgr.detectExePath()) || '';
             // 分身实例的状态库在各自 user-data-dir 下，必须显式定位，不能只认 APPDATA 默认库
             const userDataDir = path.resolve(this._context.globalStorageUri.fsPath, '..', '..', '..');
             const sched = await scheduleSwitchRestart({
               email: account.email,
               token: prepared.token,
               dbPath: resolveIdeStateDbPathFromUserData(userDataDir),
-              exePath: exePath || '',
-              launchArgs: ['--user-data-dir', userDataDir],
-              mainPid,
+              exePath,
+              // 复用原进程完整启动参数（保留 --remote-debugging-port 等用户附加配置）
+              launchArgs: launch.args.length > 0 ? launch.args : ['--user-data-dir', userDataDir],
+              mainPid: launch.pid,
             });
             if (!sched.scheduled) {
               this._view?.webview.postMessage({ type: 'toast', status: 'error', message: `切号重启调度失败：${sched.error}` });

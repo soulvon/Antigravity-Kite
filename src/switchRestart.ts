@@ -32,7 +32,7 @@ export function getResultFilePath(): string {
   return path.join(getSharedStorageDir(), RESULT_FILE);
 }
 
-export function readSwitchRestartResult(): { ok: boolean; error?: string; email?: string; finishedAt?: number } | null {
+export function readSwitchRestartResult(): { ok: boolean; error?: string; warning?: string; email?: string; finishedAt?: number } | null {
   const p = getResultFilePath();
   if (!fs.existsSync(p)) return null;
   try {

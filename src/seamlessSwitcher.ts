@@ -139,7 +139,9 @@ export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: 
   let freshAccessToken = '';
 
   try {
-    freshAccessToken = await ensureFreshToken(account);
+    // 与 shouldRefreshForSwitch 同阈值：切号要求 5 分钟有效期，
+    // 否则剩 1~5 分钟时这里会误判"刷新失败"（实际 refreshToken 完全可用）
+    freshAccessToken = await ensureFreshToken(account, TOKEN_REFRESH_BUFFER_MS);
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
     return { ok: false, message: `刷新 accessToken 失败：${err}` };

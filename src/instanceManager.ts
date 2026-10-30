@@ -670,6 +670,90 @@ export async function getCurrentInstanceMainPid(): Promise<number | null> {
   return match ? match[0] : null;
 }
 
+export interface InstanceLaunchInfo {
+  pid: number | null;
+  exePath: string | null;
+  /** 主进程完整启动参数（快照自运行进程，含 --remote-debugging-port 等用户自行附加的参数） */
+  args: string[];
+}
+
+function tokenizeCommandLine(cmd: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let inQuote = false;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (c === '"') { inQuote = !inQuote; continue; }
+    if (!inQuote && /\s/.test(c)) {
+      if (cur) { out.push(cur); cur = ''; }
+      continue;
+    }
+    cur += c;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/**
+ * 快照当前实例主进程的 PID / exe / 完整启动参数。
+ * 重启必须复用原参数（如 --remote-debugging-port），否则用户自行附加的启动配置会丢。
+ */
+export async function getCurrentInstanceLaunchInfo(): Promise<InstanceLaunchInfo> {
+  const currentDir = normalizePath(getCurrentUserDataDir());
+  let cmdline = '';
+  let pid: number | null = null;
+
+  try {
+    const stdout = await runShellAsync(
+      'wmic process where "name=\'Antigravity IDE.exe\' or name=\'Antigravity.exe\'" get ProcessId,CommandLine /FORMAT:LIST',
+      10000
+    );
+    if (stdout && stdout.trim()) {
+      for (const block of stdout.split(/\r?\n\r?\n/)) {
+        const cmdMatch = block.match(/CommandLine=(.*)/);
+        const pidMatch = block.match(/ProcessId=(\d+)/);
+        if (!pidMatch) continue;
+        const cmd = cmdMatch ? cmdMatch[1].trim() : '';
+        if (cmd.includes('--type=')) continue;
+        const m = cmd.match(/--user-data-dir[= ]+["']?([^"']+?)["']?(?:\s+--|\s*$)/i);
+        const dir = m ? m[1].trim() : getDefaultUserDataDir();
+        if (normalizePath(dir) === currentDir) {
+          cmdline = cmd;
+          pid = parseInt(pidMatch[1], 10);
+          break;
+        }
+      }
+    }
+  } catch { /* 走 PowerShell 回退 */ }
+
+  if (!cmdline) {
+    try {
+      const psCmd = `Get-CimInstance Win32_Process -Filter "name='Antigravity IDE.exe' or name='Antigravity.exe'" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`;
+      const stdout = await runPowerShellAsync(psCmd, 10000);
+      if (stdout && stdout.trim()) {
+        const parsed = JSON.parse(stdout);
+        const list = Array.isArray(parsed) ? parsed : [parsed];
+        for (const p of list) {
+          const ppid = Number(p.ProcessId);
+          const cmd: string = p.CommandLine || '';
+          if (!ppid || cmd.includes('--type=')) continue;
+          const m = cmd.match(/--user-data-dir[= ]+["']?([^"']+?)["']?(?:\s+--|\s*$)/i);
+          const dir = m ? m[1].trim() : getDefaultUserDataDir();
+          if (normalizePath(dir) === currentDir) {
+            cmdline = cmd;
+            pid = ppid;
+            break;
+          }
+        }
+      }
+    } catch { /* 快照失败由调用方走 detectExePath 兜底 */ }
+  }
+
+  if (!cmdline) return { pid, exePath: null, args: [] };
+  const tokens = tokenizeCommandLine(cmdline);
+  return { pid, exePath: tokens[0] || null, args: tokens.slice(1) };
+}
+
 // ─── Shell 工具 ──────────────────────────────────────────
 
 function runShellAsync(cmd: string, timeoutMs: number): Promise<string | null> {

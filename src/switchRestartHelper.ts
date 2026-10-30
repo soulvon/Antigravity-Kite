@@ -6,6 +6,7 @@
  * 无论写库成败都必须重启 IDE，不能把用户晾在关机状态。
  */
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as cp from 'child_process';
 import { switchIdeStateIdentity } from './ideStateDb';
@@ -89,6 +90,7 @@ async function main(): Promise<void> {
   const resultPath = path.join(path.dirname(pendingPath), 'switch-restart-result.json');
   let ok = false;
   let error: string | undefined;
+  let warning: string | undefined;
 
   try {
     await closeIde(plan.mainPid);
@@ -99,6 +101,17 @@ async function main(): Promise<void> {
     ok = true;
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
+  }
+
+  // agy.exe（IDE 内置 agent 引擎）的账号指针：agent 面板的账号跟随它，
+  // 与 Cockpit Tools 切号机制共用此文件，切号必须同步；失败不致命但必须暴露
+  const agyAccountFile = process.env.KITE_AGY_ACCOUNT_FILE
+    || path.join(os.homedir(), '.gemini', 'antigravity', 'active-account.json');
+  try {
+    fs.mkdirSync(path.dirname(agyAccountFile), { recursive: true });
+    fs.writeFileSync(agyAccountFile, JSON.stringify({ email: plan.email, updatedAt: Date.now() }), 'utf8');
+  } catch (e) {
+    warning = `agy 账号指针写入失败：${e instanceof Error ? e.message : String(e)}`;
   }
 
   // 重启 IDE：必须剥掉 ELECTRON_RUN_AS_NODE，否则拉起来的 IDE 会以 Node 模式启动；
@@ -126,7 +139,7 @@ async function main(): Promise<void> {
   }
 
   try {
-    fs.writeFileSync(resultPath, JSON.stringify({ ok, error, email: plan.email, finishedAt: Date.now() }, null, 2), 'utf8');
+    fs.writeFileSync(resultPath, JSON.stringify({ ok, error, warning, email: plan.email, finishedAt: Date.now() }, null, 2), 'utf8');
   } catch { /* 结果日志失败不影响主流程 */ }
   process.exit(0);
 }

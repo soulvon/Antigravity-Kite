@@ -129,12 +129,12 @@ async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: 
   });
 }
 
-/** 确保 token 有效，必要时刷新 */
-export async function ensureFreshToken(account: StoredAccount): Promise<string> {
+/** 确保 token 有效，必要时刷新。minValidityMs：剩余有效期低于该值即刷新（切号链路要求 5 分钟） */
+export async function ensureFreshToken(account: StoredAccount, minValidityMs = 60000): Promise<string> {
   // 检查是否过期
   if (account.expiresAt) {
     const expiresMs = new Date(account.expiresAt).getTime();
-    if (Date.now() < expiresMs - 60000) {
+    if (Date.now() < expiresMs - minValidityMs) {
       return account.accessToken; // 还有效
     }
   }
