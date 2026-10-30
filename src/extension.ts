@@ -6,11 +6,11 @@ import { startOAuth } from './oauthService';
 import { previewLocalAccount, confirmImport, cancelImport } from './localReader';
 import * as importService from './importService';
 import { WebviewMessage, UsageSnapshot, StoredAccount } from './types';
-import { isSeamlessSwitchAvailable, prepareSwitchToken, autoSwitchInstanceBoundAccount } from './seamlessSwitcher';
-import { resolveIdeStateDbPathFromUserData } from './ideStateDb';
-import { scheduleSwitchRestart, readSwitchRestartResult, clearSwitchRestartResult } from './switchRestart';
+import { seamlessSwitch, isSeamlessSwitchAvailable, prepareSwitchToken, autoSwitchInstanceBoundAccount, pushLiveIdentityUpdate } from './seamlessSwitcher';
+import { switchIdeStateIdentity, resolveIdeStateDbPathFromUserData } from './ideStateDb';
+import { readSwitchRestartResult, clearSwitchRestartResult, writeAgyActiveAccount } from './switchRestart';
 import { logInfo, logWarn, logError } from './logger';
-import { readIdeCredential, buildIdeCredentialBlob } from './winCredential';
+import { readIdeCredential, buildIdeCredentialBlob, writeIdeCredentialBlob, syncGeminiAccountFiles } from './winCredential';
 import { getSharedStorageDir } from './storage';
 import { StatusBarManager } from './statusBar';
 import { fetchUsage } from './usageService';
@@ -597,50 +597,68 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             });
             logInfo('switch.cred.build', { email: account.email, expiryMs, writerId: blob.parsed.writer_id.slice(0, 10) });
 
-            const launch = await instanceMgr.getCurrentInstanceLaunchInfo();
-            const exePath = launch.exePath || (await instanceMgr.detectExePath()) || '';
-            // 分身实例的状态库在各自 user-data-dir 下，必须显式定位，不能只认 APPDATA 默认库
-            const userDataDir = path.resolve(this._context.globalStorageUri.fsPath, '..', '..', '..');
-            const sched = await scheduleSwitchRestart({
-              email: account.email,
-              token: {
-                accessToken: switchToken.accessToken,
-                refreshToken: switchToken.refreshToken,
-                expiryDateSeconds: switchToken.expiryDateSeconds,
-                isGcpTos: false,
-                idToken: switchToken.idToken,
-              },
-              dbPath: resolveIdeStateDbPathFromUserData(userDataDir),
-              exePath,
-              // 复用原进程完整启动参数（保留 --remote-debugging-port 等用户附加配置）
-              launchArgs: launch.args.length > 0 ? launch.args : ['--user-data-dir', userDataDir],
-              mainPid: launch.pid,
-              credential: { blobBase64: blob.blobBase64, user: credUser },
-              geminiSync: {
-                email: account.email,
-                accessToken: switchToken.accessToken,
-                refreshToken: switchToken.refreshToken,
-                expiryMs,
-              },
-            });
-            logInfo('switch.restart.schedule', {
-              scheduled: sched.scheduled,
-              error: sched.error,
-              mainPid: launch.pid,
-              exePath,
-              launchArgs: launch.args,
-              dbPath: resolveIdeStateDbPathFromUserData(userDataDir),
-              hasCredential: true,
-            });
-            if (!sched.scheduled) {
+            // ── 热切（不重启 IDE）——机制经真机实验证实 ──
+            // 1) 运行中写凭据管理器（IDE 不覆盖；下次 agy 拉起即用新身份）
+            const cw = await writeIdeCredentialBlob(blob.blobBase64, credUser);
+            logInfo('switch.hot.cred', { ok: cw.ok, error: cw.error });
+            if (!cw.ok) {
               switchInFlight = false;
-              this._view?.webview.postMessage({ type: 'toast', status: 'error', message: `切号调度失败：${sched.error}` });
+              this._view?.webview.postMessage({ type: 'toast', status: 'error', message: `凭据写入失败：${cw.error}` });
               break;
             }
+
+            // 2) 状态库（agent/模型一致性）
+            const userDataDir = path.resolve(this._context.globalStorageUri.fsPath, '..', '..', '..');
+            const dbRes = switchIdeStateIdentity(account.email, {
+              accessToken: switchToken.accessToken,
+              refreshToken: switchToken.refreshToken,
+              expiryDateSeconds: switchToken.expiryDateSeconds,
+              isGcpTos: false,
+              idToken: switchToken.idToken,
+            }, { dbPath: resolveIdeStateDbPathFromUserData(userDataDir) });
+            logInfo('switch.hot.db', { dbWritten: dbRes.dbWritten, error: dbRes.error });
+
+            // 3) agy 指针 + gemini 账号文件
+            const agyPtr = writeAgyActiveAccount(account.email);
+            const gs = syncGeminiAccountFiles({
+              email: account.email,
+              accessToken: switchToken.accessToken,
+              refreshToken: switchToken.refreshToken,
+              expiryMs,
+            });
+            logInfo('switch.hot.files', { agyPtr: agyPtr.ok, gemini: gs.ok, error: agyPtr.error || gs.error });
+
+            // 4) 会话层 token 热切 + 总线身份推送（尽力而为，失败不阻塞）
+            const hot = await seamlessSwitch(account);
+            logInfo('switch.hot.session', { success: hot.success, message: hot.message });
+            const identity = await pushLiveIdentityUpdate(account.email);
+            logInfo('switch.hot.identity', { ok: identity.ok, error: identity.error });
+
+            // 5) 热重载 agent 引擎（agy 重建时读凭据管理器，即时切到新号）
+            const agyReload = await instanceMgr.killAgyForCurrentInstance();
+            logInfo('switch.hot.agyReload', { killed: agyReload.killed, error: agyReload.error });
+
             await this._context.globalState.update('currentEmail', msg.email);
             usageTracker.recordSwitch(msg.email);
             this._pushAccounts();
-            this._view?.webview.postMessage({ type: 'toast', status: 'success', message: `正在切换到 ${account.email}：IDE 将自动重启（约 5 秒）…` });
+            statusBarManager?.refreshUsage();
+            logPanel.pushLogPanelData(this._context, usageTracker);
+            this._refreshUsage(msg.email);
+            switchInFlight = false;
+
+            const notes: string[] = [];
+            if (!agyPtr.ok) notes.push(`agy 指针写入失败：${agyPtr.error}`);
+            if (gs.error) notes.push(`gemini 文件同步失败：${gs.error}`);
+            if (agyReload.error) notes.push(agyReload.error);
+            if (hot.success && !identity.ok) notes.push('账号菜单显示待下次重启对齐（不影响使用）');
+            if (notes.length === 0) {
+              notes.push(`无感切换完成：agent/额度已切至 ${account.email}`);
+            }
+            this._view?.webview.postMessage({
+              type: 'toast',
+              status: notes.length === 1 ? 'success' : 'warning',
+              message: notes.join('；')
+            });
           }
         }
         break;
