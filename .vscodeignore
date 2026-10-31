@@ -22,3 +22,4 @@ spec/**
 .preview/**
 tmp/**
 resources/preview-sidebar.png
+docs/**

@@ -6,7 +6,7 @@
 
 **Switch without restart · Dual-model dual-window real quotas (Claude / Gemini) · Auto-confirm security notice · Bilingual UI**
 
-[![Version](https://img.shields.io/badge/version-1.0.2-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.0.3-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)]()
 [![GitHub release](https://img.shields.io/github/v/release/soulvon/Antigravity-Kite?color=orange&style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases)
@@ -46,7 +46,7 @@ Sidebar account card flow: **dual-column quota bars for Claude & Gemini** (weekl
 
 ### Option 1: Extensions panel (recommended)
 
-1. Download the latest `antigravity-kite-1.0.2.vsix` ([GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest));
+1. Download the latest `antigravity-kite-1.0.3.vsix` ([GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest));
 2. Open the **Antigravity IDE**;
 3. Open the Extensions view (`Ctrl+Shift+X` / macOS `Cmd+Shift+X`);
 4. Click the `...` menu ➔ **"Install from VSIX..."**;
@@ -55,7 +55,7 @@ Sidebar account card flow: **dual-column quota bars for Claude & Gemini** (weekl
 ### Option 2: Command line
 
 ```bash
-antigravity-ide --install-extension antigravity-kite-1.0.2.vsix --force
+antigravity-ide --install-extension antigravity-kite-1.0.3.vsix --force
 ```
 
 ---
