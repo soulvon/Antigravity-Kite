@@ -1,21 +1,40 @@
 /**
  * 语言自适应：默认跟随 IDE 语言（vscode.env.language），可在设置中手动指定。
- * 覆盖范围：门控/切号等会打扰用户的提示文案；声明按钮中英文均已在守卫里匹配。
+ * 覆盖范围：宿主侧全部用户可见文案（通知/弹窗/状态栏/更新/导入导出），
+ * 以及 Webview（侧栏面板、统计面板）界面文案——Webview 通过 localeBundle(prefix) 注入。
+ * 约定：ui.* 前缀 = 侧栏面板；lp.* 前缀 = 统计面板；其余为宿主侧 t() 直取。
+ *
+ * 注意：vscode 必须惰性获取。本模块会被 switchRestartHelper → ideStateDb 链路在
+ * IDE 之外的 ELECTRON_RUN_AS_NODE 进程中加载（无 vscode API），顶层 import 会直接崩溃。
  */
-import * as vscode from 'vscode';
+
+/** 惰性获取 vscode API；IDE 之外的独立进程返回 undefined */
+function vsc(): typeof import('vscode') | undefined {
+  try {
+    return require('vscode');
+  } catch {
+    return undefined;
+  }
+}
 
 export type Lang = 'zh' | 'en';
 
 export function getLang(): Lang {
-  const cfg = vscode.workspace.getConfiguration('antigravityKite').get<string>('locale', 'auto');
-  if (cfg === 'zh-CN') return 'zh';
-  if (cfg === 'en') return 'en';
-  return (vscode.env.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  const v = vsc();
+  if (v) {
+    const cfg = v.workspace.getConfiguration('antigravityKite').get<string>('locale', 'auto');
+    if (cfg === 'zh-CN') return 'zh';
+    if (cfg === 'en') return 'en';
+    return (v.env.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  }
+  // IDE 之外的独立进程（无 vscode API）：跟随环境变量，缺省中文
+  const env = (process.env.LANG || process.env.LC_ALL || '').toLowerCase();
+  return env.startsWith('zh') ? 'zh' : 'en';
 }
 
 /** [zh, en] */
 const S: Record<string, [string, string]> = {
-  // CDP 门控
+  // ── CDP 门控 ──
   gateModalTitle: [
     '切换账号时自动确认安全声明，需要以调试端口启动 IDE（将修改快捷方式并重启一次，仅此一次）。',
     'To auto-confirm the security notice when switching accounts, the IDE must run with a debug port (shortcuts will be patched and the IDE restarted once).',
@@ -37,7 +56,8 @@ const S: Record<string, [string, string]> = {
     '切换账号将弹一次安全声明（需手动点击）。可在设置「自动确认安全声明」中开启自动确认。',
     'A security notice will appear on each switch (click manually). Enable "Auto-confirm security notice" in settings for automatic confirmation.',
   ],
-  // 切号 toast
+
+  // ── 切号 toast ──
   switchCredFail: ['凭据写入失败：', 'Failed to write credential: '],
   switchAgyPtrFail: ['agy 指针写入失败：', 'Failed to write agy pointer: '],
   switchGeminiFail: ['gemini 文件同步失败：', 'Failed to sync gemini files: '],
@@ -54,6 +74,378 @@ const S: Record<string, [string, string]> = {
     '切号已取消：同步本地凭据文件失败（',
     'Switch cancelled: failed to sync local credential files (',
   ],
+
+  // ── 切号重启反馈 ──
+  restartIncomplete: [
+    'Kite 切号重启未完成：{0}（状态库未写入，账号未切换）',
+    'Kite switch restart did not complete: {0} (state db not written; account not switched)',
+  ],
+  restartWarning: [
+    'Kite 切号重启已完成，但有警告：{0}',
+    'Kite switch restart completed with warnings: {0}',
+  ],
+
+  // ── 设置 ──
+  settingsSaved: ['设置已保存', 'Settings saved'],
+  pickExeTitle: ['选择 Antigravity 主程序', 'Select Antigravity executable'],
+  pickExeOpen: ['选择', 'Select'],
+  pickExeFilter: ['可执行文件', 'Executable'],
+
+  // ── 导出 ──
+  noAccountsToExport: ['没有可导出的账号', 'No accounts to export'],
+  exportModeFull: ['完整导出（含授权 Token）', 'Full export (includes auth tokens)'],
+  exportModeMasked: ['脱敏导出（仅邮箱与标签）', 'Masked export (emails and tags only)'],
+  exportModePrompt: ['选择导出方式（共 {0} 个账号）', 'Choose export mode ({0} accounts in total)'],
+  exportDialogTitle: ['导出 Antigravity Kite 账号', 'Export Antigravity Kite accounts'],
+  exported: ['已导出 {0} 个账号到 {1}', 'Exported {0} accounts to {1}'],
+  exportFailed: ['导出失败: {0}', 'Export failed: {0}'],
+
+  // ── 配额刷新 ──
+  refreshingQuota: ['正在刷新配额...', 'Refreshing quotas...'],
+  refreshedQuota: ['已刷新 {0} 个账号配额', 'Refreshed quotas for {0} accounts'],
+  refreshAllFailed: ['全部失败({0}个): {1}', 'All failed ({0}): {1}'],
+  refreshPartial: ['成功{0}个，失败{1}个', '{0} succeeded, {1} failed'],
+
+  // ── 账号添加/导入/批量 ──
+  accountAdded: ['已添加账号: {0}', 'Account added: {0}'],
+  loginFailed: ['登录失败: {0}', 'Sign-in failed: {0}'],
+  detectFailed: ['检测失败: {0}', 'Detection failed: {0}'],
+  accountImported: ['已导入账号: {0}', 'Account imported: {0}'],
+  importFailed: ['导入失败: {0}', 'Import failed: {0}'],
+  preflightBlocked: [
+    '切号预检未通过：目标账号额度检测失败（Token 可能已失效），已取消切换',
+    'Pre-switch check failed: quota check on the target account failed (token may be expired); switch cancelled',
+  ],
+  tagsUpdated: ['已为 {0} 个账号更新标签', 'Updated tags for {0} accounts'],
+  accountsDeleted: ['已删除 {0} 个账号', 'Deleted {0} accounts'],
+  accountsEnabled: ['已启用 {0} 个账号', 'Enabled {0} accounts'],
+  accountsDisabled: ['已禁用 {0} 个账号', 'Disabled {0} accounts'],
+
+  // ── 更新检查 ──
+  checkUpdateFailed: ['检查更新失败: {0}', 'Update check failed: {0}'],
+
+  // ── 导入服务 ──
+  impSourceLocalFile: ['本地文件', 'Local file'],
+  impPickJsonTitle: ['选择账号 JSON 文件', 'Select account JSON file'],
+  impNoFileSelected: ['未选择文件', 'No file selected'],
+  impBadJson: ['JSON 格式错误', 'Invalid JSON format'],
+  impUnsupportedFormat: ['不支持的 JSON 格式', 'Unsupported JSON format'],
+  impCockpitDirMissing: ['Cockpit Tools 数据目录不存在', 'Cockpit Tools data directory not found'],
+  impManagerDirMissing: ['Antigravity Manager 数据目录不存在', 'Antigravity Manager data directory not found'],
+  impCockpitNoAccounts: ['Cockpit Tools 中没有找到账号{0}', 'No accounts found in Cockpit Tools{0}'],
+  impManagerNoAccounts: ['Antigravity Manager 中没有找到账号{0}', 'No accounts found in Antigravity Manager{0}'],
+  impDirMissing: ['accounts 目录不存在: {0}', 'accounts directory not found: {0}'],
+  impSecureKeyMissing: [
+    '加密密钥缺失或非法（secure-account-storage.key），加密账号文件将无法导入',
+    'Encryption key missing or invalid (secure-account-storage.key); encrypted account files cannot be imported',
+  ],
+  impIndexParseFailed: ['账号索引 accounts.json 解析失败', 'Failed to parse the account index (accounts.json)'],
+  impDirScanFailed: ['accounts 目录扫描失败', 'Failed to scan the accounts directory'],
+  impFileMissing: ['账号文件缺失: {0}', 'Account file missing: {0}'],
+  impEncryptedNoKey: ['{0} 为加密存储但无法解密（密钥缺失）', '{0} is encrypted but cannot be decrypted (key missing)'],
+  impMissingFields: ['{0} 缺少 email 或 token 字段', '{0} is missing email or token fields'],
+  impReadFailed: ['{0} 读取失败: {1}', 'Failed to read {0}: {1}'],
+  impDescCockpit: ['从 Cockpit Tools 导入账号', 'Import accounts from Cockpit Tools'],
+  impDescManager: ['从 Antigravity Manager 导入账号', 'Import accounts from Antigravity Manager'],
+  impNameLocalFile: ['从本地文件导入', 'Import from local file'],
+  impDescLocalFile: ['选择 JSON 文件导入账号（支持多种格式）', 'Import accounts from a JSON file (multiple formats supported)'],
+
+  // ── 本地账号读取 ──
+  lrNoToken: ['未找到 token', 'Token not found'],
+  lrNoSentinel: ['未找到 oauthTokenInfoSentinelKey', 'oauthTokenInfoSentinelKey not found'],
+  lrNoLocalLogin: ['未找到本地登录信息', 'No local sign-in info found'],
+  lrCannotGetEmail: [
+    '无法获取用户邮箱（未登录或数据损坏）',
+    'Could not get the user email (not signed in or data corrupted)',
+  ],
+  lrTagReauth: ['需要重新授权', 'Needs re-auth'],
+
+  // ── OAuth ──
+  oauthNoPort: ['无法找到可用端口', 'No available port'],
+  oauthUserInfoFailed: ['获取用户信息失败: HTTP {0}', 'Failed to get user info: HTTP {0}'],
+  oauthNoEmail: ['用户信息缺少 email', 'User info has no email'],
+  oauthNoAccessToken: ['Token 响应缺少 access_token', 'Token response has no access_token'],
+  oauthTimeout: ['OAuth 授权超时', 'OAuth authorization timed out'],
+  oauthStateMismatch: ['state 校验失败', 'State verification failed'],
+  oauthSuccessTitle: ['授权成功', 'Authorization Successful'],
+  oauthSuccessDesc: ['可以关闭此页面，返回 Antigravity Kite。', 'You can close this page and return to Antigravity Kite.'],
+  oauthFailTitle: ['授权失败', 'Authorization Failed'],
+
+  // ── 无感切号 / 状态库 / 加密 / 内部错误（会以通知或日志露出）──
+  ssTimeout: ['无感切号超时：{0}', 'Seamless switch timed out: {0}'],
+  isdVerifyFailed: [
+    '身份写入读回校验不一致（IDE 可能占库或写入被覆盖）',
+    'Identity write verification failed (the IDE may be holding the db or the write was overwritten)',
+  ],
+  usNoQuotaBuckets: ['响应中无可用配额 bucket', 'No quota buckets in the response'],
+  usNoQuotaModels: ['响应中无可用配额模型（models 为空）', 'No quota models in the response (models is empty)'],
+  secureBadAlgorithm: ['不支持的加密算法: {0}', 'Unsupported encryption algorithm: {0}'],
+  secureUnknownKeyId: ['未知密钥标识: {0}', 'Unknown key id: {0}'],
+  srSpawnFailed: ['子进程创建失败', 'Failed to spawn child process'],
+
+  // ── 状态栏 ──
+  sbNotLoggedIn: ['未登录', 'Not signed in'],
+  sbPoolEmpty: ['Kite 号池为空，请先在侧栏面板中添加账号。', 'The account pool is empty. Add accounts in the sidebar panel first.'],
+  sbDisabled: ['已禁用', 'Disabled'],
+  sbAvailable: ['可用', 'Available'],
+  sbPickAccount: ['选择要无感切换的反重力账号', 'Pick an Antigravity account to switch to'],
+  sbAccountDisabled: ['账号 {0} 已被禁用，无法切换。', 'Account {0} is disabled and cannot be switched to.'],
+  sbAlreadyCurrent: ['当前已处于账号 {0} 登录状态', 'Already signed in as {0}'],
+  sbSwitching: ['正在无感切换账号至: {0}...', 'Seamlessly switching to {0}...'],
+  sbSwitchOk: ['[Kite] 无感切号成功: {0}', '[Kite] Seamless switch succeeded: {0}'],
+  sbSwitchFail: ['无感切号失败: {0}', 'Seamless switch failed: {0}'],
+  sbNotSignedInTip: ['未登录账号', 'Not signed in'],
+  sbOpenPoolTip: ['点击打开号池面板', 'Click to open the account pool panel'],
+  sbSubscription: ['订阅', 'Subscription'],
+  sbAiCredits: ['AI 积分', 'AI credits'],
+  sbNoQuotaData: ['暂无额度数据', 'No quota data yet'],
+  sbPool: ['池', 'Pool'],
+  sbPoolTooltip: ['号池：{0} 个可用 / {1} 个总计', 'Pool: {0} available / {1} total'],
+
+  // ── 更新器 ──
+  updUpToDate: ['当前已是最新版本 v{0}', 'Already up to date (v{0})'],
+  updNoVsix: ['发布中未找到 .vsix 文件', 'No .vsix asset found in the release'],
+  updFound: ['发现新版本 v{0} (当前: v{1})\n{2}', 'New version v{0} found (current: v{1})\n{2}'],
+  updInstallNow: ['立即更新', 'Update now'],
+  updLater: ['稍后', 'Later'],
+  updDownload: ['下载', 'Download'],
+  updOpenRelease: ['打开发布页', 'Open release page'],
+  updDownloading: ['正在下载更新...', 'Downloading update...'],
+  updInstalling: ['正在安装更新...', 'Installing update...'],
+  updReloadPrompt: ['更新安装完成，需要重新加载窗口才能生效', 'Update installed. Reload the window to apply it.'],
+  updReloadNow: ['立即重载', 'Reload now'],
+  updDownloadingPlain: ['正在下载...', 'Downloading...'],
+  updDownloadDone: ['下载完成: {0}', 'Downloaded: {0}'],
+  updOpenFolder: ['打开文件夹', 'Open folder'],
+  updFoundAsk: ['发现新版本 v{0}，是否立即更新？', 'New version v{0} found. Update now?'],
+  updUseCommand: [
+    '发现新版本 v{0}，请在命令面板执行 "检查更新"',
+    'New version v{0} found. Run "Check for Updates" from the Command Palette',
+  ],
+  updOpenPalette: ['打开命令面板', 'Open Command Palette'],
+  updNotesIncomplete: [
+    '检测到您已成功升级至新版本 v{0}（从 v{1}）。\n由于当前版本的更新日志信息尚不完整或未能从 GitHub 加载成功，您可以点击下方按钮前往 GitHub 查看或反馈信息！',
+    'You have upgraded to v{0} (from v{1}).\nThe release notes for this version are incomplete or failed to load from GitHub. Use the button below to view them or give feedback on GitHub.',
+  ],
+  updNotesBody: ['核心更新内容：\n\n{0}', "What's new:\n\n{0}"],
+  updUpdatedTitle: ['Antigravity Kite 已更新至 v{0}', 'Antigravity Kite updated to v{0}'],
+  updFeedbackAction: ['前往 GitHub 反馈/完善信息', 'Give feedback on GitHub'],
+  updKnown: ['知道了', 'Got it'],
+  updViewRelease: ['查看 GitHub 发布页', 'View GitHub release'],
+
+  // ── 侧栏面板（ui.*，注入 Webview）──
+  'ui.myAccounts': ['我的账号', 'My Accounts'],
+  'ui.addAccount': ['添加账号', 'Add Account'],
+  'ui.accountsCount': ['{0} 个', '{0}'],
+  'ui.searchPh': ['搜索账号...', 'Search accounts...'],
+  'ui.filter': ['过滤', 'Filter'],
+  'ui.filterAll': ['全部', 'All'],
+  'ui.plan': ['套餐', 'Plan'],
+  'ui.tags': ['标签', 'Tags'],
+  'ui.status': ['状态', 'Status'],
+  'ui.clearFilters': ['清空筛选', 'Clear filters'],
+  'ui.sortBy': ['排序方式', 'Sort by'],
+  'ui.sortDefault': ['默认排序', 'Default'],
+  'ui.sortRecommend': ['推荐', 'Recommended'],
+  'ui.sortEmail': ['邮箱 A-Z', 'Email A-Z'],
+  'ui.sortTime': ['导入时间', 'Import time'],
+  'ui.sortDir': ['切换排序方向', 'Toggle sort direction'],
+  'ui.refreshAll': ['刷新全部', 'Refresh all'],
+  'ui.exportAll': ['导出账号设置', 'Export accounts & settings'],
+  'ui.privacyOff': ['隐私模式：隐藏邮箱', 'Privacy mode: hide emails'],
+  'ui.privacyOn': ['隐私模式：已隐藏邮箱', 'Privacy mode: emails hidden'],
+  'ui.pageSize': ['每页显示', 'Per page'],
+  'ui.pageSize10': ['10/页', '10/page'],
+  'ui.pageSize20': ['20/页', '20/page'],
+  'ui.pageSize50': ['50/页', '50/page'],
+  'ui.showAll': ['全部', 'All'],
+  'ui.selectMode': ['多选', 'Select'],
+  'ui.selectModeTitle': ['多选模式', 'Multi-select mode'],
+  'ui.settings': ['设置', 'Settings'],
+  'ui.selectAll': ['全选', 'Select all'],
+  'ui.selectedCount': ['已选 {0}', '{0} selected'],
+  'ui.batchTag': ['加标签', 'Tag'],
+  'ui.batchTagTitle': ['为选中账号设置标签', 'Tag selected accounts'],
+  'ui.batchEnable': ['启用', 'Enable'],
+  'ui.batchEnableTitle': ['启用选中账号', 'Enable selected accounts'],
+  'ui.batchDisable': ['禁用', 'Disable'],
+  'ui.batchDisableTitle': ['禁用选中账号', 'Disable selected accounts'],
+  'ui.batchExport': ['导出', 'Export'],
+  'ui.batchExportTitle': ['导出选中账号', 'Export selected accounts'],
+  'ui.batchDelete': ['删除', 'Delete'],
+  'ui.batchDeleteTitle': ['删除选中账号', 'Delete selected accounts'],
+  'ui.cancel': ['取消', 'Cancel'],
+  'ui.close': ['关闭', 'Close'],
+  'ui.addModalTitle': ['添加账号', 'Add Account'],
+  'ui.oauthTitle': ['Google 登录', 'Google Sign-in'],
+  'ui.oauthDesc': ['通过浏览器授权登录', 'Sign in via browser authorization'],
+  'ui.importLocalTitle': ['从本地数据库导入', 'Import from local database'],
+  'ui.importLocalDesc': ['读取本机 Antigravity IDE 客户端登录账号', 'Read accounts signed in to the local Antigravity IDE'],
+  'ui.importCockpitTitle': ['从 Cockpit Tools 导入', 'Import from Cockpit Tools'],
+  'ui.importCockpitDesc': ['同步 Cockpit Tools 中的账号', 'Sync accounts from Cockpit Tools'],
+  'ui.importManagerTitle': ['从 Antigravity Manager 导入', 'Import from Antigravity Manager'],
+  'ui.importManagerDesc': ['同步 Antigravity Manager 中的账号', 'Sync accounts from Antigravity Manager'],
+  'ui.importJsonTitle': ['从本地文件导入', 'Import from local file'],
+  'ui.importJsonDesc': ['选择 JSON 文件导入账号（支持多种格式）', 'Import accounts from a JSON file (multiple formats supported)'],
+  'ui.emptyTitle': ['还没有账号', 'No accounts yet'],
+  'ui.emptySub': ['点击上方「添加账号」按钮', 'Click the "Add Account" button above'],
+  'ui.noMatchTitle': ['没有匹配的账号', 'No matching accounts'],
+  'ui.tagEditTitle': ['编辑标签', 'Edit Tags'],
+  'ui.tagInputPh': ['输入标签名称，回车添加', 'Type a tag name and press Enter'],
+  'ui.add': ['添加', 'Add'],
+  'ui.existingTags': ['已有标签（点击添加/移除）', 'Existing tags (click to add/remove)'],
+  'ui.noTags': ['暂无标签', 'No tags'],
+  'ui.save': ['保存', 'Save'],
+  'ui.confirmTitle': ['确认操作', 'Confirm'],
+  'ui.ok': ['确认', 'Confirm'],
+  'ui.autoUpdate': ['自动更新', 'Auto update'],
+  'ui.autoCheckRow': ['启动时检查更新', 'Check for updates on startup'],
+  'ui.autoInstallRow': ['发现新版本时静默安装', 'Silently install new versions when found'],
+  'ui.switchDebug': ['切号与调试', 'Switching & Debug'],
+  'ui.autoConfirmRow': ['切换账号时自动确认安全声明', 'Auto-confirm the security notice on switch'],
+  'ui.cdpPortRow': ['调试端口', 'Debug port'],
+  'ui.cdpPortHint': [
+    '切号时通过该端口与 IDE 通信，9222 会作为兜底自动尝试。',
+    'Port used to talk to the IDE when switching; 9222 is tried as a fallback.',
+  ],
+  'ui.appearance': ['界面', 'Interface'],
+  'ui.statusBar': ['状态栏', 'Status bar'],
+  'ui.sbEnabledRow': ['显示状态栏', 'Show status bar'],
+  'ui.sbPositionRow': ['位置', 'Position'],
+  'ui.sbPositionLeft': ['左侧', 'Left'],
+  'ui.sbPositionRight': ['右侧', 'Right'],
+  'ui.sbStyleRow': ['样式', 'Style'],
+  'ui.sbStyleDot': ['状态灯 — 仅图标', 'Icon only'],
+  'ui.sbStylePercent': ['75% — 仅最低百分比', '75% — lowest percent only'],
+  'ui.sbStyleCompact': ['状态灯 75% — 图标 + 最低百分比', 'Icon 75% — icon + percent'],
+  'ui.sbStyleDual': ['状态灯 75% + AI 积分 — 双指标', 'Icon 75% + AI credits — dual gauge'],
+  'ui.sbStyleLabeled': ['账号 + 各模型额度 — 标签式', 'Account + per-model quotas'],
+  'ui.sbStyleFull': ['账号 + 各模型额度 + AI 积分 — 完整', 'Account + quotas + credits — full'],
+  'ui.sbRefreshRow': ['额度刷新间隔', 'Quota refresh'],
+  'ui.sbRefreshHint': [
+    '极简样式只显示最低额度，标签式逐项列出各模型；改动即时生效。',
+    'Compact styles show the lowest quota only; labeled styles list every model. Changes apply instantly.',
+  ],
+  'ui.sbAccountRow': ['显示当前账号', 'Show current account'],
+  'ui.sbModelsRow': ['显示模型额度', 'Show model quotas'],
+  'ui.sbCreditsRow': ['显示 AI 积分', 'Show AI credits'],
+  'ui.sbPoolRow': ['显示号池统计', 'Show pool stats'],
+  'ui.localeRow': ['提示语言', 'Language'],
+  'ui.localeAuto': ['跟随 IDE', 'Follow IDE'],
+  'ui.localeZh': ['中文', '中文'],
+  'ui.localeEn': ['English', 'English'],
+  'ui.resetDefaults': ['恢复默认', 'Reset defaults'],
+  'ui.saveSettings': ['保存设置', 'Save'],
+  'ui.pickFirst': ['请先选择账号', 'Select accounts first'],
+  'ui.confirmBatchDelete': [
+    '确定删除选中的 {0} 个账号？此操作不可撤销。',
+    'Delete the {0} selected accounts? This cannot be undone.',
+  ],
+  'ui.untagged': ['未分类', 'Untagged'],
+  'ui.filteredCount': ['已筛选 {0}', 'Filtered: {0}'],
+  'ui.tagColorTitle': ['「{0}」颜色', 'Color for "{0}"'],
+  'ui.colorResetTitle': ['重置为默认色', 'Reset to default color'],
+  'ui.changeColor': ['点击换色', 'Click to change color'],
+  'ui.editTagsFor': ['编辑标签 - {0}', 'Edit Tags - {0}'],
+  'ui.tagBatchTitle': ['为 {0} 个账号打标签', 'Tag {0} accounts'],
+  'ui.importingFrom': ['正在从 {0} 导入...', 'Importing from {0}...'],
+  'ui.importDone': ['从 {0} 导入完成', 'Import from {0} complete'],
+  'ui.importAdded': ['新增 {0} 个账号', '{0} new accounts'],
+  'ui.importSkipped': ['跳过 {0} 个已存在', '{0} duplicates skipped'],
+  'ui.importNone': ['{0} 中没有找到账号', 'No accounts found in {0}'],
+  'ui.importFailed': ['导入失败', 'Import failed'],
+  'ui.inPool': ['账号已在号池中', 'Account already in pool'],
+  'ui.detectedLocal': ['检测到本地账号', 'Local account detected'],
+  'ui.overwritePrompt': [
+    '当前账号已存在于号池中，是否覆盖更新授权信息？',
+    'This account is already in the pool. Overwrite its credentials?',
+  ],
+  'ui.addPrompt': ['当前账号不在号池中，是否添加到号池？', 'This account is not in the pool yet. Add it?'],
+  'ui.overwrite': ['覆盖更新', 'Overwrite'],
+  'ui.addToPool': ['添加到号池', 'Add to pool'],
+  'ui.expiredWarning': [
+    '授权已失效，导入后需要重新登录授权',
+    'Authorization has expired; sign in again after importing',
+  ],
+  'ui.unknown': ['未知', 'Unknown'],
+  'ui.resetDone': ['已重置', 'Reset'],
+  'ui.resetDays': ['{0}天{1}时后重置', 'Resets in {0}d {1}h'],
+  'ui.resetHours': ['{0}时{1}分后重置', 'Resets in {0}h {1}m'],
+  'ui.resetMinutes': ['{0}分钟后重置', 'Resets in {0}m'],
+  'ui.resetSoon': ['即将重置', 'Resetting soon'],
+  'ui.unknownModel': ['未知模型', 'Unknown model'],
+  'ui.current': ['当前', 'Current'],
+  'ui.disabled': ['禁用', 'Disabled'],
+  'ui.disabledTag': ['已禁用', 'Disabled'],
+  'ui.inUse': ['使用中', 'In use'],
+  'ui.switching': ['切换中…', 'Switching…'],
+  'ui.switch': ['切换', 'Switch'],
+  'ui.editTagsT': ['编辑标签', 'Edit tags'],
+  'ui.refreshQuotaT': ['刷新配额', 'Refresh quota'],
+  'ui.removeT': ['从号池移除', 'Remove from pool'],
+  'ui.confirmRemove': ['确定从号池移除 {0} ？', 'Remove {0} from the pool?'],
+  'ui.deleteTitle': ['删除账号', 'Delete Account'],
+  'ui.disabledOnT': ['账号已禁用，点击启用', 'Account disabled; click to enable'],
+  'ui.enabledOnT': ['账号启用中，点击禁用', 'Account enabled; click to disable'],
+  'ui.ariaEnable': ['启用账号', 'Enable account'],
+  'ui.ariaDisable': ['禁用账号', 'Disable account'],
+  'ui.pillSwitches': ['+{0} 切', '+{0} switches'],
+  'ui.pillRefreshes': ['{0} 检', '{0} checks'],
+  'ui.active': ['活跃', 'Active'],
+
+  // ── 统计面板（lp.*，注入 Webview）──
+  'lp.title': ['统计面板', 'Stats Panel'],
+  'lp.privacy': ['隐私', 'Privacy'],
+  'lp.privacyTitle': ['隐私模式：隐藏邮箱等敏感信息', 'Privacy mode: hide emails and other sensitive info'],
+  'lp.refresh': ['刷新', 'Refresh'],
+  'lp.tabOverview': ['账号总览', 'Accounts'],
+  'lp.tabQuota': ['配额历史', 'Quota History'],
+  'lp.totalAccounts': ['总账号', 'Total'],
+  'lp.active': ['活跃', 'Active'],
+  'lp.disabled': ['禁用', 'Disabled'],
+  'lp.full': ['满额度', 'Full quota'],
+  'lp.low': ['低额度', 'Low quota'],
+  'lp.avgUsed': ['平均用量', 'Avg usage'],
+  'lp.accountQuotas': ['账号配额一览', 'Account quotas'],
+  'lp.colAccount': ['账号', 'Account'],
+  'lp.colTags': ['标签', 'Tags'],
+  'lp.colUsed': ['已用配额', 'Used'],
+  'lp.colStatus': ['状态', 'Status'],
+  'lp.searchPh': ['搜索账号...', 'Search accounts...'],
+  'lp.current': ['当前', 'Current'],
+  'lp.recent': ['最近', 'Recent'],
+  'lp.range1h': ['1小时', '1h'],
+  'lp.range24h': ['24h', '24h'],
+  'lp.range7d': ['7天', '7d'],
+  'lp.range30d': ['30天', '30d'],
+  'lp.rangeAll': ['全部', 'All'],
+  'lp.legendQuota': ['配额', 'Quota'],
+  'lp.legendWarn': ['30% 警戒', '30% warning'],
+  'lp.legendDanger': ['10% 危险', '10% danger'],
+  'lp.warnTitle': ['剩余 30% 警戒线', 'Warning line at 30% remaining'],
+  'lp.dangerTitle': ['剩余 10% 危险线', 'Danger line at 10% remaining'],
+  'lp.details': ['明细', 'Details'],
+  'lp.colTime': ['记录时间', 'Time'],
+  'lp.colRemaining': ['剩余', 'Remaining'],
+  'lp.colChange': ['变化', 'Change'],
+  'lp.colPlan': ['套餐', 'Plan'],
+  'lp.refreshed': ['刷新完成', 'Refreshed'],
+  'lp.refreshing': ['正在刷新…', 'Refreshing…'],
+  'lp.privacyOn': ['隐私模式已开启', 'Privacy mode on'],
+  'lp.privacyOff': ['隐私模式已关闭', 'Privacy mode off'],
+  'lp.noCurrentRecords': ['当前账号尚无配额变动记录', 'No quota changes for the current account yet'],
+  'lp.countUnit': ['{0} 个', '{0}'],
+  'lp.entriesUnit': ['{0} 条', '{0}'],
+  'lp.noAccounts': ['暂无账号', 'No accounts'],
+  'lp.statusUnchecked': ['未检测', 'Not checked'],
+  'lp.statusDanger': ['危险', 'Critical'],
+  'lp.statusWarn': ['警戒', 'Warning'],
+  'lp.statusNormal': ['正常', 'Normal'],
+  'lp.noDataPoints': ['数据点不足，无法绘制趋势', 'Not enough data points to plot a trend'],
+  'lp.noHistory': ['暂无配额变动记录', 'No quota change records'],
+  'lp.pageInfo': ['{0} / {1} 页（共 {2} 条）', 'Page {0} / {1} ({2} records)'],
+  'lp.prevPage': ['上一页', 'Prev'],
+  'lp.nextPage': ['下一页', 'Next'],
 };
 
 /** 取文案；{0}{1} 为占位符 */
@@ -66,4 +458,22 @@ export function t(key: string, ...args: (string | number)[]): string {
     s = s.split('{' + i + '}').join(String(a));
   });
   return s;
+}
+
+/**
+ * 取某前缀下的全部文案（去掉前缀后返回），供注入 Webview：
+ *   localeBundle('ui.') → { myAccounts: '我的账号', ... }
+ */
+export function localeBundle(prefix: string): Record<string, string> {
+  const idx = getLang() === 'zh' ? 0 : 1;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(S)) {
+    if (k.startsWith(prefix)) out[k.slice(prefix.length)] = v[idx];
+  }
+  return out;
+}
+
+/** 仅供 scripts/check-i18n.js 门控校验使用：导出完整字典（勿在业务代码中调用） */
+export function __dictForCheck(): Record<string, [string, string]> {
+  return S;
 }

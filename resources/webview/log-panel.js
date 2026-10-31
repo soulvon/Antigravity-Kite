@@ -2,6 +2,21 @@
 (function () {
   const vscode = window.vscode || acquireVsCodeApi();
 
+  // ── i18n：宿主注入的语言包（window.LP_L）──
+  const LP_L = window.LP_L || {};
+  function l(key) {
+    let s = LP_L[key] || key;
+    for (let i = 1; i < arguments.length; i++) {
+      s = String(s).split('{' + (i - 1) + '}').join(String(arguments[i]));
+    }
+    return s;
+  }
+  (function applyI18n() {
+    document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = l(el.getAttribute('data-i18n')); });
+    document.querySelectorAll('[data-i18n-ph]').forEach(el => { el.placeholder = l(el.getAttribute('data-i18n-ph')); });
+    document.querySelectorAll('[data-i18n-title]').forEach(el => { el.title = l(el.getAttribute('data-i18n-title')); });
+  })();
+
   let allQuotaEntries = [];
   let allQuotaEmails = [];
   let allAccountOverview = [];
@@ -77,7 +92,7 @@
       if (activeTab === 'overview') renderOverview();
       if (activeTab === 'quota') renderQuota();
     }
-    if (msg.type === 'refreshDone') showToast('刷新完成');
+    if (msg.type === 'refreshDone') showToast(l('refreshed'));
   });
 
   // 隐私模式
@@ -89,7 +104,7 @@
       privacyBtn.classList.toggle('lp-btn-active', privacyMode);
       privacyBtn.querySelector('svg').style.opacity = privacyMode ? '1' : '0.6';
       renderOverview(); renderQuota();
-      showToast(privacyMode ? '隐私模式已开启' : '隐私模式已关闭');
+      showToast(privacyMode ? l('privacyOn') : l('privacyOff'));
     });
   }
 
@@ -107,14 +122,14 @@
       if (refreshCooldown <= 0) {
         refreshBtn.classList.remove('lp-btn-cooling');
         refreshBtn.removeAttribute('disabled');
-        refreshBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> 刷新';
+        refreshBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> ' + l('refresh');
         clearInterval(refreshTimer); refreshTimer = null;
       } else {
         refreshBtn.innerHTML = '<svg class="lp-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> ' + refreshCooldown + 's';
       }
     };
     tick(); refreshTimer = setInterval(tick, 1000);
-    showToast('正在刷新…');
+    showToast(l('refreshing'));
   });
 
   // 时间范围
@@ -159,7 +174,7 @@
     allAccountOverview.forEach(a => {
       (a.tags || []).forEach(t => { if (tagCounts[t] !== undefined) tagCounts[t]++; });
     });
-    let html = '<span class="lp-tag-chip' + (!activeTag ? ' active' : '') + '" data-tag="">全部<span class="lp-tag-count">(' + allAccountOverview.length + ')</span></span>';
+    let html = '<span class="lp-tag-chip' + (!activeTag ? ' active' : '') + '" data-tag="">' + l('rangeAll') + '<span class="lp-tag-count">(' + allAccountOverview.length + ')</span></span>';
     allTags.forEach(t => {
       const isActive = activeTag === t;
       const tc = getTagColor(t);
@@ -194,7 +209,7 @@
     renderQuota();
   }
   if (btnCurrent) btnCurrent.addEventListener('click', () => {
-    if (!currentEmail) { showToast('当前账号尚无配额变动记录'); return; }
+    if (!currentEmail) { showToast(l('noCurrentRecords')); return; }
     setQuickFilter(currentEmail);
   });
   if (btnRecent) btnRecent.addEventListener('click', () => setQuickFilter('_recent_'));
@@ -238,15 +253,15 @@
     document.getElementById('lpStatHigh').textContent = high;
     document.getElementById('lpStatLow').textContent = low;
     document.getElementById('lpStatAvgUsed').textContent = avg + '%';
-    document.getElementById('lpAccountCount').textContent = total + ' 个';
+    document.getElementById('lpAccountCount').textContent = l('countUnit', total);
 
     const tbody = document.getElementById('lpAccountBody');
-    if (!accounts.length) { tbody.innerHTML = '<tr><td colspan="5" class="lp-empty">暂无账号</td></tr>'; return; }
+    if (!accounts.length) { tbody.innerHTML = '<tr><td colspan="5" class="lp-empty">' + l('noAccounts') + '</td></tr>'; return; }
     tbody.innerHTML = accounts.map(a => {
       const remaining = a.usedPct === null ? null : (100 - a.usedPct);
       const pctText = remaining === null ? '—' : remaining + '%';
       const fillClass = remaining === null ? '' : remaining <= 10 ? 'lp-fill-danger' : remaining <= 30 ? 'lp-fill-warn' : 'lp-fill-ok';
-      const statusText = a.disabled ? '禁用' : remaining === null ? '未检测' : remaining <= 10 ? '危险' : remaining <= 30 ? '警戒' : '正常';
+      const statusText = a.disabled ? l('disabled') : remaining === null ? l('statusUnchecked') : remaining <= 10 ? l('statusDanger') : remaining <= 30 ? l('statusWarn') : l('statusNormal');
       const statusClass = a.disabled ? 'lp-c-dim' : remaining === null ? 'lp-c-dim' : remaining <= 10 ? 'lp-c-red' : remaining <= 30 ? 'lp-c-yellow' : 'lp-c-green';
       const tagsHtml = (a.tags || []).map(t => '<span class="lp-tag" style="background:' + getTagColor(t) + '20;color:' + getTagColor(t) + ';border-color:' + getTagColor(t) + '60">' + escHtml(t) + '</span>').join('');
       return '<tr class="' + (a.isCurrent ? 'lp-row-current' : '') + '">' +
@@ -264,7 +279,7 @@
     buildTagChips();
     const filtered = allQuotaEntries.filter(passesFilters);
     const countEl = document.getElementById('lpQuotaCount');
-    if (countEl) countEl.textContent = filtered.length + ' 条';
+    if (countEl) countEl.textContent = l('entriesUnit', filtered.length);
 
     renderChart(filtered);
     renderQuotaTable(filtered);
@@ -295,7 +310,7 @@
 
     if (entries.length < 2) {
       const cx = W / 2, cy = H / 2;
-      svg.innerHTML = buildGrid() + '<text x="' + cx + '" y="' + cy + '" text-anchor="middle" fill="var(--lp-fg-dim)" font-size="13" font-weight="500">数据点不足，无法绘制趋势</text>';
+      svg.innerHTML = buildGrid() + '<text x="' + cx + '" y="' + cy + '" text-anchor="middle" fill="var(--lp-fg-dim)" font-size="13" font-weight="500">' + escHtml(l('noDataPoints')) + '</text>';
       return;
     }
 
@@ -333,7 +348,7 @@
     const tbody = document.getElementById('lpQuotaBody');
     const pagination = document.getElementById('lpQuotaPagination');
     if (!entries.length) {
-      tbody.innerHTML = '<tr><td colspan="5" class="lp-empty">暂无配额变动记录</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="lp-empty">' + l('noHistory') + '</td></tr>';
       pagination.innerHTML = '';
       return;
     }
@@ -345,7 +360,7 @@
     const pageItems = entries.slice().reverse().slice(start, start + PAGE_SIZE);
 
     tbody.innerHTML = pageItems.map(entry => {
-      const time = new Date(entry.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+      const time = new Date(entry.ts).toLocaleString(LP_L.__lang === 'en' ? 'en' : 'zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
       const deltaStr = entry.delta > 0 ? '<span class="lp-c-green">+' + entry.delta + '%</span>'
         : entry.delta < 0 ? '<span class="lp-c-red">' + entry.delta + '%</span>'
         : '<span class="lp-c-dim">0</span>';
@@ -360,9 +375,9 @@
     }).join('');
 
     // 分页
-    let pgHtml = '<span class="lp-page-info">' + quotaPage + ' / ' + totalPages + ' 页（共 ' + total + ' 条）</span>';
-    pgHtml += '<button class="lp-page-btn" ' + (quotaPage <= 1 ? 'disabled' : '') + ' data-page="prev">上一页</button>';
-    pgHtml += '<button class="lp-page-btn" ' + (quotaPage >= totalPages ? 'disabled' : '') + ' data-page="next">下一页</button>';
+    let pgHtml = '<span class="lp-page-info">' + escHtml(l('pageInfo', quotaPage, totalPages, total)) + '</span>';
+    pgHtml += '<button class="lp-page-btn" ' + (quotaPage <= 1 ? 'disabled' : '') + ' data-page="prev">' + l('prevPage') + '</button>';
+    pgHtml += '<button class="lp-page-btn" ' + (quotaPage >= totalPages ? 'disabled' : '') + ' data-page="next">' + l('nextPage') + '</button>';
     pagination.innerHTML = pgHtml;
     pagination.querySelectorAll('.lp-page-btn').forEach(btn => {
       btn.addEventListener('click', () => {

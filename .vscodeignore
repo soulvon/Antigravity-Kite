@@ -20,3 +20,5 @@ scripts/**
 .codebuddy/**
 spec/**
 .preview/**
+tmp/**
+resources/preview-sidebar.png

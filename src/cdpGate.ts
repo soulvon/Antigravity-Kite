@@ -14,7 +14,7 @@ import * as cp from 'child_process';
 import { logInfo, logWarn } from './logger';
 import { probeCdpPort } from './declarationSuppressor';
 import { t } from './i18n';
-import * as instanceMgr from './instanceManager';
+import * as ideRuntime from './ideRuntime';
 
 export type GateResult = 'ready' | 'manual' | 'relaunching';
 
@@ -139,8 +139,8 @@ export async function ensureCdpGate(context: vscode.ExtensionContext): Promise<G
       logWarn('cdpGate.shortcuts.none', {});
     }
     try {
-      const launch = await instanceMgr.getCurrentInstanceLaunchInfo();
-      const exePath = launch.exePath || (await instanceMgr.detectExePath());
+      const launch = await ideRuntime.getCurrentLaunchInfo();
+      const exePath = launch.exePath || (await ideRuntime.detectExePath());
       if (!exePath) throw new Error(t('gateNoExe'));
       if (!launch.pid) throw new Error(t('gateNoPid'));
       void vscode.window.showInformationMessage(t('gateRelaunching'));

@@ -1,0 +1,32 @@
+底座顶层块: 1004 | 适配层顶层块: 338
+
+=== 完全同名选择器重叠（适配层会压过底座）: 7 个 ===
+  .cockpit-item
+  .cockpit-item { border-color: var(--card-border-hover); }
+  .cockpit-item.imported { opacity: 0.5; }
+  .enhance-toggle-btn
+  .enhance-toggle-btn.is-on
+  .grid-plan-chip
+  .usage-stats-bar-val
+
+=== !important 用量 ===
+底座: 304 | 适配层: 689 | 合并: 993
+
+=== 花括号平衡 ===
+底座: 最终深度=-10 ✘ 不平衡
+适配层: 最终深度=0 ✔
+合并稿: 最终深度=-10 ✘ 不平衡
+
+=== 适配层中 !important 最密集的 12 个块 ===
+  15x  L157-173 :: .inst-cockpit-btn 
+  15x  L1388-1404 :: .kite-tab 
+  15x  L1675-1691 :: .kite-tab 
+  15x  L1925-1962 :: @media (max-width: 420px) 
+  15x  L2090-2127 :: @media (max-width: 420px) 
+  15x  L2142-2158 :: .status-dot-btn 
+  13x  L1037-1051 :: .kite-tab 
+  13x  L2207-2221 :: .filter-option-check input[type="checkbox"] 
+  12x  L1355-1369 :: .kite-tab-bar 
+  11x  L1650-1662 :: .kite-tab-bar 
+  10x  L1003-1014 :: .kite-tab-bar 
+  10x  L1069-1083 :: .kite-tab-badge 

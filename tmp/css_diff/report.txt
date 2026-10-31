@@ -1,0 +1,447 @@
+=== 规模 ===
+Kite  main.css 行数: 10377 字节: 304574
+Relay main.css 行数: 6159 字节: 169456
+Kite  CSS class 数: 680 | Relay CSS class 数: 581
+Kite  HTML class 数: 225 | Relay HTML class 数: 174
+
+=== 1. Kite HTML 用到但 Kite CSS 没定义的 class（真·裸奔） ===
+'
+'')
+'is-active'
+'is-disabled'
+'is-off'
+'is-on')
+(c
+(i
+(isCurrent
+(isDisabled
+(selectMode
++
+:
+===
+?
+accept-pattern-cb
+cls
+currentColor
+currentPage
+inst-focus
+inst-start
+inst-stop
+is-active'
+is-select-mode'
+privacy-eye
+stateClass
+statusClass
+tag-color-dot'
+tag-edit-chip
+tag-edit-color-dot
+tag-edit-existing
+tag-edit-opt
+tag-edit-remove
+tag-edit-selected
+tierClass
+
+=== 2. Kite HTML 用到，Relay CSS 有定义（迁移后可复用） ===
+account-grid
+active
+add-account-btn
+app
+app-tab
+app-tabs
+batch-action-btn
+batch-action-delete
+batch-bar
+batch-check-all
+batch-count
+bubble-preview
+bubble-preview-container
+bubble-preview-item
+cockpit-import-btn
+cockpit-item
+cockpit-list
+danger
+empty-card
+empty-sub
+empty-title
+enhance-card
+enhance-details
+enhance-select
+filter-actions
+filter-clear-btn
+filter-count
+filter-dropdown
+filter-options
+filter-section
+filter-section-title
+filter-trigger
+filter-wrap
+grid-actions-right
+grid-active-tag
+grid-card
+grid-card-actions
+grid-card-email
+grid-card-head
+grid-card-meta
+grid-card-quotas
+grid-check-col
+grid-check-input
+grid-count
+grid-current-label
+grid-disabled-tag
+grid-plan-chip
+grid-switch-btn
+group-select
+group-select-mode-btn
+icon-btn
+inst-add-btn
+inst-card
+inst-card-actions
+inst-card-email
+inst-card-header
+inst-card-name
+inst-card-state
+inst-empty
+inst-list
+inst-refresh-btn
+inst-source-badge
+is-active
+list-arrow
+list-body
+list-icon
+list-summary
+modal-body
+modal-box
+modal-cancel-btn
+modal-close
+modal-header
+modal-overlay
+page-size-select
+pagination
+panel-divider
+primary
+quota-bar
+quota-bar-fill
+search-bar
+search-clear
+search-icon
+search-input
+sort-direction-btn
+tab-count
+tab-page
+tag-color-input
+tag-color-picker-custom
+tag-color-picker-grid
+tag-color-picker-title
+tag-color-reset
+toast-msg
+toolbar-bar
+toolbar-icon-btn
+
+=== 3. Kite HTML 用到，Relay CSS 没有定义（迁移后必须补） ===
+'
+'')
+'is-active'
+'is-disabled'
+'is-off'
+'is-on')
+(c
+(i
+(isCurrent
+(isDisabled
+(selectMode
++
+:
+===
+?
+accept-pattern-cb
+accept-stats-bar
+accounts-section-header
+add-account-modal
+add-modal-body
+add-modal-close
+add-modal-content
+add-modal-header
+add-modal-option
+add-modal-title
+add-option-desc
+add-option-icon
+add-option-info
+add-option-title
+cancel
+cls
+cockpit-imported
+cockpit-item-email
+cockpit-item-info
+cockpit-item-name
+confirm
+confirm-actions
+confirm-danger-btn
+confirm-message
+currentColor
+currentPage
+enhance-actions
+enhance-apply-btn
+enhance-card-body
+enhance-card-desc
+enhance-card-header
+enhance-card-title
+enhance-card-title-group
+enhance-desc
+enhance-details-content
+enhance-details-desc
+enhance-details-summary
+enhance-input
+enhance-remove-btn
+enhance-section
+enhance-status-badge
+enhance-status-msg
+enhance-sub-col
+enhance-sub-row
+enhance-sub-row-grid
+enhance-textarea
+enhance-toggle
+enhance-toggle-slider
+filter-option-check
+import-modal-actions
+import-modal-body
+import-modal-btn
+import-modal-close
+import-modal-content
+import-modal-desc
+import-modal-email
+import-modal-header
+import-modal-title
+import-modal-warning
+inst-btn
+inst-card-dot
+inst-cockpit-btn
+inst-count-badge
+inst-create-hint
+inst-del
+inst-focus
+inst-icon-btn
+inst-start
+inst-stop
+inst-toolbar
+inst-toolbar-title
+is-active'
+is-none
+is-select-mode'
+kite-tab
+kite-tab-badge
+kite-tab-bar
+kite-tab-content
+kite-tab-count
+micro-number-input
+page-btn
+page-ellipsis
+pill-selector
+pill-selectors-container
+privacy-eye
+q2-cell
+q2-col
+q2-head
+q2-name
+q2-reset
+q2-title
+q2-val
+quota-grid2
+quota-load-error
+recommend-btn
+remaining-input-box
+stateClass
+stats-reset-link
+stats-text
+status-dot-btn
+statusClass
+sub-col-label
+tag-color-dot'
+tag-edit-chip
+tag-edit-color-dot
+tag-edit-existing
+tag-edit-opt
+tag-edit-remove
+tag-edit-selected
+text-green
+text-red
+tierClass
+toast-container
+toast-detail
+toast-icon
+toast-spinner
+
+=== 4. Relay CSS 有、Kite CSS 没有的 class（说明 Kite 缺哪些体系） ===
+共 55 个：
+ac-root
+auto-switch-card
+byok-actions
+byok-body
+byok-card
+byok-header
+byok-subtitle
+byok-title
+byok-url
+c-green
+c-purple
+default
+grid-card-error-action
+grid-card-error-dot
+grid-card-error-text
+header-toggle
+inst-arrow
+inst-body
+inst-card-btn
+inst-card-tag
+inst-details
+inst-email-empty
+inst-email-sep
+inst-email-text
+inst-icon
+inst-import-btn
+inst-smart-icon
+inst-smart-label
+inst-summary
+inst-title
+is-critical
+list-card
+modal-footer
+split-card
+split-content
+split-content-body
+split-content-header
+split-sidebar
+split-sidebar-item
+start
+stop
+subtab
+subtab-content
+subtabs-bar
+summary-bar
+summary-bar-fill
+summary-stat
+summary-stat-footer
+summary-stat-head
+summary-stat-icon
+summary-stat-label
+summary-stat-max
+summary-stat-num
+summary-stat-pct
+summary-stats
+
+=== 5. ID 选择器：Relay 用了哪些 ID，Kite HTML 是否存在 ===
+  #a78bfa  -> Kite HTML 【缺】
+  #a855f7  -> Kite HTML 【缺】
+  #acPanelSimple  -> Kite HTML 【缺】
+  #b7791f  -> Kite HTML 【缺】
+  #c73434  -> Kite HTML 【缺】
+  #c7d2fe  -> Kite HTML 【缺】
+  #c9f2e3  -> Kite HTML 【缺】
+  #d19a66  -> Kite HTML 【缺】
+  #d29922  -> Kite HTML 【缺】
+  #d4842a  -> Kite HTML 【缺】
+  #d97706  -> Kite HTML 【缺】
+  #dc2626  -> Kite HTML 【缺】
+  #e3b341  -> Kite HTML 【缺】
+  #e5a445  -> Kite HTML 【缺】
+  #e6f7f0  -> Kite HTML 【缺】
+  #ec4899  -> Kite HTML 【缺】
+  #ef4444  -> Kite HTML 【缺】
+  #enhanceSplitCard  -> Kite HTML 【缺】
+  #f0883e  -> Kite HTML 【缺】
+  #f14c4c  -> Kite HTML 【缺】
+  #f43f5e  -> Kite HTML 【缺】
+  #f59e0b  -> Kite HTML 【缺】
+  #f6f8fa  -> Kite HTML 【缺】
+  #f85149  -> Kite HTML 【缺】
+  #fbbf24  -> Kite HTML 【缺】
+  #fff  -> Kite HTML 【缺】
+  #ffffff  -> Kite HTML 【缺】
+  #statBalanceCount  -> Kite HTML 【缺】
+  #tab-account  -> Kite HTML 【缺】
+  #tab-automation  -> Kite HTML 【缺】
+  #tab-enhance  -> Kite HTML 【缺】
+  #tab-instance  -> Kite HTML 【缺】
+  #tagAddBtn  -> Kite HTML 【缺】
+
+=== 6. Kite CSS 里出现但 Kite HTML 当前没用到的 class（死代码候选，前80个） ===
+共 490 个
+ac-body
+ac-btn-del
+ac-dim-icon
+ac-glass-card
+ac-last-action
+ac-off-content
+ac-off-desc
+ac-off-state
+ac-off-title
+ac-section-panel
+ac-stats-bar
+ac-stats-chip
+ac-stats-dot
+ac-stats-header
+ac-stats-items
+ac-stats-total
+ac-tag-list
+account-picker
+accounts-section-actions
+accounts-section-title
+add-tab
+add-tabs
+alert-actions
+alert-btn
+amr-brand-dot
+amr-check
+amr-name
+anomaly-badge-btn
+anomaly-badge-count
+ap-arrow
+ap-day-high
+ap-day-low
+ap-day-mid
+ap-email
+ap-empty
+ap-empty-state
+ap-err
+ap-item
+ap-list
+ap-list-portal
+ap-loading
+ap-stat
+ap-trigger
+ap-trigger-content
+ap-usage
+ap-week-high
+ap-week-low
+ap-week-mid
+as-adv-body
+as-adv-details
+as-adv-summary
+as-body
+as-details
+as-inline-num
+as-log
+as-main-setting
+as-open-panel-btn
+as-select
+as-status
+as-switch
+as-switch-thumb
+as-switch-track
+as-tag-chip
+as-tag-opt
+as-tag-options
+as-tag-selected
+as-top-arrow
+as-top-icon
+as-top-summary
+as-top-title
+available-model-row
+b-amber
+b-blue
+b-danger-outline
+b-emerald
+b-ghost
+b-red
+balance-count
+balance-filter-btn
+balance-icon

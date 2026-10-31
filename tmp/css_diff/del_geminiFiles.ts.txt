@@ -1,0 +1,11 @@
+/** 读取当前 ~/.gemini/google_accounts.json 的 active（诊断用） */
+export function readActiveAccount(): string {
+  try {
+    const accFile = path.join(geminiDir(), 'google_accounts.json');
+    if (!fs.existsSync(accFile)) return '';
+    const acc = JSON.parse(fs.readFileSync(accFile, 'utf8')) as { active?: string };
+    return acc.active || '';
+  } catch {
+    return '';
+  }
+}

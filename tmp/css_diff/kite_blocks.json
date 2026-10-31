@@ -1,0 +1,2147 @@
+[
+  {
+    "startLine": 70,
+    "endLine": 74,
+    "selector": ".kite-tab-badge"
+  },
+  {
+    "startLine": 77,
+    "endLine": 87,
+    "selector": ".kite-tab-bar"
+  },
+  {
+    "startLine": 88,
+    "endLine": 103,
+    "selector": ".kite-tab"
+  },
+  {
+    "startLine": 104,
+    "endLine": 107,
+    "selector": ".kite-tab:hover"
+  },
+  {
+    "startLine": 108,
+    "endLine": 113,
+    "selector": ".kite-tab.is-active"
+  },
+  {
+    "startLine": 114,
+    "endLine": 116,
+    "selector": ".kite-tab svg"
+  },
+  {
+    "startLine": 117,
+    "endLine": 122,
+    "selector": ".kite-tab-badge"
+  },
+  {
+    "startLine": 123,
+    "endLine": 125,
+    "selector": ".kite-tab-content"
+  },
+  {
+    "startLine": 126,
+    "endLine": 128,
+    "selector": ".kite-tab-content.is-active"
+  },
+  {
+    "startLine": 131,
+    "endLine": 139,
+    "selector": ".accounts-section-header"
+  },
+  {
+    "startLine": 140,
+    "endLine": 145,
+    "selector": ".accounts-section-title"
+  },
+  {
+    "startLine": 146,
+    "endLine": 151,
+    "selector": ".accounts-section-title strong"
+  },
+  {
+    "startLine": 152,
+    "endLine": 158,
+    "selector": ".accounts-section-title small"
+  },
+  {
+    "startLine": 159,
+    "endLine": 175,
+    "selector": ".kite-brand-mark-inline"
+  },
+  {
+    "startLine": 176,
+    "endLine": 181,
+    "selector": ".accounts-section-actions"
+  },
+  {
+    "startLine": 184,
+    "endLine": 188,
+    "selector": ".usage-stats-details"
+  },
+  {
+    "startLine": 189,
+    "endLine": 200,
+    "selector": ".usage-stats-summary"
+  },
+  {
+    "startLine": 201,
+    "endLine": 201,
+    "selector": ".usage-stats-summary::-webkit-details-marker { display: none; }"
+  },
+  {
+    "startLine": 202,
+    "endLine": 208,
+    "selector": ".usage-stats-summary::after"
+  },
+  {
+    "startLine": 209,
+    "endLine": 209,
+    "selector": ".usage-stats-details[open] .usage-stats-summary::after { transform: rotate(90deg); }"
+  },
+  {
+    "startLine": 210,
+    "endLine": 210,
+    "selector": ".usage-stats-summary svg { color: var(--ac-blue, #58a6ff); opacity: 0.8; flex-shrink: 0; }"
+  },
+  {
+    "startLine": 211,
+    "endLine": 217,
+    "selector": ".usage-stats-date"
+  },
+  {
+    "startLine": 218,
+    "endLine": 218,
+    "selector": ".usage-stats-body { padding: 8px 0 4px; animation: fadeIn 0.2s ease-out; }"
+  },
+  {
+    "startLine": 220,
+    "endLine": 225,
+    "selector": ".usage-stats-grid"
+  },
+  {
+    "startLine": 241,
+    "endLine": 241,
+    "selector": ".usage-stats-bar-section { display: flex; flex-direction: column; gap: 6px; }"
+  },
+  {
+    "startLine": 242,
+    "endLine": 242,
+    "selector": ".usage-stats-bar-row { display: flex; align-items: center; gap: 8px; }"
+  },
+  {
+    "startLine": 243,
+    "endLine": 243,
+    "selector": ".usage-stats-bar-label { font-size: 10px; color: var(--muted); width: 54px; flex-shrink: 0; }"
+  },
+  {
+    "startLine": 244,
+    "endLine": 250,
+    "selector": ".usage-stats-bar"
+  },
+  {
+    "startLine": 251,
+    "endLine": 251,
+    "selector": ".usage-stats-bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease-out; }"
+  },
+  {
+    "startLine": 252,
+    "endLine": 252,
+    "selector": ".usage-stats-bar-fill.daily { background: linear-gradient(90deg, var(--ac-emerald, #10b981), var(--ac-blue, #3b82f6)); }"
+  },
+  {
+    "startLine": 253,
+    "endLine": 262,
+    "selector": ".usage-stats-bar-val"
+  },
+  {
+    "startLine": 289,
+    "endLine": 296,
+    "selector": ".inst-toolbar"
+  },
+  {
+    "startLine": 297,
+    "endLine": 304,
+    "selector": ".inst-toolbar-title"
+  },
+  {
+    "startLine": 305,
+    "endLine": 318,
+    "selector": ".inst-count-badge"
+  },
+  {
+    "startLine": 346,
+    "endLine": 362,
+    "selector": ".inst-cockpit-btn"
+  },
+  {
+    "startLine": 363,
+    "endLine": 368,
+    "selector": ".inst-cockpit-btn:hover"
+  },
+  {
+    "startLine": 429,
+    "endLine": 435,
+    "selector": ".inst-card-dot"
+  },
+  {
+    "startLine": 436,
+    "endLine": 439,
+    "selector": ".inst-card-dot.is-running"
+  },
+  {
+    "startLine": 445,
+    "endLine": 448,
+    "selector": ".inst-card-dot.is-stopped"
+  },
+  {
+    "startLine": 508,
+    "endLine": 520,
+    "selector": ".inst-icon-btn"
+  },
+  {
+    "startLine": 521,
+    "endLine": 527,
+    "selector": ".inst-icon-btn:hover"
+  },
+  {
+    "startLine": 528,
+    "endLine": 532,
+    "selector": ".inst-icon-btn.danger:hover"
+  },
+  {
+    "startLine": 533,
+    "endLine": 535,
+    "selector": ".inst-icon-btn svg"
+  },
+  {
+    "startLine": 536,
+    "endLine": 538,
+    "selector": ".inst-icon-btn:hover svg"
+  },
+  {
+    "startLine": 539,
+    "endLine": 545,
+    "selector": ".inst-create-hint"
+  },
+  {
+    "startLine": 565,
+    "endLine": 574,
+    "selector": ".cockpit-item"
+  },
+  {
+    "startLine": 575,
+    "endLine": 578,
+    "selector": ".cockpit-item:hover"
+  },
+  {
+    "startLine": 579,
+    "endLine": 582,
+    "selector": ".cockpit-item-info"
+  },
+  {
+    "startLine": 583,
+    "endLine": 590,
+    "selector": ".cockpit-item-name"
+  },
+  {
+    "startLine": 591,
+    "endLine": 595,
+    "selector": ".cockpit-item-email"
+  },
+  {
+    "startLine": 596,
+    "endLine": 599,
+    "selector": ".cockpit-item-email .is-none"
+  },
+  {
+    "startLine": 616,
+    "endLine": 622,
+    "selector": ".cockpit-imported"
+  },
+  {
+    "startLine": 774,
+    "endLine": 786,
+    "selector": ".enhance-toggle-btn"
+  },
+  {
+    "startLine": 787,
+    "endLine": 791,
+    "selector": ".enhance-toggle-btn.is-on"
+  },
+  {
+    "startLine": 1266,
+    "endLine": 1266,
+    "selector": ".list-icon { color: var(--muted); flex-shrink: 0; }"
+  },
+  {
+    "startLine": 1278,
+    "endLine": 1284,
+    "selector": ".list-arrow"
+  },
+  {
+    "startLine": 1285,
+    "endLine": 1285,
+    "selector": ".list-arrow::after { content: '▶'; }"
+  },
+  {
+    "startLine": 1286,
+    "endLine": 1286,
+    "selector": ".list-details[open] .list-arrow { transform: rotate(90deg); }"
+  },
+  {
+    "startLine": 1405,
+    "endLine": 1419,
+    "selector": ".recommend-btn"
+  },
+  {
+    "startLine": 1420,
+    "endLine": 1420,
+    "selector": ".recommend-btn:hover { background: var(--hover-bg); border-color: var(--card-border-hover); }"
+  },
+  {
+    "startLine": 1422,
+    "endLine": 1426,
+    "selector": ".recommend-btn.is-active:hover"
+  },
+  {
+    "startLine": 1427,
+    "endLine": 1427,
+    "selector": ".recommend-btn svg { color: #f59e0b; }"
+  },
+  {
+    "startLine": 2145,
+    "endLine": 2157,
+    "selector": ".page-btn"
+  },
+  {
+    "startLine": 2158,
+    "endLine": 2158,
+    "selector": ".page-btn:hover:not(:disabled) { border-color: var(--card-border-hover); color: var(--vscode-foreground); }"
+  },
+  {
+    "startLine": 2159,
+    "endLine": 2159,
+    "selector": ".page-btn:disabled { opacity: 0.4; cursor: not-allowed; }"
+  },
+  {
+    "startLine": 2160,
+    "endLine": 2160,
+    "selector": ".page-btn.is-active { background: var(--ac-emerald); border-color: var(--ac-emerald); color: #fff; }"
+  },
+  {
+    "startLine": 2161,
+    "endLine": 2161,
+    "selector": ".page-ellipsis { font-size: 11px; color: var(--muted); padding: 0 4px; }"
+  },
+  {
+    "startLine": 2172,
+    "endLine": 2175,
+    "selector": ".panel-divider"
+  },
+  {
+    "startLine": 2218,
+    "endLine": 2222,
+    "selector": ".usage-stats-details"
+  },
+  {
+    "startLine": 2223,
+    "endLine": 2234,
+    "selector": ".usage-stats-summary"
+  },
+  {
+    "startLine": 2235,
+    "endLine": 2235,
+    "selector": ".usage-stats-summary::-webkit-details-marker { display: none; }"
+  },
+  {
+    "startLine": 2236,
+    "endLine": 2241,
+    "selector": ".usage-stats-summary::after"
+  },
+  {
+    "startLine": 2242,
+    "endLine": 2244,
+    "selector": ".usage-stats-details[open] .usage-stats-summary::after"
+  },
+  {
+    "startLine": 2245,
+    "endLine": 2245,
+    "selector": ".usage-stats-summary svg { color: var(--ac-blue); opacity: 0.7; flex-shrink: 0; }"
+  },
+  {
+    "startLine": 2246,
+    "endLine": 2252,
+    "selector": ".usage-stats-date"
+  },
+  {
+    "startLine": 2253,
+    "endLine": 2256,
+    "selector": ".usage-stats-body"
+  },
+  {
+    "startLine": 2261,
+    "endLine": 2266,
+    "selector": ".usage-stats-grid"
+  },
+  {
+    "startLine": 2286,
+    "endLine": 2298,
+    "selector": ".usage-stats-balance-row"
+  },
+  {
+    "startLine": 2299,
+    "endLine": 2301,
+    "selector": ".usage-stats-balance-icon"
+  },
+  {
+    "startLine": 2302,
+    "endLine": 2304,
+    "selector": ".usage-stats-balance-text"
+  },
+  {
+    "startLine": 2305,
+    "endLine": 2308,
+    "selector": ".usage-stats-balance-text #statBalanceCount"
+  },
+  {
+    "startLine": 2309,
+    "endLine": 2313,
+    "selector": ".usage-stats-bar-section"
+  },
+  {
+    "startLine": 2314,
+    "endLine": 2318,
+    "selector": ".usage-stats-bar-row"
+  },
+  {
+    "startLine": 2319,
+    "endLine": 2324,
+    "selector": ".usage-stats-bar-label"
+  },
+  {
+    "startLine": 2325,
+    "endLine": 2331,
+    "selector": ".usage-stats-bar"
+  },
+  {
+    "startLine": 2332,
+    "endLine": 2336,
+    "selector": ".usage-stats-bar-fill"
+  },
+  {
+    "startLine": 2337,
+    "endLine": 2339,
+    "selector": ".usage-stats-bar-fill.daily"
+  },
+  {
+    "startLine": 2340,
+    "endLine": 2342,
+    "selector": ".usage-stats-bar-fill.weekly"
+  },
+  {
+    "startLine": 2343,
+    "endLine": 2352,
+    "selector": ".usage-stats-bar-val"
+  },
+  {
+    "startLine": 2481,
+    "endLine": 2491,
+    "selector": ".add-account-modal"
+  },
+  {
+    "startLine": 2492,
+    "endLine": 2501,
+    "selector": ".add-modal-content"
+  },
+  {
+    "startLine": 2502,
+    "endLine": 2508,
+    "selector": ".add-modal-header"
+  },
+  {
+    "startLine": 2509,
+    "endLine": 2512,
+    "selector": ".add-modal-title"
+  },
+  {
+    "startLine": 2513,
+    "endLine": 2521,
+    "selector": ".add-modal-close"
+  },
+  {
+    "startLine": 2522,
+    "endLine": 2522,
+    "selector": ".add-modal-close:hover { background: var(--surface-bg); color: var(--foreground); }"
+  },
+  {
+    "startLine": 2523,
+    "endLine": 2528,
+    "selector": ".add-modal-body"
+  },
+  {
+    "startLine": 2529,
+    "endLine": 2541,
+    "selector": ".add-modal-option"
+  },
+  {
+    "startLine": 2542,
+    "endLine": 2545,
+    "selector": ".add-modal-option:hover"
+  },
+  {
+    "startLine": 2546,
+    "endLine": 2546,
+    "selector": ".add-option-icon { font-size: 18px; flex-shrink: 0; }"
+  },
+  {
+    "startLine": 2547,
+    "endLine": 2547,
+    "selector": ".add-option-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }"
+  },
+  {
+    "startLine": 2548,
+    "endLine": 2548,
+    "selector": ".add-option-title { font-size: 12.5px; font-weight: 600; color: var(--foreground); }"
+  },
+  {
+    "startLine": 2549,
+    "endLine": 2549,
+    "selector": ".add-option-desc { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }"
+  },
+  {
+    "startLine": 2707,
+    "endLine": 2712,
+    "selector": ".cockpit-item"
+  },
+  {
+    "startLine": 2713,
+    "endLine": 2713,
+    "selector": ".cockpit-item:hover { border-color: var(--card-border-hover); }"
+  },
+  {
+    "startLine": 2714,
+    "endLine": 2714,
+    "selector": ".cockpit-item.imported { opacity: 0.5; }"
+  },
+  {
+    "startLine": 4131,
+    "endLine": 4131,
+    "selector": ".toast-success { border-color: var(--ac-emerald); }"
+  },
+  {
+    "startLine": 4132,
+    "endLine": 4132,
+    "selector": ".toast-warning { border-color: var(--ac-amber); }"
+  },
+  {
+    "startLine": 4133,
+    "endLine": 4133,
+    "selector": ".toast-error { border-color: var(--ac-coral); }"
+  },
+  {
+    "startLine": 4134,
+    "endLine": 4134,
+    "selector": ".toast-info { border-color: var(--ac-blue); }"
+  },
+  {
+    "startLine": 4135,
+    "endLine": 4135,
+    "selector": ".toast-loading { border-color: var(--ac-blue); }"
+  },
+  {
+    "startLine": 4136,
+    "endLine": 4136,
+    "selector": ".toast-msg { flex: 1; min-width: 0; word-break: break-word; }"
+  },
+  {
+    "startLine": 4137,
+    "endLine": 4137,
+    "selector": ".toast-detail { font-size: 11px; color: var(--muted); display: block; margin-top: 2px; }"
+  },
+  {
+    "startLine": 4138,
+    "endLine": 4146,
+    "selector": ".toast-spinner"
+  },
+  {
+    "startLine": 4149,
+    "endLine": 4157,
+    "selector": ".import-modal-overlay"
+  },
+  {
+    "startLine": 4158,
+    "endLine": 4165,
+    "selector": ".import-modal-content"
+  },
+  {
+    "startLine": 4166,
+    "endLine": 4172,
+    "selector": ".import-modal-header"
+  },
+  {
+    "startLine": 4173,
+    "endLine": 4173,
+    "selector": ".import-modal-title { font-size: 13px; font-weight: 600; }"
+  },
+  {
+    "startLine": 4174,
+    "endLine": 4182,
+    "selector": ".import-modal-close"
+  },
+  {
+    "startLine": 4183,
+    "endLine": 4183,
+    "selector": ".import-modal-close:hover { color: var(--vscode-foreground); }"
+  },
+  {
+    "startLine": 4184,
+    "endLine": 4184,
+    "selector": ".import-modal-body { padding: 16px 14px; }"
+  },
+  {
+    "startLine": 4185,
+    "endLine": 4190,
+    "selector": ".import-modal-email"
+  },
+  {
+    "startLine": 4191,
+    "endLine": 4195,
+    "selector": ".import-modal-desc"
+  },
+  {
+    "startLine": 4196,
+    "endLine": 4204,
+    "selector": ".import-modal-warning"
+  },
+  {
+    "startLine": 4205,
+    "endLine": 4211,
+    "selector": ".import-modal-actions"
+  },
+  {
+    "startLine": 4212,
+    "endLine": 4219,
+    "selector": ".import-modal-btn"
+  },
+  {
+    "startLine": 4220,
+    "endLine": 4224,
+    "selector": ".import-modal-btn.cancel"
+  },
+  {
+    "startLine": 4225,
+    "endLine": 4225,
+    "selector": ".import-modal-btn.cancel:hover { border-color: var(--card-border-hover); color: var(--vscode-foreground); }"
+  },
+  {
+    "startLine": 4226,
+    "endLine": 4230,
+    "selector": ".import-modal-btn.confirm"
+  },
+  {
+    "startLine": 4231,
+    "endLine": 4231,
+    "selector": ".import-modal-btn.confirm:hover { background: #059669; }"
+  },
+  {
+    "startLine": 4415,
+    "endLine": 4420,
+    "selector": ".ac-stats-bar"
+  },
+  {
+    "startLine": 4421,
+    "endLine": 4427,
+    "selector": ".ac-stats-header"
+  },
+  {
+    "startLine": 4428,
+    "endLine": 4434,
+    "selector": ".ac-stats-total"
+  },
+  {
+    "startLine": 4435,
+    "endLine": 4439,
+    "selector": ".ac-stats-items"
+  },
+  {
+    "startLine": 4440,
+    "endLine": 4447,
+    "selector": ".ac-stats-chip"
+  },
+  {
+    "startLine": 4448,
+    "endLine": 4452,
+    "selector": ".ac-stats-chip b"
+  },
+  {
+    "startLine": 4453,
+    "endLine": 4457,
+    "selector": ".ac-stats-dot"
+  },
+  {
+    "startLine": 4458,
+    "endLine": 4458,
+    "selector": ".ac-stats-dot.c-emerald { background: #10b981; }"
+  },
+  {
+    "startLine": 4459,
+    "endLine": 4459,
+    "selector": ".ac-stats-dot.c-blue { background: #3b82f6; }"
+  },
+  {
+    "startLine": 4460,
+    "endLine": 4460,
+    "selector": ".ac-stats-dot.c-amber { background: #f59e0b; }"
+  },
+  {
+    "startLine": 4461,
+    "endLine": 4461,
+    "selector": ".ac-stats-dot.c-red { background: #ef4444; }"
+  },
+  {
+    "startLine": 4462,
+    "endLine": 4462,
+    "selector": ".ac-stats-dot.c-violet { background: #8b5cf6; }"
+  },
+  {
+    "startLine": 4463,
+    "endLine": 4463,
+    "selector": ".ac-stats-dot.c-cyan { background: #06b6d4; }"
+  },
+  {
+    "startLine": 4464,
+    "endLine": 4464,
+    "selector": ".ac-stats-dot.c-gray { background: #6b7280; }"
+  },
+  {
+    "startLine": 4521,
+    "endLine": 4526,
+    "selector": ".enhance-section"
+  },
+  {
+    "startLine": 4527,
+    "endLine": 4534,
+    "selector": ".enhance-desc"
+  },
+  {
+    "startLine": 4588,
+    "endLine": 4595,
+    "selector": ".enhance-toggle"
+  },
+  {
+    "startLine": 4596,
+    "endLine": 4598,
+    "selector": ".enhance-toggle input"
+  },
+  {
+    "startLine": 4599,
+    "endLine": 4606,
+    "selector": ".enhance-toggle-slider"
+  },
+  {
+    "startLine": 4607,
+    "endLine": 4618,
+    "selector": ".enhance-toggle-slider::before"
+  },
+  {
+    "startLine": 4619,
+    "endLine": 4622,
+    "selector": ".enhance-toggle input:checked + .enhance-toggle-slider"
+  },
+  {
+    "startLine": 4623,
+    "endLine": 4625,
+    "selector": ".enhance-toggle input:checked + .enhance-toggle-slider::before"
+  },
+  {
+    "startLine": 4648,
+    "endLine": 4655,
+    "selector": ".enhance-sub-row"
+  },
+  {
+    "startLine": 4656,
+    "endLine": 4660,
+    "selector": ".enhance-sub-row > span"
+  },
+  {
+    "startLine": 4684,
+    "endLine": 4695,
+    "selector": ".enhance-input"
+  },
+  {
+    "startLine": 4696,
+    "endLine": 4699,
+    "selector": ".enhance-input:focus"
+  },
+  {
+    "startLine": 4708,
+    "endLine": 4712,
+    "selector": ".enhance-actions"
+  },
+  {
+    "startLine": 4714,
+    "endLine": 4729,
+    "selector": ".enhance-remove-btn"
+  },
+  {
+    "startLine": 4730,
+    "endLine": 4735,
+    "selector": ".enhance-apply-btn"
+  },
+  {
+    "startLine": 4736,
+    "endLine": 4740,
+    "selector": ".enhance-apply-btn:hover"
+  },
+  {
+    "startLine": 4741,
+    "endLine": 4743,
+    "selector": ".enhance-apply-btn:active"
+  },
+  {
+    "startLine": 4744,
+    "endLine": 4748,
+    "selector": ".enhance-remove-btn"
+  },
+  {
+    "startLine": 4749,
+    "endLine": 4754,
+    "selector": ".enhance-remove-btn:hover"
+  },
+  {
+    "startLine": 4755,
+    "endLine": 4757,
+    "selector": ".enhance-remove-btn:active"
+  },
+  {
+    "startLine": 4760,
+    "endLine": 4771,
+    "selector": ".enhance-status-badge"
+  },
+  {
+    "startLine": 4772,
+    "endLine": 4780,
+    "selector": ".enhance-status-badge::before"
+  },
+  {
+    "startLine": 4781,
+    "endLine": 4785,
+    "selector": ".enhance-status-badge.is-active"
+  },
+  {
+    "startLine": 4786,
+    "endLine": 4790,
+    "selector": ".enhance-status-badge.is-active::before"
+  },
+  {
+    "startLine": 4791,
+    "endLine": 4799,
+    "selector": ".enhance-status-msg"
+  },
+  {
+    "startLine": 4800,
+    "endLine": 4800,
+    "selector": ".enhance-status-msg.success { color: #10b981; }"
+  },
+  {
+    "startLine": 4801,
+    "endLine": 4801,
+    "selector": ".enhance-status-msg.error { color: #ef4444; }"
+  },
+  {
+    "startLine": 4802,
+    "endLine": 4802,
+    "selector": ".enhance-status-msg.info { color: #3b82f6; }"
+  },
+  {
+    "startLine": 4805,
+    "endLine": 4814,
+    "selector": ".inst-btn"
+  },
+  {
+    "startLine": 4815,
+    "endLine": 4818,
+    "selector": ".inst-btn:hover"
+  },
+  {
+    "startLine": 4819,
+    "endLine": 4821,
+    "selector": ".inst-btn.inst-del:hover"
+  },
+  {
+    "startLine": 4978,
+    "endLine": 4990,
+    "selector": ".kite-tab-badge"
+  },
+  {
+    "startLine": 5026,
+    "endLine": 5032,
+    "selector": ".enhance-card-header"
+  },
+  {
+    "startLine": 5033,
+    "endLine": 5039,
+    "selector": ".enhance-card-title-group"
+  },
+  {
+    "startLine": 5040,
+    "endLine": 5044,
+    "selector": ".enhance-card-title"
+  },
+  {
+    "startLine": 5045,
+    "endLine": 5049,
+    "selector": ".enhance-card-desc"
+  },
+  {
+    "startLine": 5050,
+    "endLine": 5058,
+    "selector": ".enhance-card-body"
+  },
+  {
+    "startLine": 5065,
+    "endLine": 5069,
+    "selector": ".enhance-sub-row-grid"
+  },
+  {
+    "startLine": 5070,
+    "endLine": 5074,
+    "selector": ".enhance-sub-col"
+  },
+  {
+    "startLine": 5075,
+    "endLine": 5079,
+    "selector": ".sub-col-label"
+  },
+  {
+    "startLine": 5082,
+    "endLine": 5087,
+    "selector": ".pill-selectors-container"
+  },
+  {
+    "startLine": 5088,
+    "endLine": 5101,
+    "selector": ".pill-selector"
+  },
+  {
+    "startLine": 5102,
+    "endLine": 5106,
+    "selector": ".pill-selector:hover"
+  },
+  {
+    "startLine": 5107,
+    "endLine": 5113,
+    "selector": ".pill-selector.is-active"
+  },
+  {
+    "startLine": 5116,
+    "endLine": 5125,
+    "selector": ".accept-stats-bar"
+  },
+  {
+    "startLine": 5126,
+    "endLine": 5128,
+    "selector": ".stats-text"
+  },
+  {
+    "startLine": 5129,
+    "endLine": 5132,
+    "selector": ".stats-text strong.text-green"
+  },
+  {
+    "startLine": 5133,
+    "endLine": 5136,
+    "selector": ".stats-text strong.text-red"
+  },
+  {
+    "startLine": 5137,
+    "endLine": 5142,
+    "selector": ".stats-reset-link"
+  },
+  {
+    "startLine": 5143,
+    "endLine": 5146,
+    "selector": ".stats-reset-link:hover"
+  },
+  {
+    "startLine": 5149,
+    "endLine": 5159,
+    "selector": ".remaining-input-box"
+  },
+  {
+    "startLine": 5164,
+    "endLine": 5175,
+    "selector": ".micro-number-input"
+  },
+  {
+    "startLine": 5177,
+    "endLine": 5180,
+    "selector": ".micro-number-input::-webkit-outer-spin-button"
+  },
+  {
+    "startLine": 5190,
+    "endLine": 5199,
+    "selector": ".enhance-details-summary"
+  },
+  {
+    "startLine": 5200,
+    "endLine": 5203,
+    "selector": ".enhance-details-summary:hover"
+  },
+  {
+    "startLine": 5204,
+    "endLine": 5206,
+    "selector": ".enhance-details[open] .enhance-details-summary"
+  },
+  {
+    "startLine": 5207,
+    "endLine": 5212,
+    "selector": ".enhance-details-content"
+  },
+  {
+    "startLine": 5213,
+    "endLine": 5218,
+    "selector": ".enhance-details-desc"
+  },
+  {
+    "startLine": 5219,
+    "endLine": 5233,
+    "selector": ".enhance-textarea"
+  },
+  {
+    "startLine": 5234,
+    "endLine": 5236,
+    "selector": ".enhance-textarea:focus"
+  },
+  {
+    "startLine": 5282,
+    "endLine": 5293,
+    "selector": ".kite-tab-bar"
+  },
+  {
+    "startLine": 5295,
+    "endLine": 5301,
+    "selector": ".kite-brand"
+  },
+  {
+    "startLine": 5303,
+    "endLine": 5319,
+    "selector": ".kite-brand-mark"
+  },
+  {
+    "startLine": 5321,
+    "endLine": 5326,
+    "selector": ".kite-brand-copy"
+  },
+  {
+    "startLine": 5328,
+    "endLine": 5335,
+    "selector": ".kite-brand-copy strong"
+  },
+  {
+    "startLine": 5337,
+    "endLine": 5344,
+    "selector": ".kite-brand-copy small"
+  },
+  {
+    "startLine": 5346,
+    "endLine": 5353,
+    "selector": ".kite-tab-actions"
+  },
+  {
+    "startLine": 5355,
+    "endLine": 5365,
+    "selector": ".kite-tab-strip"
+  },
+  {
+    "startLine": 5367,
+    "endLine": 5381,
+    "selector": ".kite-tab"
+  },
+  {
+    "startLine": 5383,
+    "endLine": 5386,
+    "selector": ".kite-tab svg"
+  },
+  {
+    "startLine": 5388,
+    "endLine": 5391,
+    "selector": ".kite-tab:hover"
+  },
+  {
+    "startLine": 5393,
+    "endLine": 5397,
+    "selector": ".kite-tab.is-active"
+  },
+  {
+    "startLine": 5399,
+    "endLine": 5413,
+    "selector": ".kite-tab-badge"
+  },
+  {
+    "startLine": 5460,
+    "endLine": 5464,
+    "selector": ".panel-divider"
+  },
+  {
+    "startLine": 5762,
+    "endLine": 5765,
+    "selector": ".page-btn"
+  },
+  {
+    "startLine": 5784,
+    "endLine": 5788,
+    "selector": ".usage-stats-details"
+  },
+  {
+    "startLine": 5790,
+    "endLine": 5793,
+    "selector": ".usage-stats-summary"
+  },
+  {
+    "startLine": 5795,
+    "endLine": 5797,
+    "selector": ".usage-stats-body"
+  },
+  {
+    "startLine": 5806,
+    "endLine": 5811,
+    "selector": ".remaining-input-box"
+  },
+  {
+    "startLine": 5832,
+    "endLine": 5834,
+    "selector": ".cockpit-item-email"
+  },
+  {
+    "startLine": 6022,
+    "endLine": 6026,
+    "selector": ".page-btn.is-active"
+  },
+  {
+    "startLine": 6048,
+    "endLine": 6050,
+    "selector": ".enhance-section"
+  },
+  {
+    "startLine": 6052,
+    "endLine": 6054,
+    "selector": ".enhance-desc"
+  },
+  {
+    "startLine": 6056,
+    "endLine": 6064,
+    "selector": ".enhance-status-badge"
+  },
+  {
+    "startLine": 6066,
+    "endLine": 6070,
+    "selector": ".enhance-status-badge.is-active"
+  },
+  {
+    "startLine": 6082,
+    "endLine": 6086,
+    "selector": ".enhance-card-header"
+  },
+  {
+    "startLine": 6088,
+    "endLine": 6092,
+    "selector": ".enhance-card-body"
+  },
+  {
+    "startLine": 6094,
+    "endLine": 6098,
+    "selector": ".enhance-card-title"
+  },
+  {
+    "startLine": 6100,
+    "endLine": 6103,
+    "selector": ".enhance-toggle"
+  },
+  {
+    "startLine": 6105,
+    "endLine": 6109,
+    "selector": ".enhance-toggle-slider"
+  },
+  {
+    "startLine": 6111,
+    "endLine": 6120,
+    "selector": ".enhance-toggle-slider::before"
+  },
+  {
+    "startLine": 6122,
+    "endLine": 6125,
+    "selector": ".enhance-toggle input:checked + .enhance-toggle-slider"
+  },
+  {
+    "startLine": 6127,
+    "endLine": 6130,
+    "selector": ".enhance-toggle input:checked + .enhance-toggle-slider::before"
+  },
+  {
+    "startLine": 6132,
+    "endLine": 6137,
+    "selector": ".pill-selector"
+  },
+  {
+    "startLine": 6139,
+    "endLine": 6142,
+    "selector": ".pill-selector:hover"
+  },
+  {
+    "startLine": 6144,
+    "endLine": 6148,
+    "selector": ".pill-selector.is-active"
+  },
+  {
+    "startLine": 6150,
+    "endLine": 6152,
+    "selector": ".accept-stats-bar"
+  },
+  {
+    "startLine": 6154,
+    "endLine": 6156,
+    "selector": ".stats-text strong.text-green"
+  },
+  {
+    "startLine": 6158,
+    "endLine": 6160,
+    "selector": ".stats-text strong.text-red"
+  },
+  {
+    "startLine": 6162,
+    "endLine": 6164,
+    "selector": ".stats-reset-link"
+  },
+  {
+    "startLine": 6166,
+    "endLine": 6168,
+    "selector": ".micro-number-input"
+  },
+  {
+    "startLine": 6185,
+    "endLine": 6187,
+    "selector": ".enhance-actions"
+  },
+  {
+    "startLine": 6190,
+    "endLine": 6192,
+    "selector": ".enhance-remove-btn"
+  },
+  {
+    "startLine": 6194,
+    "endLine": 6196,
+    "selector": ".enhance-status-msg.success"
+  },
+  {
+    "startLine": 6198,
+    "endLine": 6200,
+    "selector": ".enhance-status-msg.error"
+  },
+  {
+    "startLine": 6202,
+    "endLine": 6204,
+    "selector": ".enhance-status-msg.info"
+  },
+  {
+    "startLine": 6207,
+    "endLine": 6212,
+    "selector": ".inst-toolbar"
+  },
+  {
+    "startLine": 6214,
+    "endLine": 6218,
+    "selector": ".inst-toolbar-title"
+  },
+  {
+    "startLine": 6220,
+    "endLine": 6224,
+    "selector": ".inst-count-badge"
+  },
+  {
+    "startLine": 6248,
+    "endLine": 6250,
+    "selector": ".inst-card-dot.is-running"
+  },
+  {
+    "startLine": 6279,
+    "endLine": 6287,
+    "selector": ".inst-icon-btn"
+  },
+  {
+    "startLine": 6289,
+    "endLine": 6294,
+    "selector": ".inst-icon-btn:hover"
+  },
+  {
+    "startLine": 6296,
+    "endLine": 6300,
+    "selector": ".inst-icon-btn.danger:hover"
+  },
+  {
+    "startLine": 6310,
+    "endLine": 6315,
+    "selector": ".cockpit-item"
+  },
+  {
+    "startLine": 6320,
+    "endLine": 6322,
+    "selector": ".import-modal-overlay"
+  },
+  {
+    "startLine": 6326,
+    "endLine": 6328,
+    "selector": ".import-modal-content"
+  },
+  {
+    "startLine": 6332,
+    "endLine": 6335,
+    "selector": ".import-modal-header"
+  },
+  {
+    "startLine": 6339,
+    "endLine": 6343,
+    "selector": ".import-modal-title"
+  },
+  {
+    "startLine": 6347,
+    "endLine": 6350,
+    "selector": ".import-modal-close"
+  },
+  {
+    "startLine": 6354,
+    "endLine": 6357,
+    "selector": ".import-modal-close:hover"
+  },
+  {
+    "startLine": 6361,
+    "endLine": 6363,
+    "selector": ".import-modal-body"
+  },
+  {
+    "startLine": 6365,
+    "endLine": 6371,
+    "selector": ".add-modal-option"
+  },
+  {
+    "startLine": 6373,
+    "endLine": 6377,
+    "selector": ".add-modal-option:hover"
+  },
+  {
+    "startLine": 6379,
+    "endLine": 6382,
+    "selector": ".add-option-title"
+  },
+  {
+    "startLine": 6384,
+    "endLine": 6386,
+    "selector": ".add-option-desc"
+  },
+  {
+    "startLine": 6388,
+    "endLine": 6392,
+    "selector": ".import-modal-warning"
+  },
+  {
+    "startLine": 6400,
+    "endLine": 6402,
+    "selector": ".toast-success"
+  },
+  {
+    "startLine": 6404,
+    "endLine": 6406,
+    "selector": ".toast-warning"
+  },
+  {
+    "startLine": 6408,
+    "endLine": 6410,
+    "selector": ".toast-error"
+  },
+  {
+    "startLine": 6413,
+    "endLine": 6415,
+    "selector": ".toast-loading"
+  },
+  {
+    "startLine": 6417,
+    "endLine": 6420,
+    "selector": ".toast-spinner"
+  },
+  {
+    "startLine": 6447,
+    "endLine": 6449,
+    "selector": "body.vscode-high-contrast-light .import-modal-overlay"
+  },
+  {
+    "startLine": 6538,
+    "endLine": 6552,
+    "selector": ".kite-tab-bar"
+  },
+  {
+    "startLine": 6554,
+    "endLine": 6557,
+    "selector": ".kite-brand"
+  },
+  {
+    "startLine": 6559,
+    "endLine": 6568,
+    "selector": ".kite-brand-mark"
+  },
+  {
+    "startLine": 6570,
+    "endLine": 6574,
+    "selector": ".kite-brand-copy strong"
+  },
+  {
+    "startLine": 6576,
+    "endLine": 6582,
+    "selector": ".kite-brand-copy small"
+  },
+  {
+    "startLine": 6584,
+    "endLine": 6587,
+    "selector": ".kite-tab-actions"
+  },
+  {
+    "startLine": 6589,
+    "endLine": 6599,
+    "selector": ".kite-tab-strip"
+  },
+  {
+    "startLine": 6601,
+    "endLine": 6617,
+    "selector": ".kite-tab"
+  },
+  {
+    "startLine": 6619,
+    "endLine": 6623,
+    "selector": ".kite-tab svg"
+  },
+  {
+    "startLine": 6625,
+    "endLine": 6630,
+    "selector": ".kite-tab:hover"
+  },
+  {
+    "startLine": 6632,
+    "endLine": 6637,
+    "selector": ".kite-tab.is-active"
+  },
+  {
+    "startLine": 6641,
+    "endLine": 6652,
+    "selector": ".inst-count-badge"
+  },
+  {
+    "startLine": 6655,
+    "endLine": 6663,
+    "selector": ".accounts-section-header"
+  },
+  {
+    "startLine": 6664,
+    "endLine": 6668,
+    "selector": ".accounts-section-title strong"
+  },
+  {
+    "startLine": 6669,
+    "endLine": 6675,
+    "selector": ".accounts-section-title small"
+  },
+  {
+    "startLine": 6676,
+    "endLine": 6685,
+    "selector": ".kite-brand-mark-inline"
+  },
+  {
+    "startLine": 6686,
+    "endLine": 6690,
+    "selector": ".accounts-section-actions"
+  },
+  {
+    "startLine": 6717,
+    "endLine": 6723,
+    "selector": ".cockpit-item"
+  },
+  {
+    "startLine": 6796,
+    "endLine": 6804,
+    "selector": ".usage-stats-details"
+  },
+  {
+    "startLine": 6806,
+    "endLine": 6812,
+    "selector": ".usage-stats-summary"
+  },
+  {
+    "startLine": 6814,
+    "endLine": 6818,
+    "selector": ".usage-stats-summary svg"
+  },
+  {
+    "startLine": 6820,
+    "endLine": 6822,
+    "selector": ".usage-stats-summary::after"
+  },
+  {
+    "startLine": 6824,
+    "endLine": 6827,
+    "selector": ".usage-stats-body"
+  },
+  {
+    "startLine": 6829,
+    "endLine": 6831,
+    "selector": ".usage-stats-grid"
+  },
+  {
+    "startLine": 6857,
+    "endLine": 6859,
+    "selector": ".cockpit-item-email"
+  },
+  {
+    "startLine": 6861,
+    "endLine": 6865,
+    "selector": ".panel-divider"
+  },
+  {
+    "startLine": 6935,
+    "endLine": 6940,
+    "selector": ".pill-selector:hover"
+  },
+  {
+    "startLine": 6945,
+    "endLine": 6948,
+    "selector": ".pill-selector.is-active"
+  },
+  {
+    "startLine": 7209,
+    "endLine": 7214,
+    "selector": ".usage-stats-bar-row"
+  },
+  {
+    "startLine": 7367,
+    "endLine": 7371,
+    "selector": ".page-btn.is-active"
+  },
+  {
+    "startLine": 7386,
+    "endLine": 7388,
+    "selector": ".enhance-section"
+  },
+  {
+    "startLine": 7390,
+    "endLine": 7398,
+    "selector": ".enhance-status-badge"
+  },
+  {
+    "startLine": 7405,
+    "endLine": 7409,
+    "selector": ".enhance-card-header"
+  },
+  {
+    "startLine": 7411,
+    "endLine": 7415,
+    "selector": ".enhance-card-body"
+  },
+  {
+    "startLine": 7417,
+    "endLine": 7421,
+    "selector": ".enhance-card-title"
+  },
+  {
+    "startLine": 7423,
+    "endLine": 7426,
+    "selector": ".enhance-toggle"
+  },
+  {
+    "startLine": 7436,
+    "endLine": 7443,
+    "selector": ".enhance-toggle-slider::before"
+  },
+  {
+    "startLine": 7452,
+    "endLine": 7455,
+    "selector": ".enhance-toggle input:checked + .enhance-toggle-slider::before"
+  },
+  {
+    "startLine": 7463,
+    "endLine": 7465,
+    "selector": ".enhance-actions"
+  },
+  {
+    "startLine": 7467,
+    "endLine": 7472,
+    "selector": ".inst-toolbar"
+  },
+  {
+    "startLine": 7498,
+    "endLine": 7500,
+    "selector": ".inst-card-dot.is-running"
+  },
+  {
+    "startLine": 7517,
+    "endLine": 7519,
+    "selector": ".import-modal-overlay"
+  },
+  {
+    "startLine": 7523,
+    "endLine": 7526,
+    "selector": ".import-modal-header"
+  },
+  {
+    "startLine": 7530,
+    "endLine": 7534,
+    "selector": ".import-modal-title"
+  },
+  {
+    "startLine": 7536,
+    "endLine": 7541,
+    "selector": ".add-modal-option"
+  },
+  {
+    "startLine": 7543,
+    "endLine": 7547,
+    "selector": ".add-modal-option:hover"
+  },
+  {
+    "startLine": 7579,
+    "endLine": 7584,
+    "selector": ".kite-tab-content"
+  },
+  {
+    "startLine": 7586,
+    "endLine": 7588,
+    "selector": ".kite-tab-content.is-active"
+  },
+  {
+    "startLine": 7623,
+    "endLine": 7627,
+    "selector": ".inst-toolbar"
+  },
+  {
+    "startLine": 7629,
+    "endLine": 7632,
+    "selector": "#tabInstances .enhance-desc"
+  },
+  {
+    "startLine": 7634,
+    "endLine": 7637,
+    "selector": "#tabInstances .inst-toolbar + .enhance-desc + div"
+  },
+  {
+    "startLine": 7733,
+    "endLine": 7745,
+    "selector": ".kite-tab-bar"
+  },
+  {
+    "startLine": 7747,
+    "endLine": 7756,
+    "selector": ".kite-tab-strip"
+  },
+  {
+    "startLine": 7758,
+    "endLine": 7774,
+    "selector": ".kite-tab"
+  },
+  {
+    "startLine": 7776,
+    "endLine": 7781,
+    "selector": ".kite-tab:hover"
+  },
+  {
+    "startLine": 7783,
+    "endLine": 7788,
+    "selector": ".kite-tab.is-active"
+  },
+  {
+    "startLine": 7790,
+    "endLine": 7794,
+    "selector": ".kite-tab svg"
+  },
+  {
+    "startLine": 7796,
+    "endLine": 7798,
+    "selector": ".kite-tab.is-active svg"
+  },
+  {
+    "startLine": 7800,
+    "endLine": 7815,
+    "selector": ".kite-tab-count"
+  },
+  {
+    "startLine": 7817,
+    "endLine": 7819,
+    "selector": ".kite-tab-count:empty"
+  },
+  {
+    "startLine": 7821,
+    "endLine": 7825,
+    "selector": ".kite-tab.is-active .kite-tab-count"
+  },
+  {
+    "startLine": 7828,
+    "endLine": 7830,
+    "selector": "body.vscode-high-contrast-light .kite-tab-bar"
+  },
+  {
+    "startLine": 7833,
+    "endLine": 7837,
+    "selector": "body.vscode-high-contrast-light .kite-tab"
+  },
+  {
+    "startLine": 7840,
+    "endLine": 7844,
+    "selector": "body.vscode-high-contrast-light .kite-tab:hover"
+  },
+  {
+    "startLine": 7847,
+    "endLine": 7849,
+    "selector": "body.vscode-high-contrast-light .kite-tab.is-active"
+  },
+  {
+    "startLine": 7852,
+    "endLine": 7856,
+    "selector": ".kite-tab-content"
+  },
+  {
+    "startLine": 7858,
+    "endLine": 7860,
+    "selector": ".kite-tab-content.is-active"
+  },
+  {
+    "startLine": 7872,
+    "endLine": 7877,
+    "selector": ".accounts-section-header"
+  },
+  {
+    "startLine": 7887,
+    "endLine": 7891,
+    "selector": ".inst-toolbar-title"
+  },
+  {
+    "startLine": 7893,
+    "endLine": 7899,
+    "selector": ".kite-brand-mark-inline"
+  },
+  {
+    "startLine": 7902,
+    "endLine": 7913,
+    "selector": ".inst-count-badge"
+  },
+  {
+    "startLine": 7915,
+    "endLine": 7917,
+    "selector": ".usage-stats-grid"
+  },
+  {
+    "startLine": 7962,
+    "endLine": 7964,
+    "selector": ".usage-stats-summary"
+  },
+  {
+    "startLine": 7968,
+    "endLine": 7970,
+    "selector": ".inst-card-dot.is-running"
+  },
+  {
+    "startLine": 7977,
+    "endLine": 7983,
+    "selector": ".usage-stats-bar"
+  },
+  {
+    "startLine": 8152,
+    "endLine": 8154,
+    "selector": ".enhance-textarea:hover"
+  },
+  {
+    "startLine": 8282,
+    "endLine": 8285,
+    "selector": ".enhance-toggle-slider::before"
+  },
+  {
+    "startLine": 8436,
+    "endLine": 8440,
+    "selector": ".page-btn.is-active"
+  },
+  {
+    "startLine": 8453,
+    "endLine": 8455,
+    "selector": "#tabEnhance .enhance-section"
+  },
+  {
+    "startLine": 8462,
+    "endLine": 8466,
+    "selector": ".enhance-card-header"
+  },
+  {
+    "startLine": 8468,
+    "endLine": 8472,
+    "selector": ".enhance-card-body"
+  },
+  {
+    "startLine": 8474,
+    "endLine": 8477,
+    "selector": ".enhance-card-title"
+  },
+  {
+    "startLine": 8482,
+    "endLine": 8484,
+    "selector": ".enhance-details-desc"
+  },
+  {
+    "startLine": 8486,
+    "endLine": 8494,
+    "selector": ".enhance-status-badge"
+  },
+  {
+    "startLine": 8496,
+    "endLine": 8500,
+    "selector": ".enhance-status-badge.is-active"
+  },
+  {
+    "startLine": 8508,
+    "endLine": 8510,
+    "selector": ".enhance-actions"
+  },
+  {
+    "startLine": 8513,
+    "endLine": 8519,
+    "selector": ".inst-toolbar"
+  },
+  {
+    "startLine": 8547,
+    "endLine": 8551,
+    "selector": ".inst-card-dot"
+  },
+  {
+    "startLine": 8553,
+    "endLine": 8556,
+    "selector": ".inst-card-dot.is-running"
+  },
+  {
+    "startLine": 8558,
+    "endLine": 8561,
+    "selector": ".inst-card-dot.is-stopped"
+  },
+  {
+    "startLine": 8593,
+    "endLine": 8596,
+    "selector": "#tabInstances .inst-toolbar + .enhance-desc + div"
+  },
+  {
+    "startLine": 8601,
+    "endLine": 8603,
+    "selector": ".import-modal-overlay"
+  },
+  {
+    "startLine": 8607,
+    "endLine": 8610,
+    "selector": ".import-modal-header"
+  },
+  {
+    "startLine": 8614,
+    "endLine": 8618,
+    "selector": ".import-modal-title"
+  },
+  {
+    "startLine": 8620,
+    "endLine": 8625,
+    "selector": ".add-modal-option"
+  },
+  {
+    "startLine": 8627,
+    "endLine": 8631,
+    "selector": ".add-modal-option:hover"
+  },
+  {
+    "startLine": 8951,
+    "endLine": 8953,
+    "selector": ".usage-stats-summary svg"
+  },
+  {
+    "startLine": 8963,
+    "endLine": 8965,
+    "selector": ".list-arrow"
+  },
+  {
+    "startLine": 8969,
+    "endLine": 8980,
+    "selector": ".inst-count-badge"
+  },
+  {
+    "startLine": 9047,
+    "endLine": 9053,
+    "selector": ".usage-stats-bar"
+  },
+  {
+    "startLine": 9263,
+    "endLine": 9265,
+    "selector": ".enhance-textarea:hover"
+  },
+  {
+    "startLine": 9471,
+    "endLine": 9475,
+    "selector": ".page-btn.is-active"
+  },
+  {
+    "startLine": 9491,
+    "endLine": 9497,
+    "selector": ".inst-toolbar"
+  },
+  {
+    "startLine": 9499,
+    "endLine": 9503,
+    "selector": ".inst-toolbar-title"
+  },
+  {
+    "startLine": 9524,
+    "endLine": 9528,
+    "selector": ".inst-card-dot"
+  },
+  {
+    "startLine": 9530,
+    "endLine": 9533,
+    "selector": ".inst-card-dot.is-running"
+  },
+  {
+    "startLine": 9535,
+    "endLine": 9538,
+    "selector": ".inst-card-dot.is-stopped"
+  },
+  {
+    "startLine": 9541,
+    "endLine": 9550,
+    "selector": ".enhance-status-badge"
+  },
+  {
+    "startLine": 9554,
+    "endLine": 9558,
+    "selector": ".enhance-status-badge.is-active"
+  },
+  {
+    "startLine": 9565,
+    "endLine": 9567,
+    "selector": ".enhance-section"
+  },
+  {
+    "startLine": 9574,
+    "endLine": 9578,
+    "selector": ".enhance-card-header"
+  },
+  {
+    "startLine": 9580,
+    "endLine": 9584,
+    "selector": ".enhance-card-body"
+  },
+  {
+    "startLine": 9586,
+    "endLine": 9590,
+    "selector": ".enhance-card-title"
+  },
+  {
+    "startLine": 9595,
+    "endLine": 9597,
+    "selector": ".enhance-details-desc"
+  },
+  {
+    "startLine": 9607,
+    "endLine": 9609,
+    "selector": ".import-modal-overlay"
+  },
+  {
+    "startLine": 9613,
+    "endLine": 9616,
+    "selector": ".import-modal-header"
+  },
+  {
+    "startLine": 9620,
+    "endLine": 9624,
+    "selector": ".import-modal-title"
+  },
+  {
+    "startLine": 9626,
+    "endLine": 9631,
+    "selector": ".add-modal-option"
+  },
+  {
+    "startLine": 9633,
+    "endLine": 9637,
+    "selector": ".add-modal-option:hover"
+  },
+  {
+    "startLine": 9711,
+    "endLine": 9715,
+    "selector": ".inst-count-badge, .page-btn, .usage-stats-bar-val, .grid-plan-chip"
+  },
+  {
+    "startLine": 9726,
+    "endLine": 9742,
+    "selector": ".status-dot-btn"
+  },
+  {
+    "startLine": 9743,
+    "endLine": 9747,
+    "selector": ".status-dot-btn.is-on"
+  },
+  {
+    "startLine": 9748,
+    "endLine": 9751,
+    "selector": ".status-dot-btn.is-off"
+  },
+  {
+    "startLine": 9752,
+    "endLine": 9754,
+    "selector": ".status-dot-btn.is-off:hover"
+  },
+  {
+    "startLine": 9860,
+    "endLine": 9871,
+    "selector": ".add-option-icon"
+  },
+  {
+    "startLine": 9872,
+    "endLine": 9872,
+    "selector": ".add-option-icon svg { display: block !important; }"
+  },
+  {
+    "startLine": 9875,
+    "endLine": 9886,
+    "selector": ".filter-option-check"
+  },
+  {
+    "startLine": 9887,
+    "endLine": 9889,
+    "selector": ".filter-option-check:hover"
+  },
+  {
+    "startLine": 9890,
+    "endLine": 9904,
+    "selector": ".filter-option-check input[type=\"checkbox\"]"
+  },
+  {
+    "startLine": 9905,
+    "endLine": 9908,
+    "selector": ".filter-option-check input[type=\"checkbox\"]:checked"
+  },
+  {
+    "startLine": 9909,
+    "endLine": 9919,
+    "selector": ".filter-option-check input[type=\"checkbox\"]:checked::after"
+  },
+  {
+    "startLine": 9953,
+    "endLine": 9964,
+    "selector": ".toast-container"
+  },
+  {
+    "startLine": 9993,
+    "endLine": 9998,
+    "selector": ".toast-icon"
+  },
+  {
+    "startLine": 9999,
+    "endLine": 9999,
+    "selector": ".toast-success .toast-icon { color: var(--ac-emerald, #10b981) !important; }"
+  },
+  {
+    "startLine": 10000,
+    "endLine": 10000,
+    "selector": ".toast-error .toast-icon { color: var(--gh-red, #ef4444) !important; }"
+  },
+  {
+    "startLine": 10001,
+    "endLine": 10001,
+    "selector": ".toast-warning .toast-icon { color: var(--vscode-editorWarning-foreground, #d29922) !important; }"
+  },
+  {
+    "startLine": 10002,
+    "endLine": 10002,
+    "selector": ".toast-info .toast-icon { color: var(--ac-blue, #3b82f6) !important; }"
+  },
+  {
+    "startLine": 10003,
+    "endLine": 10007,
+    "selector": ".toast-msg"
+  },
+  {
+    "startLine": 10008,
+    "endLine": 10011,
+    "selector": ".toast .toast-detail"
+  },
+  {
+    "startLine": 10012,
+    "endLine": 10021,
+    "selector": ".toast .toast-spinner"
+  },
+  {
+    "startLine": 10046,
+    "endLine": 10056,
+    "selector": ".quota-load-error"
+  },
+  {
+    "startLine": 10282,
+    "endLine": 10293,
+    "selector": ".kite-tab-badge.grid-count"
+  },
+  {
+    "startLine": 10352,
+    "endLine": 10352,
+    "selector": ".quota-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }"
+  },
+  {
+    "startLine": 10353,
+    "endLine": 10353,
+    "selector": ".q2-col { min-width: 0; }"
+  },
+  {
+    "startLine": 10354,
+    "endLine": 10354,
+    "selector": ".q2-title { font-size: 12px; font-weight: 700; color: var(--vscode-foreground); margin-bottom: 6px; }"
+  },
+  {
+    "startLine": 10355,
+    "endLine": 10355,
+    "selector": ".q2-cell { margin-bottom: 8px; min-width: 0; }"
+  },
+  {
+    "startLine": 10356,
+    "endLine": 10356,
+    "selector": ".q2-head { display: flex; align-items: baseline; gap: 6px; }"
+  },
+  {
+    "startLine": 10357,
+    "endLine": 10357,
+    "selector": ".q2-name { font-size: 11px; color: var(--muted); }"
+  },
+  {
+    "startLine": 10358,
+    "endLine": 10358,
+    "selector": ".q2-val { margin-left: auto; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }"
+  },
+  {
+    "startLine": 10359,
+    "endLine": 10359,
+    "selector": ".q2-val.is-ok { color: var(--gh-green, #3fb950); }"
+  },
+  {
+    "startLine": 10360,
+    "endLine": 10360,
+    "selector": ".q2-val.is-warn { color: var(--gh-yellow-soft, #e3b341); }"
+  },
+  {
+    "startLine": 10361,
+    "endLine": 10361,
+    "selector": ".q2-val.is-danger { color: var(--gh-red, #f85149); }"
+  },
+  {
+    "startLine": 10362,
+    "endLine": 10362,
+    "selector": ".q2-reset { font-size: 10px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }"
+  },
+  {
+    "startLine": 10363,
+    "endLine": 10363,
+    "selector": ".q2-col .quota-bar { height: 5px; border-radius: 3px; background: rgba(128,128,128,0.15); overflow: hidden; }"
+  }
+]

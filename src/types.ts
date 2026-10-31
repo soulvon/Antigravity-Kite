@@ -21,8 +21,6 @@ export interface StoredAccount {
 export interface WebviewMessage {
   type: string;
   email?: string;
-  accessToken?: string;
-  refreshToken?: string;
   [key: string]: any;
 }
 

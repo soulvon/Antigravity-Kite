@@ -181,21 +181,6 @@ export async function writeIdeCredentialBlob(blobBase64: string, user: string, t
   }
 }
 
-/** 删除凭据（仅自测清理用） */
-export async function deleteIdeCredentialByTarget(target: string): Promise<{ ok: boolean; error?: string }> {
-  try {
-    const script = PS_TEMPLATE
-      .replace('<MODE>', 'Delete')
-      .replace('<TARGET>', target.replace(/'/g, "''"))
-      .replace('<USER>', '')
-      .replace('<BLOB>', '');
-    await runPs(script);
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
 /** 与 IDE 现有格式一致的 expiry（本地时区 ISO，7 位小数秒） */
 export function isoWithLocalOffset(ms: number): string {
   const d = new Date(ms);

@@ -51,18 +51,6 @@ export function migrateDataIfNeeded(context: vscode.ExtensionContext, filename: 
           }
           fs.writeFileSync(targetPath, JSON.stringify(mergedList, null, 2), 'utf8');
           console.log(`[storage] Merged accounts from legacy globalStorage to shared storage`);
-        } else if (filename === 'instances.json') {
-          const legacyList = JSON.parse(legacyData) as any[];
-          const sharedList = JSON.parse(sharedData) as any[];
-          const mergedList = [...sharedList];
-          
-          for (const item of legacyList) {
-            if (item && item.id && !mergedList.some(x => x.id === item.id)) {
-              mergedList.push(item);
-            }
-          }
-          fs.writeFileSync(targetPath, JSON.stringify(mergedList, null, 2), 'utf8');
-          console.log(`[storage] Merged instances from legacy globalStorage to shared storage`);
         } else {
           // 其他未知文件不进行合并，防覆盖
           console.log(`[storage] Shared ${filename} already exists, skipping copy`);

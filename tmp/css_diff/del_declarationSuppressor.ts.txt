@@ -1,0 +1,7 @@
+export function stopDeclarationSuppressor(): void {
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+    logInfo('declGuard.stop', {});
+  }
+}

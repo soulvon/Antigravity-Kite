@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as http from 'http';
 import * as https from 'https';
 import { StoredAccount } from './types';
+import { t } from './i18n';
 
 // Antigravity OAuth 配置
 const CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
@@ -44,9 +45,9 @@ function httpsPost(url: string, data: string, headers: Record<string, string> = 
       }
     };
     const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
-      res.on('end', () => resolve({ status: res.statusCode || 0, body }));
+      const chunks: Buffer[] = [];
+      res.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      res.on('end', () => resolve({ status: res.statusCode || 0, body: Buffer.concat(chunks).toString('utf8') }));
     });
     req.on('error', reject);
     req.write(data);
@@ -65,9 +66,9 @@ function httpsGet(url: string, headers: Record<string, string> = {}): Promise<{ 
       headers
     };
     const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
-      res.on('end', () => resolve({ status: res.statusCode || 0, body }));
+      const chunks: Buffer[] = [];
+      res.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      res.on('end', () => resolve({ status: res.statusCode || 0, body: Buffer.concat(chunks).toString('utf8') }));
     });
     req.on('error', reject);
     req.end();
@@ -75,15 +76,15 @@ function httpsGet(url: string, headers: Record<string, string> = {}): Promise<{ 
 }
 
 function successHtml(): string {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>授权成功</title>
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${t('oauthSuccessTitle')}</title>
 <style>body{font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#1a1a2e;color:#eee}.box{max-width:400px;padding:24px;border-radius:12px;background:#16213e;text-align:center}h1{color:#4ade80;margin:0 0 10px;font-size:24px}p{margin:0;opacity:.85}</style></head>
-<body><div class="box"><h1>授权成功</h1><p>可以关闭此页面，返回 Antigravity Kite。</p></div></body></html>`;
+<body><div class="box"><h1>${t('oauthSuccessTitle')}</h1><p>${t('oauthSuccessDesc')}</p></div></body></html>`;
 }
 
 function failHtml(message: string): string {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>授权失败</title>
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${t('oauthFailTitle')}</title>
 <style>body{font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#1a1a2e;color:#eee}.box{max-width:400px;padding:24px;border-radius:12px;background:#16213e;text-align:center}h1{color:#ef4444;margin:0 0 10px;font-size:24px}p{margin:0;opacity:.85}</style></head>
-<body><div class="box"><h1>授权失败</h1><p>${message}</p></div></body></html>`;
+<body><div class="box"><h1>${t('oauthFailTitle')}</h1><p>${message}</p></div></body></html>`;
 }
 
 async function findAvailablePort(): Promise<number> {
@@ -100,7 +101,7 @@ async function findAvailablePort(): Promise<number> {
     });
     if (available) return port;
   }
-  throw new Error('无法找到可用端口');
+  throw new Error(t('oauthNoPort'));
 }
 
 export async function startOAuth(): Promise<StoredAccount> {
@@ -131,7 +132,7 @@ export async function startOAuth(): Promise<StoredAccount> {
 
       if (gotState !== state) {
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(failHtml('state 校验失败'));
+        res.end(failHtml(t('oauthStateMismatch')));
         cleanup();
         reject(new Error('OAuth state 校验失败'));
         return;
@@ -174,7 +175,7 @@ export async function startOAuth(): Promise<StoredAccount> {
         const expiresIn = tokenJson.expires_in || 3600;
 
         if (!accessToken) {
-          throw new Error('Token 响应缺少 access_token');
+          throw new Error(t('oauthNoAccessToken'));
         }
 
         // 获取用户信息
@@ -183,7 +184,7 @@ export async function startOAuth(): Promise<StoredAccount> {
         });
 
         if (userRes.status !== 200) {
-          throw new Error(`获取用户信息失败: HTTP ${userRes.status}`);
+          throw new Error(t('oauthUserInfoFailed', userRes.status));
         }
 
         const userJson = JSON.parse(userRes.body);
@@ -191,7 +192,7 @@ export async function startOAuth(): Promise<StoredAccount> {
         const name = userJson.name || email.split('@')[0];
 
         if (!email) {
-          throw new Error('用户信息缺少 email');
+          throw new Error(t('oauthNoEmail'));
         }
 
         const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
@@ -234,7 +235,7 @@ export async function startOAuth(): Promise<StoredAccount> {
 
       timer = setTimeout(() => {
         cleanup();
-        reject(new Error('OAuth 授权超时'));
+        reject(new Error(t('oauthTimeout')));
       }, OAUTH_TIMEOUT_MS);
 
       await vscode.env.openExternal(vscode.Uri.parse(authUrl));

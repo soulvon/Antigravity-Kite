@@ -1,8 +1,8 @@
 {
   "name": "antigravity-kite",
-  "displayName": "Antigravity Kite",
-  "description": "为 Antigravity IDE 量身打造的无感多账号切换与号池管理插件",
-  "version": "0.9.3",
+  "displayName": "%displayName%",
+  "description": "%description%",
+  "version": "1.0.1",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -46,12 +46,12 @@
     "commands": [
       {
         "command": "antigravityKite.checkForUpdates",
-        "title": "Kite: 检查更新",
+        "title": "%cmd.checkUpdates%",
         "category": "Antigravity Kite"
       },
       {
         "command": "antigravityKite.openLogPanel",
-        "title": "Kite: 打开统计面板",
+        "title": "%cmd.openLogPanel%",
         "category": "Antigravity Kite"
       }
     ],
@@ -64,46 +64,112 @@
       }
     ],
     "configuration": {
-      "title": "Antigravity Kite",
+      "title": "%config.title%",
       "properties": {
         "antigravityKite.update.autoCheck": {
           "type": "boolean",
           "default": true,
-          "description": "启动时自动检查更新"
+          "description": "%config.autoCheck%"
         },
         "antigravityKite.update.autoInstall": {
           "type": "boolean",
           "default": true,
-          "description": "发现新版本时自动静默安装"
+          "description": "%config.autoInstall%"
         },
         "antigravityKite.autoConfirmDeclaration": {
           "type": "boolean",
           "default": true,
-          "description": "切换账号时自动确认安全声明（Security Notice & Data Use），切号不再弹窗。前提：IDE 以调试端口启动——首次切号时会引导开启一次（自动修改快捷方式并重启 IDE，仅此一次）。未开启调试端口时，每次切换会弹一次声明，需手动点击。"
+          "description": "%config.autoConfirmDeclaration%"
         },
         "antigravityKite.cdpPort": {
           "type": "number",
           "default": 9333,
-          "description": "调试端口号（--remote-debugging-port）。9222 会作为兜底自动尝试。通常无需修改。"
+          "description": "%config.cdpPort%"
         },
         "antigravityKite.cdpHeartbeatMs": {
           "type": "number",
           "default": 500,
           "minimum": 200,
           "maximum": 5000,
-          "description": "自动确认安全声明的心跳间隔（毫秒）。越小弹窗消失越快，CPU 占用略增；改动即时生效。"
+          "description": "%config.cdpHeartbeatMs%"
         },
         "antigravityKite.quotaRefreshMinutes": {
           "type": "number",
           "default": 15,
           "minimum": 5,
           "maximum": 120,
-          "description": "后台自动刷新全部账号配额的间隔（分钟）。重启 IDE 后生效。"
+          "description": "%config.quotaRefreshMinutes%"
+        },
+        "antigravityKite.statusBar.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.statusBar.enabled%"
+        },
+        "antigravityKite.statusBar.showAccount": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.statusBar.showAccount%"
+        },
+        "antigravityKite.statusBar.showModels": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.statusBar.showModels%"
+        },
+        "antigravityKite.statusBar.showCredits": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.statusBar.showCredits%"
+        },
+        "antigravityKite.statusBar.showPool": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.statusBar.showPool%"
+        },
+        "antigravityKite.statusBar.position": {
+          "type": "string",
+          "enum": [
+            "left",
+            "right"
+          ],
+          "enumDescriptions": [
+            "%config.statusBar.position.left%",
+            "%config.statusBar.position.right%"
+          ],
+          "default": "right",
+          "description": "%config.statusBar.position%"
+        },
+        "antigravityKite.statusBar.style": {
+          "type": "string",
+          "enum": [
+            "dot",
+            "percent",
+            "compact",
+            "dual",
+            "labeled",
+            "full"
+          ],
+          "enumDescriptions": [
+            "%config.statusBar.style.dot%",
+            "%config.statusBar.style.percent%",
+            "%config.statusBar.style.compact%",
+            "%config.statusBar.style.dual%",
+            "%config.statusBar.style.labeled%",
+            "%config.statusBar.style.full%"
+          ],
+          "default": "full",
+          "description": "%config.statusBar.style%"
+        },
+        "antigravityKite.statusBar.refreshSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 10,
+          "maximum": 600,
+          "description": "%config.statusBar.refreshSeconds%"
         },
         "antigravityKite.switch.syncGeminiFiles": {
           "type": "boolean",
           "default": true,
-          "description": "切号时同步 ~/.gemini 的 oauth_creds.json 与 google_accounts.json。仅当 AgyHop / Cockpit 等其它工具也在管理这些文件时才关闭。"
+          "description": "%config.syncGeminiFiles%"
         },
         "antigravityKite.locale": {
           "type": "string",
@@ -113,18 +179,18 @@
             "en"
           ],
           "enumDescriptions": [
-            "跟随 IDE 语言（默认）",
-            "中文",
-            "English"
+            "%config.locale.auto%",
+            "%config.locale.zh%",
+            "%config.locale.en%"
           ],
           "default": "auto",
-          "description": "提示文案语言。auto = 跟随 IDE 语言。当前覆盖：切号/门控等提示（侧边栏面板暂为中文）。"
+          "description": "%config.locale%"
         }
       }
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && node scripts/check-i18n.js",
     "watch": "tsc -watch -p ./",
     "package": "node ./scripts/update-version.js && npm run compile && vsce package --skip-license"
   },

@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as https from 'https';
 import initSqlJs from 'sql.js';
 import { StoredAccount } from './types';
+import { t } from './i18n';
 
 const USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -31,7 +32,7 @@ async function readStateValue(dbPath: string, key: string): Promise<string> {
     if (result.length > 0 && result[0].values.length > 0) {
       return String(result[0].values[0][0]).trim();
     }
-    throw new Error('未找到 token');
+    throw new Error(t('lrNoToken'));
   } finally {
     db.close();
   }
@@ -186,7 +187,7 @@ function decodeUnifiedStateEntry(stateValue: string): { sentinelKey: string; pay
 function parseUnifiedOAuthToken(stateValue: string): { accessToken?: string; refreshToken?: string } {
   const entry = decodeUnifiedStateEntry(stateValue);
   if (!entry || entry.sentinelKey !== 'oauthTokenInfoSentinelKey') {
-    throw new Error('未找到 oauthTokenInfoSentinelKey');
+    throw new Error(t('lrNoSentinel'));
   }
   return parseOAuthTokenInfo(entry.payload);
 }
@@ -293,7 +294,7 @@ let pendingCredential: StoredAccount | null = null;
 export async function previewLocalAccount(existingEmails: string[]): Promise<{ email: string; exists: boolean; tokenExpired?: boolean }> {
   const dbPath = getStateDbPath();
   if (!fs.existsSync(dbPath)) {
-    throw new Error('未找到本地登录信息');
+    throw new Error(t('lrNoLocalLogin'));
   }
 
   let accessToken: string | undefined;
@@ -337,7 +338,7 @@ export async function previewLocalAccount(existingEmails: string[]): Promise<{ e
   }
 
   if (!userInfo.email) {
-    throw new Error('无法获取用户邮箱（未登录或数据损坏）');
+    throw new Error(t('lrCannotGetEmail'));
   }
 
   // 缓存凭证供后续使用
@@ -351,7 +352,7 @@ export async function previewLocalAccount(existingEmails: string[]): Promise<{ e
       source: 'local',
       importedAt: new Date().toISOString()
     },
-    tag: tokenExpired ? '需要重新授权' : undefined
+    tag: tokenExpired ? t('lrTagReauth') : undefined
   };
 
   const exists = existingEmails.some(e => e.toLowerCase() === userInfo.email!.toLowerCase());

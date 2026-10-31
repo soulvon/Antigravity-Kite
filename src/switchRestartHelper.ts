@@ -11,6 +11,7 @@ import * as path from 'path';
 import * as cp from 'child_process';
 import { switchIdeStateIdentity } from './ideStateDb';
 import { writeIdeCredentialBlob, syncGeminiAccountFiles } from './winCredential';
+import { t } from './i18n';
 
 interface PendingPlan {
   email: string;
@@ -177,7 +178,7 @@ async function main(): Promise<void> {
       child.once('error', () => resolve(false));
     });
     if (!spawned) {
-      throw new Error('子进程创建失败');
+      throw new Error(t('srSpawnFailed'));
     }
     child.unref();
   } catch (e) {

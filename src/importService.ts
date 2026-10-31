@@ -5,6 +5,7 @@ import * as os from 'os';
 import { StoredAccount } from './types';
 import * as accountStore from './accountStore';
 import { decryptSecureAccount, isEncryptedPayload, readSecureStorageKey } from './secureAccounts';
+import { t } from './i18n';
 
 interface ExternalAccount {
   id?: string;
@@ -79,7 +80,7 @@ async function loadAccountsFromDir(dataDir: string): Promise<{ accounts: Externa
   const indexPath = path.join(dataDir, 'accounts.json');
 
   if (!fs.existsSync(accountsDir)) {
-    return { accounts: [], failures: [`accounts 目录不存在: ${accountsDir}`] };
+    return { accounts: [], failures: [t('impDirMissing', accountsDir)] };
   }
 
   const accounts: ExternalAccount[] = [];
@@ -87,7 +88,7 @@ async function loadAccountsFromDir(dataDir: string): Promise<{ accounts: Externa
   // Cockpit Tools 新版加密存储：密钥缺失时加密文件必须逐个暴露为失败，而不是当成 0 账号
   const secureKey = readSecureStorageKey(dataDir);
   if (!secureKey) {
-    failures.push('加密密钥缺失或非法（secure-account-storage.key），加密账号文件将无法导入');
+    failures.push(t('impSecureKeyMissing'));
   }
 
   // 读取索引文件获取账号列表
@@ -98,7 +99,7 @@ async function loadAccountsFromDir(dataDir: string): Promise<{ accounts: Externa
       accountIds = indexData.accounts.map(a => a.id);
     } catch (e) {
       console.warn('[importService] Failed to read index:', e);
-      failures.push('账号索引 accounts.json 解析失败');
+      failures.push(t('impIndexParseFailed'));
     }
   }
 
@@ -111,7 +112,7 @@ async function loadAccountsFromDir(dataDir: string): Promise<{ accounts: Externa
         .map(f => f.replace('.json', ''));
     } catch (e) {
       console.warn('[importService] Failed to scan accounts dir:', e);
-      failures.push('accounts 目录扫描失败');
+      failures.push(t('impDirScanFailed'));
     }
   }
 
@@ -119,7 +120,7 @@ async function loadAccountsFromDir(dataDir: string): Promise<{ accounts: Externa
   for (const id of accountIds) {
     const accountPath = path.join(accountsDir, `${id}.json`);
     if (!fs.existsSync(accountPath)) {
-      failures.push(`账号文件缺失: ${id}.json`);
+      failures.push(t('impFileMissing', `${id}.json`));
       continue;
     }
     try {
@@ -127,7 +128,7 @@ async function loadAccountsFromDir(dataDir: string): Promise<{ accounts: Externa
       let account: unknown = data;
       if (isEncryptedPayload(data)) {
         if (!secureKey) {
-          failures.push(`${id}.json 为加密存储但无法解密（密钥缺失）`);
+          failures.push(t('impEncryptedNoKey', `${id}.json`));
           continue;
         }
         account = decryptSecureAccount(data, secureKey);
@@ -136,12 +137,12 @@ async function loadAccountsFromDir(dataDir: string): Promise<{ accounts: Externa
       if (acc.email && acc.token) {
         accounts.push(acc);
       } else {
-        failures.push(`${id}.json 缺少 email 或 token 字段`);
+        failures.push(t('impMissingFields', `${id}.json`));
       }
     } catch (e) {
       // 解密失败/JSON 损坏逐文件留证，绝不静默吞掉后伪装成 0 账号
       const reason = e instanceof Error ? e.message : String(e);
-      failures.push(`${id}.json 读取失败: ${reason}`);
+      failures.push(t('impReadFailed', `${id}.json`, reason));
       console.warn(`[importService] Failed to read account ${id}:`, e);
     }
   }
@@ -153,13 +154,13 @@ export async function importFromCockpitTools(): Promise<{ imported: number; skip
   const dataDir = getCockpitToolsDir();
 
   if (!fs.existsSync(dataDir)) {
-    throw new Error('Cockpit Tools 数据目录不存在');
+    throw new Error(t('impCockpitDirMissing'));
   }
 
   const { accounts, failures } = await loadAccountsFromDir(dataDir);
   if (accounts.length === 0) {
     const detail = failures.length > 0 ? `：${failures.slice(0, 3).join('；')}${failures.length > 3 ? ` 等 ${failures.length} 项` : ''}` : '';
-    throw new Error(`Cockpit Tools 中没有找到账号${detail}`);
+    throw new Error(t('impCockpitNoAccounts', detail));
   }
   if (failures.length > 0) {
     console.warn(`[importService] Cockpit Tools 部分账号读取失败: ${failures.join('；')}`);
@@ -187,13 +188,13 @@ export async function importFromAntigravityManager(): Promise<{ imported: number
   const dataDir = getAntigravityManagerDir();
 
   if (!fs.existsSync(dataDir)) {
-    throw new Error('Antigravity Manager 数据目录不存在');
+    throw new Error(t('impManagerDirMissing'));
   }
 
   const { accounts, failures } = await loadAccountsFromDir(dataDir);
   if (accounts.length === 0) {
     const detail = failures.length > 0 ? `：${failures.slice(0, 3).join('；')}${failures.length > 3 ? ` 等 ${failures.length} 项` : ''}` : '';
-    throw new Error(`Antigravity Manager 中没有找到账号${detail}`);
+    throw new Error(t('impManagerNoAccounts', detail));
   }
   if (failures.length > 0) {
     console.warn(`[importService] Antigravity Manager 部分账号读取失败: ${failures.join('；')}`);
@@ -222,11 +223,11 @@ export async function importFromJsonFile(): Promise<{ imported: number; skipped:
     canSelectFiles: true,
     canSelectMany: false,
     filters: { 'JSON Files': ['json'] },
-    title: '选择账号 JSON 文件',
+    title: t('impPickJsonTitle'),
   });
 
   if (!uris || uris.length === 0) {
-    throw new Error('未选择文件');
+    throw new Error(t('impNoFileSelected'));
   }
 
   const filePath = uris[0].fsPath;
@@ -236,7 +237,7 @@ export async function importFromJsonFile(): Promise<{ imported: number; skipped:
   try {
     data = JSON.parse(content);
   } catch {
-    throw new Error('JSON 格式错误');
+    throw new Error(t('impBadJson'));
   }
 
   // 支持多种格式
@@ -259,7 +260,7 @@ export async function importFromJsonFile(): Promise<{ imported: number; skipped:
   } else if (data.accounts && Array.isArray(data.accounts)) {
     accounts = data.accounts;
   } else {
-    throw new Error('不支持的 JSON 格式');
+    throw new Error(t('impUnsupportedFormat'));
   }
 
   let imported = 0;
@@ -301,19 +302,19 @@ export function getAvailableImportSources(): Array<{ id: string; name: string; d
     {
       id: 'cockpit-tools',
       name: 'Cockpit Tools',
-      description: '从 Cockpit Tools 导入账号',
+      description: t('impDescCockpit'),
       available: fs.existsSync(getCockpitToolsDir()),
     },
     {
       id: 'antigravity-manager',
       name: 'Antigravity Manager',
-      description: '从 Antigravity Manager 导入账号',
+      description: t('impDescManager'),
       available: fs.existsSync(getAntigravityManagerDir()),
     },
     {
       id: 'json-file',
-      name: '从本地文件导入',
-      description: '选择 JSON 文件导入账号（支持多种格式）',
+      name: t('impNameLocalFile'),
+      description: t('impDescLocalFile'),
       available: true,
     },
   ];

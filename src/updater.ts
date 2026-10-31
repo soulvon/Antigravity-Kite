@@ -4,6 +4,7 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { t } from './i18n';
 
 interface GitHubRelease {
   tag_name: string;
@@ -182,7 +183,7 @@ export async function checkForUpdates(silent: boolean = false): Promise<boolean>
 
     if (compareVersions(latestVersion, currentVersion) <= 0) {
       if (!silent) {
-        vscode.window.showInformationMessage(`当前已是最新版本 v${currentVersion}`);
+        vscode.window.showInformationMessage(t('updUpToDate', currentVersion));
       }
       return false;
     }
@@ -191,26 +192,26 @@ export async function checkForUpdates(silent: boolean = false): Promise<boolean>
     const vsixAsset = release.assets.find(a => a.name.endsWith('.vsix'));
     if (!vsixAsset) {
       if (!silent) {
-        vscode.window.showWarningMessage('发布中未找到 .vsix 文件');
+        vscode.window.showWarningMessage(t('updNoVsix'));
       }
       return false;
     }
 
-    const message = `发现新版本 v${latestVersion} (当前: v${currentVersion})\n${release.body || ''}`;
+    const message = t('updFound', latestVersion, currentVersion, release.body || '');
     const actions = config.autoInstall
-      ? ['立即更新', '稍后']
-      : ['下载', '打开发布页', '稍后'];
+      ? [t('updInstallNow'), t('updLater')]
+      : [t('updDownload'), t('updOpenRelease'), t('updLater')];
 
     const choice = await vscode.window.showInformationMessage(
       message,
       ...actions
     );
 
-    if (choice === '立即更新') {
+    if (choice === t('updInstallNow')) {
       await downloadAndInstall(vsixAsset.browser_download_url, '', latestVersion);
-    } else if (choice === '下载') {
+    } else if (choice === t('updDownload')) {
       await downloadOnly(vsixAsset.browser_download_url, '', latestVersion);
-    } else if (choice === '打开发布页') {
+    } else if (choice === t('updOpenRelease')) {
       vscode.env.openExternal(vscode.Uri.parse(release.html_url));
     }
 
@@ -223,7 +224,7 @@ export async function checkForUpdates(silent: boolean = false): Promise<boolean>
       return false;
     }
     if (!silent) {
-      vscode.window.showErrorMessage(`检查更新失败: ${msg}`);
+      vscode.window.showErrorMessage(t('checkUpdateFailed', msg));
     }
     return false;
   }
@@ -239,7 +240,7 @@ async function downloadAndInstall(downloadUrl: string, token: string, version: s
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: '正在下载更新...',
+      title: t('updDownloading'),
       cancellable: false,
     },
     async () => {
@@ -250,7 +251,7 @@ async function downloadAndInstall(downloadUrl: string, token: string, version: s
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: '正在安装更新...',
+      title: t('updInstalling'),
       cancellable: false,
     },
     async () => {
@@ -259,11 +260,11 @@ async function downloadAndInstall(downloadUrl: string, token: string, version: s
   );
 
   const reload = await vscode.window.showInformationMessage(
-    '更新安装完成，需要重新加载窗口才能生效',
-    '立即重载'
+    t('updReloadPrompt'),
+    t('updReloadNow')
   );
 
-  if (reload === '立即重载') {
+  if (reload === t('updReloadNow')) {
     vscode.commands.executeCommand('workbench.action.reloadWindow');
   }
 
@@ -281,7 +282,7 @@ async function downloadOnly(downloadUrl: string, token: string, version: string)
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: '正在下载...',
+      title: t('updDownloadingPlain'),
       cancellable: false,
     },
     async () => {
@@ -290,11 +291,11 @@ async function downloadOnly(downloadUrl: string, token: string, version: string)
   );
 
   const open = await vscode.window.showInformationMessage(
-    `下载完成: ${vsixPath}`,
-    '打开文件夹'
+    t('updDownloadDone', vsixPath),
+    t('updOpenFolder')
   );
 
-  if (open === '打开文件夹') {
+  if (open === t('updOpenFolder')) {
     vscode.env.openExternal(vscode.Uri.file(tempDir));
   }
 }
@@ -329,20 +330,20 @@ export async function autoCheckOnStartup(): Promise<void> {
 
       if (config.autoInstall) {
         const confirm = await vscode.window.showInformationMessage(
-          `发现新版本 v${latestVersion}，是否立即更新？`,
-          '立即更新',
-          '稍后'
+          t('updFoundAsk', latestVersion),
+          t('updInstallNow'),
+          t('updLater')
         );
 
-        if (confirm === '立即更新') {
+        if (confirm === t('updInstallNow')) {
           await downloadAndInstall(vsixAsset.browser_download_url, '', latestVersion);
         }
       } else {
         vscode.window.showInformationMessage(
-          `发现新版本 v${latestVersion}，请在命令面板执行 "检查更新"`,
-          '打开命令面板'
+          t('updUseCommand', latestVersion),
+          t('updOpenPalette')
         ).then(choice => {
-          if (choice === '打开命令面板') {
+          if (choice === t('updOpenPalette')) {
             vscode.commands.executeCommand('workbench.action.showCommands', 'antigravityKite.checkForUpdates');
           }
         });
@@ -399,14 +400,14 @@ export async function showUpdateNotesOnStartup(context: vscode.ExtensionContext)
     }
 
     const detailText = isInfoIncomplete
-      ? `检测到您已成功升级至新版本 v${currentVersion}（从 v${lastVersion}）。\n由于当前版本的更新日志信息尚不完整或未能从 GitHub 加载成功，您可以点击下方按钮前往 GitHub 查看或反馈信息！`
-      : `核心更新内容：\n\n${releaseBody}`;
+      ? t('updNotesIncomplete', currentVersion, lastVersion)
+      : t('updNotesBody', releaseBody);
 
-    const modalTitle = `Antigravity Kite 已更新至 v${currentVersion}`;
+    const modalTitle = t('updUpdatedTitle', currentVersion);
 
     const actions = isInfoIncomplete
-      ? ['前往 GitHub 反馈/完善信息', '知道了']
-      : ['查看 GitHub 发布页', '知道了'];
+      ? [t('updFeedbackAction'), t('updKnown')]
+      : [t('updViewRelease'), t('updKnown')];
 
     const choice = await vscode.window.showInformationMessage(
       modalTitle,
@@ -414,12 +415,12 @@ export async function showUpdateNotesOnStartup(context: vscode.ExtensionContext)
       ...actions
     );
 
-    if (choice === '前往 GitHub 反馈/完善信息') {
+    if (choice === t('updFeedbackAction')) {
       // 生成带参数的 GitHub Issue 链接，将版本等诊断信息上传到 GitHub
       const bodyParams = encodeURIComponent(`### 升级反馈 (v${lastVersion} -> v${currentVersion})\n\n- **OS**: ${os.type()} ${os.release()}\n- **IDE**: ${vscode.env.appName} ${vscode.version}\n- **问题描述**: 在更新到 v${currentVersion} 后遇到以下问题/或更新日志未显示。`);
       const feedbackUrl = `https://github.com/${REPO_OWNER}/${REPO_NAME}/issues/new?title=${encodeURIComponent(`[更新反馈] v${currentVersion} 升级异常或信息缺失`)}&body=${bodyParams}`;
       vscode.env.openExternal(vscode.Uri.parse(feedbackUrl));
-    } else if (choice === '查看 GitHub 发布页') {
+    } else if (choice === t('updViewRelease')) {
       vscode.env.openExternal(vscode.Uri.parse(gitHubUrl));
     }
   }, 2000);

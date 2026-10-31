@@ -10,6 +10,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { t } from './i18n';
 
 export const SECURE_KEY_FILENAME = 'secure-account-storage.key';
 export const SECURE_KEY_ID = 'local-secure-account-storage-v1';
@@ -53,10 +54,10 @@ export function isEncryptedPayload(data: unknown): data is EncryptedPayload {
  */
 export function decryptSecureAccount(data: EncryptedPayload, key: Buffer): Record<string, unknown> {
   if (data.algorithm && data.algorithm !== 'AES-256-GCM') {
-    throw new Error(`不支持的加密算法: ${data.algorithm}`);
+    throw new Error(t('secureBadAlgorithm', data.algorithm));
   }
   if (data.key_id && data.key_id !== SECURE_KEY_ID) {
-    throw new Error(`未知密钥标识: ${data.key_id}`);
+    throw new Error(t('secureUnknownKeyId', data.key_id));
   }
   const iv = Buffer.from(data.nonce || '', 'base64');
   const boxed = Buffer.from(data.ciphertext || '', 'base64');

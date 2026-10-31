@@ -1,0 +1,66 @@
+顶层规则块总数: 1730
+Kite 专有规则块数: 429 总行数: 2332
+
+--- 前 60 个块 ---
+L70-74 (5行) :: .kite-tab-badge
+L77-87 (11行) :: .kite-tab-bar
+L88-103 (16行) :: .kite-tab
+L104-107 (4行) :: .kite-tab:hover
+L108-113 (6行) :: .kite-tab.is-active
+L114-116 (3行) :: .kite-tab svg
+L117-122 (6行) :: .kite-tab-badge
+L123-125 (3行) :: .kite-tab-content
+L126-128 (3行) :: .kite-tab-content.is-active
+L131-139 (9行) :: .accounts-section-header
+L140-145 (6行) :: .accounts-section-title
+L146-151 (6行) :: .accounts-section-title strong
+L152-158 (7行) :: .accounts-section-title small
+L159-175 (17行) :: .kite-brand-mark-inline
+L176-181 (6行) :: .accounts-section-actions
+L184-188 (5行) :: .usage-stats-details
+L189-200 (12行) :: .usage-stats-summary
+L201-201 (1行) :: .usage-stats-summary::-webkit-details-marker { display: none; }
+L202-208 (7行) :: .usage-stats-summary::after
+L209-209 (1行) :: .usage-stats-details[open] .usage-stats-summary::after { transform: rotate(90deg); }
+L210-210 (1行) :: .usage-stats-summary svg { color: var(--ac-blue, #58a6ff); opacity: 0.8; flex-shrink: 0; }
+L211-217 (7行) :: .usage-stats-date
+L218-218 (1行) :: .usage-stats-body { padding: 8px 0 4px; animation: fadeIn 0.2s ease-out; }
+L220-225 (6行) :: .usage-stats-grid
+L241-241 (1行) :: .usage-stats-bar-section { display: flex; flex-direction: column; gap: 6px; }
+L242-242 (1行) :: .usage-stats-bar-row { display: flex; align-items: center; gap: 8px; }
+L243-243 (1行) :: .usage-stats-bar-label { font-size: 10px; color: var(--muted); width: 54px; flex-shrink: 0; }
+L244-250 (7行) :: .usage-stats-bar
+L251-251 (1行) :: .usage-stats-bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease-out; }
+L252-252 (1行) :: .usage-stats-bar-fill.daily { background: linear-gradient(90deg, var(--ac-emerald, #10b981), var(--ac-blue, #3
+L253-262 (10行) :: .usage-stats-bar-val
+L289-296 (8行) :: .inst-toolbar
+L297-304 (8行) :: .inst-toolbar-title
+L305-318 (14行) :: .inst-count-badge
+L346-362 (17行) :: .inst-cockpit-btn
+L363-368 (6行) :: .inst-cockpit-btn:hover
+L429-435 (7行) :: .inst-card-dot
+L436-439 (4行) :: .inst-card-dot.is-running
+L445-448 (4行) :: .inst-card-dot.is-stopped
+L508-520 (13行) :: .inst-icon-btn
+L521-527 (7行) :: .inst-icon-btn:hover
+L528-532 (5行) :: .inst-icon-btn.danger:hover
+L533-535 (3行) :: .inst-icon-btn svg
+L536-538 (3行) :: .inst-icon-btn:hover svg
+L539-545 (7行) :: .inst-create-hint
+L565-574 (10行) :: .cockpit-item
+L575-578 (4行) :: .cockpit-item:hover
+L579-582 (4行) :: .cockpit-item-info
+L583-590 (8行) :: .cockpit-item-name
+L591-595 (5行) :: .cockpit-item-email
+L596-599 (4行) :: .cockpit-item-email .is-none
+L616-622 (7行) :: .cockpit-imported
+L774-786 (13行) :: .enhance-toggle-btn
+L787-791 (5行) :: .enhance-toggle-btn.is-on
+L1266-1266 (1行) :: .list-icon { color: var(--muted); flex-shrink: 0; }
+L1278-1284 (7行) :: .list-arrow
+L1285-1285 (1行) :: .list-arrow::after { content: '▶'; }
+L1286-1286 (1行) :: .list-details[open] .list-arrow { transform: rotate(90deg); }
+L1405-1419 (15行) :: .recommend-btn
+L1420-1420 (1行) :: .recommend-btn:hover { background: var(--hover-bg); border-color: var(--card-border-hover); }
+
+@media/@supports 块数: 8

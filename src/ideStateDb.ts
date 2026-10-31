@@ -12,6 +12,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { t } from './i18n';
 
 export interface IdeTokenInfo {
   accessToken: string;
@@ -342,7 +343,7 @@ export function switchIdeStateIdentity(
     // 写入确认：整串读回比对（payload 由本模块构造，字节级一致即写入成功）
     const back = db.prepare(`SELECT value FROM ItemTable WHERE key = '${USER_STATUS_KEY}'`).get();
     if (!back || String(back.value) !== statusB64) {
-      throw new Error('身份写入读回校验不一致（IDE 可能占库或写入被覆盖）');
+      throw new Error(t('isdVerifyFailed'));
     }
     return { dbWritten: true, dbPath };
   } catch (e) {

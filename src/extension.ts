@@ -5,14 +5,14 @@ import * as accountStore from './accountStore';
 import { startOAuth } from './oauthService';
 import { previewLocalAccount, confirmImport, cancelImport } from './localReader';
 import * as importService from './importService';
-import { WebviewMessage, UsageSnapshot, StoredAccount } from './types';
-import { seamlessSwitch, isSeamlessSwitchAvailable, prepareSwitchToken, pushLiveIdentityUpdate } from './seamlessSwitcher';
+import { WebviewMessage, UsageSnapshot } from './types';
+import { seamlessSwitch, prepareSwitchToken, pushLiveIdentityUpdate } from './seamlessSwitcher';
 import { switchIdeStateIdentity, resolveIdeStateDbPathFromUserData } from './ideStateDb';
 import { readSwitchRestartResult, clearSwitchRestartResult, writeAgyActiveAccount } from './switchRestart';
 import { logInfo, logWarn, logError } from './logger';
 import { startDeclarationSuppressor } from './declarationSuppressor';
 import { ensureCdpGate } from './cdpGate';
-import { t } from './i18n';
+import { t, localeBundle, getLang } from './i18n';
 import { readIdeCredential, buildIdeCredentialBlob, writeIdeCredentialBlob, syncGeminiAccountFiles } from './winCredential';
 import { syncGeminiLocalCreds } from './geminiFiles';
 import { getSharedStorageDir } from './storage';
@@ -71,10 +71,10 @@ export function activate(context: vscode.ExtensionContext) {
     clearSwitchRestartResult();
     if (!lastRestart.ok) {
       void vscode.window.showErrorMessage(
-        `Kite 切号重启未完成：${lastRestart.error || '未知错误'}（状态库未写入，账号未切换）`
+        t('restartIncomplete', lastRestart.error || t('ui.unknown'))
       );
     } else if (lastRestart.warning) {
-      void vscode.window.showWarningMessage(`Kite 切号重启已完成，但有警告：${lastRestart.warning}`);
+      void vscode.window.showWarningMessage(t('restartWarning', lastRestart.warning));
     }
   }
 
@@ -94,11 +94,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, sidebarProvider)
   );
 
-  // 初始化状态栏
-  statusBarManager = new StatusBarManager(context, (email) => {
-    usageTracker.recordSwitch(email);
-    sidebarProvider?.refresh();
-  });
+  // 初始化状态栏（快速切号复用侧栏完整链路；recordSwitch 已在链路内，不在此重复计数）
+  statusBarManager = new StatusBarManager(
+    context,
+    (email) => {
+      sidebarProvider?.refresh();
+    },
+    (email) => sidebarProvider.requestSwitch(email)
+  );
   context.subscriptions.push(statusBarManager);
 
   // 弹出版本更新提示的模态框
@@ -220,16 +223,6 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     if (usageCache.size === 0 || cacheAge > USAGE_CACHE_TTL_MS) {
       this._refreshAllUsage();
     }
-
-    // 推送切号预检开关状态
-    webviewView.webview.postMessage({ type: 'preflightSync', enabled: this._context.globalState.get<boolean>('preflightEnabled') || false });
-
-    // 推送扩展版本号（侧栏头部胶囊展示）
-    const ext = vscode.extensions.getExtension('soulvon.antigravity-kite');
-    const extVersion = ext?.packageJSON?.version
-      || vscode.extensions.getExtension('antigravity-kite')?.packageJSON?.version || '';
-    logInfo('webview.version', { extensionFound: !!ext, extVersion, webviewReady: !!webviewView.webview });
-    webviewView.webview.postMessage({ type: 'versionSync', version: extVersion });
   }
 
   private _pushAccounts() {
@@ -253,7 +246,12 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** 推送设置到 webview（读 package.json 中 contributes.configuration 的六项） */
+  /** 状态栏快速切号入口：复用侧栏完整切号链路（门控/token/凭据/状态库/agy/gemini/会话/引擎重载） */
+  async requestSwitch(email: string): Promise<void> {
+    await this._handleMessage({ type: 'setCurrentAccount', email });
+  }
+
+  /** 推送设置到 webview（读 package.json 中 contributes.configuration 的配置项） */
   private _pushSettings() {
     const cfg = vscode.workspace.getConfiguration('antigravityKite');
     this._view?.webview.postMessage({
@@ -264,6 +262,14 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         autoConfirmDeclaration: cfg.get<boolean>('autoConfirmDeclaration', true),
         cdpPort: cfg.get<number>('cdpPort', 9333),
         locale: cfg.get<string>('locale', 'auto'),
+        statusBarEnabled: cfg.get<boolean>('statusBar.enabled', true),
+        statusBarPosition: cfg.get<string>('statusBar.position', 'right'),
+        statusBarStyle: cfg.get<string>('statusBar.style', 'full'),
+        statusBarAccount: cfg.get<boolean>('statusBar.showAccount', true),
+        statusBarModels: cfg.get<boolean>('statusBar.showModels', true),
+        statusBarCredits: cfg.get<boolean>('statusBar.showCredits', true),
+        statusBarPool: cfg.get<boolean>('statusBar.showPool', true),
+        statusBarRefresh: cfg.get<number>('statusBar.refreshSeconds', 30),
       },
     });
   }
@@ -273,14 +279,44 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     const cfg = vscode.workspace.getConfiguration('antigravityKite');
     const target = vscode.ConfigurationTarget.Global;
     const port = Number(s.cdpPort);
+    const prevLocale = cfg.get<string>('locale', 'auto');
+    const nextLocale = String(s.locale ?? 'auto');
     await cfg.update('update.autoCheck', s.updateAutoCheck !== false, target);
     await cfg.update('update.autoInstall', s.updateAutoInstall !== false, target);
     await cfg.update('autoConfirmDeclaration', s.autoConfirmDeclaration !== false, target);
     await cfg.update('cdpPort', Number.isFinite(port) && port > 0 ? port : 9333, target);
-    await cfg.update('locale', String(s.locale ?? 'auto'), target);
+    await cfg.update('locale', nextLocale, target);
+    await cfg.update('statusBar.enabled', s.statusBarEnabled !== false, target);
+    const sbPosition = String(s.statusBarPosition ?? 'right');
+    const sbStyle = String(s.statusBarStyle ?? 'full');
+    const sbRefresh = Number(s.statusBarRefresh);
+    await cfg.update('statusBar.position', sbPosition === 'left' ? 'left' : 'right', target);
+    await cfg.update('statusBar.style', ['dot', 'percent', 'compact', 'dual', 'labeled', 'full'].includes(sbStyle) ? sbStyle : 'full', target);
+    await cfg.update('statusBar.refreshSeconds', Number.isFinite(sbRefresh) ? Math.min(600, Math.max(10, Math.round(sbRefresh))) : 30, target);
+    await cfg.update('statusBar.showAccount', s.statusBarAccount !== false, target);
+    await cfg.update('statusBar.showModels', s.statusBarModels !== false, target);
+    await cfg.update('statusBar.showCredits', s.statusBarCredits !== false, target);
+    await cfg.update('statusBar.showPool', s.statusBarPool !== false, target);
     logInfo('settings.saved', { ...s });
-    this._view?.webview.postMessage({ type: 'toast', status: 'success', message: '设置已保存' });
+    // 语言切换：重建 webview 使界面文案立即生效，并补推全部状态
+    if (nextLocale !== prevLocale && this._view) {
+      statusBarManager?.update();
+      this._view.webview.html = this._getHtmlForWebview(this._view.webview);
+      this._pushAccounts();
+      this._pushSettings();
+      this._syncWebviewState();
+      return;
+    }
+    this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('settingsSaved') });
     this._pushSettings();
+  }
+
+  /** 重建 webview 后补推状态（对应 resolveWebviewView 的推送序列） */
+  private _syncWebviewState() {
+    const savedTagColors = this._context.globalState.get<Record<string, string>>('tagColors');
+    if (savedTagColors && Object.keys(savedTagColors).length > 0) {
+      this._view?.webview.postMessage({ type: 'tagColorsSync', colors: savedTagColors });
+    }
   }
 
   /** 导出账号（全部或指定邮箱集合）：完整含 Token / 脱敏仅邮箱标签 */
@@ -288,16 +324,16 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     const all = accountStore.getAll();
     const picked = onlyEmails ? all.filter(a => onlyEmails.includes(a.email)) : all;
     if (picked.length === 0) {
-      this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: '没有可导出的账号' });
+      this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: t('noAccountsToExport') });
       return;
     }
     let masked = false;
     if (!onlyEmails) {
-      const mode = await vscode.window.showQuickPick(['完整导出（含授权 Token）', '脱敏导出（仅邮箱与标签）'], {
-        placeHolder: `选择导出方式（共 ${picked.length} 个账号）`
+      const mode = await vscode.window.showQuickPick([t('exportModeFull'), t('exportModeMasked')], {
+        placeHolder: t('exportModePrompt', picked.length)
       });
       if (!mode) return;
-      masked = !mode.startsWith('完整');
+      masked = mode !== t('exportModeFull');
     }
     const data = picked.map(a => masked
       ? { email: a.email, name: a.name || '', tags: a.tags || [], disabled: !!a.disabled, importMeta: a.importMeta }
@@ -310,15 +346,15 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       accounts: data,
     };
     const uri = await vscode.window.showSaveDialog({
-      title: '导出 Antigravity Kite 账号',
+      title: t('exportDialogTitle'),
       filters: { 'JSON': ['json'] },
     });
     if (!uri) return;
     try {
       await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(payload, null, 2), 'utf8'));
-      this._view?.webview.postMessage({ type: 'toast', status: 'success', message: `已导出 ${picked.length} 个账号到 ${uri.fsPath}` });
+      this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('exported', picked.length, uri.fsPath) });
     } catch (err) {
-      this._view?.webview.postMessage({ type: 'toast', status: 'error', message: '导出失败: ' + (err instanceof Error ? err.message : String(err)) });
+      this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('exportFailed', err instanceof Error ? err.message : String(err)) });
     }
   }
 
@@ -364,11 +400,11 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     this._pushAccounts();
     logPanel.pushLogPanelData(this._context, usageTracker);
     if (errorCount === 0) {
-      this._view?.webview.postMessage({ type: 'toast', status: 'success', message: `已刷新 ${successCount} 个账号配额` });
+      this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('refreshedQuota', successCount) });
     } else if (successCount === 0) {
-      this._view?.webview.postMessage({ type: 'toast', status: 'error', message: `全部失败(${errorCount}个): ${lastError}` });
+      this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('refreshAllFailed', errorCount, lastError) });
     } else {
-      this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: `成功${successCount}个，失败${errorCount}个` });
+      this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: t('refreshPartial', successCount, errorCount) });
     }
   }
 
@@ -381,10 +417,10 @@ class SidebarProvider implements vscode.WebviewViewProvider {
           accountStore.add(account);
           this._context.globalState.update('currentEmail', account.email);
           this._pushAccounts();
-          vscode.window.showInformationMessage(`已添加账号: ${account.email}`);
+          vscode.window.showInformationMessage(t('accountAdded', account.email));
           this._refreshUsage(account.email);
         } catch (err) {
-          vscode.window.showErrorMessage(`登录失败: ${err instanceof Error ? err.message : err}`);
+          vscode.window.showErrorMessage(t('loginFailed', err instanceof Error ? err.message : String(err)));
         }
         break;
 
@@ -400,7 +436,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             tokenExpired: preview.tokenExpired
           });
         } catch (err) {
-          vscode.window.showErrorMessage(`检测失败: ${err instanceof Error ? err.message : err}`);
+          vscode.window.showErrorMessage(t('detectFailed', err instanceof Error ? err.message : String(err)));
         }
         break;
 
@@ -411,11 +447,11 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             accountStore.add(account);
             this._context.globalState.update('currentEmail', account.email);
             this._pushAccounts();
-            vscode.window.showInformationMessage(`已导入账号: ${account.email}`);
+            vscode.window.showInformationMessage(t('accountImported', account.email));
             this._refreshUsage(account.email);
           }
         } catch (err) {
-          vscode.window.showErrorMessage(`导入失败: ${err instanceof Error ? err.message : err}`);
+          vscode.window.showErrorMessage(t('importFailed', err instanceof Error ? err.message : String(err)));
         }
         break;
 
@@ -470,35 +506,30 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'importFromJsonFile':
-        this._view?.webview.postMessage({ type: 'importStatus', status: 'loading', source: '本地文件' });
+        this._view?.webview.postMessage({ type: 'importStatus', status: 'loading', source: t('impSourceLocalFile') });
         try {
           const result3 = await importService.importFromJsonFile();
           this._pushAccounts();
           this._view?.webview.postMessage({
             type: 'importStatus',
             status: 'success',
-            source: '本地文件',
+            source: t('impSourceLocalFile'),
             imported: result3.imported,
             skipped: result3.skipped
           });
           if (result3.imported > 0) this._refreshAllUsage();
         } catch (err) {
-          if ((err as Error).message !== '未选择文件') {
+          if ((err as Error).message !== t('impNoFileSelected')) {
             this._view?.webview.postMessage({
               type: 'importStatus',
               status: 'error',
-              source: '本地文件',
+              source: t('impSourceLocalFile'),
               message: err instanceof Error ? err.message : String(err)
             });
           } else {
             this._view?.webview.postMessage({ type: 'importStatus', status: 'cancelled' });
           }
         }
-        break;
-
-      case 'getImportSources':
-        const sources = importService.getAvailableImportSources();
-        this._view?.webview.postMessage({ type: 'importSources', sources });
         break;
 
       case 'removeAccount':
@@ -512,25 +543,11 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         if (msg.email) {
           const account = accountStore.getByEmail(msg.email);
           if (account) {
-            // 切号预检：先验证目标账号 Token 可用性（401/网络失败即拦截）
-            const preflightEnabled = this._context.globalState.get<boolean>('preflightEnabled') || false;
-            if (preflightEnabled && isSeamlessSwitchAvailable()) {
-              try {
-                const snap = await fetchUsage(account);
-                usageCache.set(account.email, snap);
-              } catch (err) {
-                this._view?.webview.postMessage({
-                  type: 'toast',
-                  status: 'error',
-                  message: '切号预检未通过：目标账号额度检测失败（Token 可能已失效），已取消切换'
-                });
-                break;
-              }
-            }
             // 身份权威来源 = Windows 凭据管理器 gemini:antigravity 的 id_token_email
             // （真机实验证实：写它 + 重启 = 账号菜单/头像/名字/额度完整切换）。
             // 流程：备份当前凭据 → 构造目标凭据 → 助手关 IDE 后写凭据/状态库/agy 指针/gemini 文件 → 原参数重启。
             // 无感要求：无确认框，点击即切；用 in-flight 标记防连点重复调度。
+            // （原「切号预检」已随 UI 入口移除：开关不可达，保留只会造成永远关闭的假象）
             if (switchInFlight) {
               logWarn('switch.skip.inflight', { email: account.email });
               break;
@@ -691,12 +708,6 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         }
         break;
 
-      case 'setPreflight':
-        if (typeof msg.enabled === 'boolean') {
-          await this._context.globalState.update('preflightEnabled', msg.enabled);
-        }
-        break;
-
       case 'getSettings':
         this._pushSettings();
         break;
@@ -728,7 +739,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       case 'refreshAll':
         // 刷新账号列表和配额
         this._pushAccounts();
-        this._view?.webview.postMessage({ type: 'toast', status: 'info', message: '正在刷新配额...' });
+        this._view?.webview.postMessage({ type: 'toast', status: 'info', message: t('refreshingQuota') });
         this._refreshAllUsage();
         break;
 
@@ -751,7 +762,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             accountStore.update(email, { tags: [...msg.tags] });
           }
           this._pushAccounts();
-          this._view?.webview.postMessage({ type: 'toast', status: 'success', message: `已为 ${msg.emails.length} 个账号更新标签` });
+          this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('tagsUpdated', msg.emails.length) });
         }
         break;
 
@@ -761,7 +772,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             accountStore.remove(email);
           }
           this._pushAccounts();
-          this._view?.webview.postMessage({ type: 'toast', status: 'success', message: `已删除 ${msg.emails.length} 个账号` });
+          this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('accountsDeleted', msg.emails.length) });
         }
         break;
 
@@ -771,7 +782,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             accountStore.setDisabled(email, false);
           }
           this._pushAccounts();
-          this._view?.webview.postMessage({ type: 'toast', status: 'success', message: `已启用 ${msg.emails.length} 个账号` });
+          this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('accountsEnabled', msg.emails.length) });
         }
         break;
 
@@ -781,7 +792,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             accountStore.setDisabled(email, true);
           }
           this._pushAccounts();
-          this._view?.webview.postMessage({ type: 'toast', status: 'success', message: `已禁用 ${msg.emails.length} 个账号` });
+          this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('accountsDisabled', msg.emails.length) });
         }
         break;
 
@@ -791,38 +802,16 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         }
         break;
 
+      case 'webviewReady':
+        // webview script 执行完毕后主动报到：此刻 message 监听器已注册，
+        // 推送才不会因 CSS 等资源加载慢于消息投递而丢失（空账号竞态的根因）
+        this._pushAccounts();
+        this._pushSettings();
+        this._syncWebviewState();
+        break;
+
       case 'webviewError':
         vscode.window.showErrorMessage(`Webview Error: ${msg.message} (Line ${msg.line}, Col ${msg.col})\n${msg.stack || ''}`);
-        break;
-
-      case 'checkForUpdates':
-        try {
-          await checkForUpdates(false);
-        } catch (err) {
-          vscode.window.showErrorMessage('检查更新失败: ' + err);
-        }
-        break;
-
-      case 'openLogPanel':
-        logPanel.openLogPanel(this._context, usageTracker, this._extensionUri, msg.tab);
-        break;
-
-      // ─── 用量统计 ─────────────────────────────────
-      case 'getUsageStats':
-        this._view?.webview.postMessage({ type: 'usageStats', summary: usageTracker.getSummary() });
-        break;
-
-      case 'getQuotaHistory':
-        this._view?.webview.postMessage({
-          type: 'quotaHistory',
-          history: usageTracker.getQuotaHistory(msg.email, msg.limit || 200),
-          emails: usageTracker.getHistoryEmails(),
-        });
-        break;
-
-      case 'clearQuotaHistory':
-        usageTracker.clearQuotaHistory(msg.email);
-        this._view?.webview.postMessage({ type: 'quotaHistory', history: [], emails: usageTracker.getHistoryEmails() });
         break;
     }
   }
@@ -830,7 +819,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
   private _getHtmlForWebview(webview: vscode.Webview) {
     const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'resources', 'webview', 'main.css'));
     return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="${getLang() === 'zh' ? 'zh-CN' : 'en'}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -844,136 +833,136 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       <!-- 账号区标题与操作 -->
       <div class="accounts-section-header list-summary">
         <svg class="list-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-        <h3>我的账号</h3>
+        <h3 data-i18n="myAccounts">我的账号</h3>
         <span class="list-arrow"></span>
         <div style="flex:1"></div>
         <span class="grid-count" id="gridCount">0 个</span>
-        <button class="add-account-btn" id="addAccountBtn">添加账号</button>
+        <button class="add-account-btn" id="addAccountBtn" data-i18n="addAccount">添加账号</button>
       </div>
       <div class="panel-divider"></div>
       <!-- 搜索栏 -->
       <div class="search-bar">
         <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M10.8 4a6.8 6.8 0 1 0 4.25 12.12l3.42 3.42a1.2 1.2 0 0 0 1.7-1.7l-3.42-3.42A6.8 6.8 0 0 0 10.8 4Zm0 2.4a4.4 4.4 0 1 1 0 8.8 4.4 4.4 0 0 1 0-8.8Z"/></svg>
-        <input type="text" class="search-input" id="searchInput" placeholder="搜索账号..." autocomplete="off">
+        <input type="text" class="search-input" id="searchInput" placeholder="搜索账号..." autocomplete="off" data-i18n-ph="searchPh">
         <button class="search-clear" id="searchClear" hidden>×</button>
       </div>
       <!-- 过滤器（已并入下方工具栏下拉） -->
       <!-- 工具栏（windsurf-pool 风格） -->
       <div class="toolbar-bar" id="toolbarBar">
         <div class="filter-wrap" id="filterWrap">
-          <button class="filter-trigger" id="filterTrigger" title="过滤">
+          <button class="filter-trigger" id="filterTrigger" data-i18n-title="filter" title="过滤">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
             <span id="filterLabel">ALL</span>
             <span class="filter-count" id="filterTriggerCount"></span>
           </button>
           <div class="filter-dropdown" id="filterDropdown" hidden>
             <div class="filter-section" id="filterPlanSection">
-              <div class="filter-section-title">套餐</div>
+              <div class="filter-section-title" data-i18n="plan">套餐</div>
               <div class="filter-options" id="filterPlanList"></div>
             </div>
             <div class="filter-section" id="filterTagSection">
-              <div class="filter-section-title">标签</div>
+              <div class="filter-section-title" data-i18n="tags">标签</div>
               <div class="filter-options" id="filterTagList"></div>
             </div>
             <div class="filter-section" id="filterStatusSection">
-              <div class="filter-section-title">状态</div>
+              <div class="filter-section-title" data-i18n="status">状态</div>
               <div class="filter-options" id="filterStatusList"></div>
             </div>
             <div class="filter-actions">
-              <button class="filter-clear-btn" id="filterClearBtn">清空筛选</button>
+              <button class="filter-clear-btn" id="filterClearBtn" data-i18n="clearFilters">清空筛选</button>
             </div>
           </div>
         </div>
-        <select class="group-select" id="sortSelect" title="排序方式">
-          <option value="default">默认排序</option>
-          <option value="recommend">推荐</option>
-          <option value="email">邮箱 A-Z</option>
-          <option value="time">导入时间</option>
+        <select class="group-select" id="sortSelect" data-i18n-title="sortBy" title="排序方式">
+          <option value="default" data-i18n="sortDefault">默认排序</option>
+          <option value="recommend" data-i18n="sortRecommend">推荐</option>
+          <option value="email" data-i18n="sortEmail">邮箱 A-Z</option>
+          <option value="time" data-i18n="sortTime">导入时间</option>
         </select>
-        <button class="sort-direction-btn" id="sortDirectionBtn" title="切换排序方向">
+        <button class="sort-direction-btn" id="sortDirectionBtn" data-i18n-title="sortDir" title="切换排序方向">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="12" y1="5" x2="12" y2="19"/>
             <polyline points="19 12 12 19 5 12"/>
           </svg>
         </button>
-        <button class="toolbar-icon-btn" id="refreshAllBtn" title="刷新全部">
+        <button class="toolbar-icon-btn" id="refreshAllBtn" data-i18n-title="refreshAll" title="刷新全部">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
         </button>
-        <button class="toolbar-icon-btn" id="exportAccountsBtn" title="导出账号设置">
+        <button class="toolbar-icon-btn" id="exportAccountsBtn" data-i18n-title="exportAll" title="导出账号设置">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         </button>
-        <button class="toolbar-icon-btn" id="privacyModeBtn" title="隐私模式：隐藏邮箱">
+        <button class="toolbar-icon-btn" id="privacyModeBtn" data-i18n-title="privacyOff" title="隐私模式：隐藏邮箱">
           <svg class="privacy-eye" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
         </button>
         <div style="flex:1"></div>
-        <select class="page-size-select" id="pageSizeSelect" title="每页显示">
-          <option value="10">10/页</option>
-          <option value="20" selected>20/页</option>
-          <option value="50">50/页</option>
-          <option value="0">全部</option>
+        <select class="page-size-select" id="pageSizeSelect" data-i18n-title="pageSize" title="每页显示">
+          <option value="10" data-i18n="pageSize10">10/页</option>
+          <option value="20" selected data-i18n="pageSize20">20/页</option>
+          <option value="50" data-i18n="pageSize50">50/页</option>
+          <option value="0" data-i18n="showAll">全部</option>
         </select>
-        <button class="group-select-mode-btn" id="selectModeBtn" title="多选模式">
+        <button class="group-select-mode-btn" id="selectModeBtn" data-i18n-title="selectModeTitle" title="多选模式">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-          多选
+          <span data-i18n="selectMode">多选</span>
         </button>
-        <button class="toolbar-icon-btn" id="settingsBtn" title="设置">
+        <button class="toolbar-icon-btn" id="settingsBtn" data-i18n-title="settings" title="设置">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
       </div>
       <!-- 批量操作栏 -->
       <div class="batch-bar" id="batchBar" hidden>
-        <label class="batch-check-all"><input type="checkbox" id="batchCheckAll"><span>全选</span></label>
+        <label class="batch-check-all"><input type="checkbox" id="batchCheckAll"><span data-i18n="selectAll">全选</span></label>
         <div style="flex:1"></div>
         <span class="batch-count" id="batchCount">已选 0</span>
-        <button class="batch-action-btn" id="batchTagBtn" title="为选中账号设置标签">加标签</button>
-        <button class="batch-action-btn" id="batchEnableBtn" title="启用选中账号">启用</button>
-        <button class="batch-action-btn" id="batchDisableBtn" title="禁用选中账号">禁用</button>
-        <button class="batch-action-btn" id="batchExportBtn" title="导出选中账号">导出</button>
-        <button class="batch-action-btn batch-action-delete" id="batchDeleteBtn" title="删除选中账号">删除</button>
-        <button class="batch-action-btn" id="batchCancelBtn">取消</button>
+        <button class="batch-action-btn" id="batchTagBtn" data-i18n-title="batchTagTitle" data-i18n="batchTag" title="为选中账号设置标签">加标签</button>
+        <button class="batch-action-btn" id="batchEnableBtn" data-i18n-title="batchEnableTitle" data-i18n="batchEnable" title="启用选中账号">启用</button>
+        <button class="batch-action-btn" id="batchDisableBtn" data-i18n-title="batchDisableTitle" data-i18n="batchDisable" title="禁用选中账号">禁用</button>
+        <button class="batch-action-btn" id="batchExportBtn" data-i18n-title="batchExportTitle" data-i18n="batchExport" title="导出选中账号">导出</button>
+        <button class="batch-action-btn batch-action-delete" id="batchDeleteBtn" data-i18n-title="batchDeleteTitle" data-i18n="batchDelete" title="删除选中账号">删除</button>
+        <button class="batch-action-btn" id="batchCancelBtn" data-i18n="cancel">取消</button>
       </div>
       <!-- 标签栏已移除（导入无需标签；标签筛选保留在工具栏下拉中） -->
       <!-- 添加账号模态框 -->
       <div class="add-account-modal" id="addAccountModal" style="display:none">
         <div class="add-modal-content">
           <div class="add-modal-header">
-            <span class="add-modal-title">添加账号</span>
+            <span class="add-modal-title" data-i18n="addModalTitle">添加账号</span>
             <button class="add-modal-close" id="closeAddModal">×</button>
           </div>
           <div class="add-modal-body">
             <button class="add-modal-option" id="btnOAuth">
               <span class="add-option-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
               <div class="add-option-info">
-                <span class="add-option-title">Google 登录</span>
-                <span class="add-option-desc">通过浏览器授权登录</span>
+                <span class="add-option-title" data-i18n="oauthTitle">Google 登录</span>
+                <span class="add-option-desc" data-i18n="oauthDesc">通过浏览器授权登录</span>
               </div>
             </button>
             <button class="add-modal-option" id="btnImport">
               <span class="add-option-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
               <div class="add-option-info">
-                <span class="add-option-title">从本地数据库导入</span>
-                <span class="add-option-desc">读取本机 Antigravity IDE 客户端登录账号</span>
+                <span class="add-option-title" data-i18n="importLocalTitle">从本地数据库导入</span>
+                <span class="add-option-desc" data-i18n="importLocalDesc">读取本机 Antigravity IDE 客户端登录账号</span>
               </div>
             </button>
             <button class="add-modal-option" id="btnImportCockpit">
               <span class="add-option-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></span>
               <div class="add-option-info">
-                <span class="add-option-title">从 Cockpit Tools 导入</span>
-                <span class="add-option-desc">同步 Cockpit Tools 中的账号</span>
+                <span class="add-option-title" data-i18n="importCockpitTitle">从 Cockpit Tools 导入</span>
+                <span class="add-option-desc" data-i18n="importCockpitDesc">同步 Cockpit Tools 中的账号</span>
               </div>
             </button>
             <button class="add-modal-option" id="btnImportManager">
               <span class="add-option-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
               <div class="add-option-info">
-                <span class="add-option-title">从 Antigravity Manager 导入</span>
-                <span class="add-option-desc">同步 Antigravity Manager 中的账号</span>
+                <span class="add-option-title" data-i18n="importManagerTitle">从 Antigravity Manager 导入</span>
+                <span class="add-option-desc" data-i18n="importManagerDesc">同步 Antigravity Manager 中的账号</span>
               </div>
             </button>
             <button class="add-modal-option" id="btnImportJson">
               <span class="add-option-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg></span>
               <div class="add-option-info">
-                <span class="add-option-title">从本地文件导入</span>
-                <span class="add-option-desc">选择 JSON 文件导入账号（支持多种格式）</span>
+                <span class="add-option-title" data-i18n="importJsonTitle">从本地文件导入</span>
+                <span class="add-option-desc" data-i18n="importJsonDesc">选择 JSON 文件导入账号（支持多种格式）</span>
               </div>
             </button>
           </div>
@@ -984,8 +973,8 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       <!-- 分页 -->
       <div id="pagination" class="pagination"></div>
       <div id="emptyState" class="empty-card">
-        <div class="empty-title">还没有账号</div>
-        <div class="empty-sub">点击上方「添加账号」按钮</div>
+        <div class="empty-title" data-i18n="emptyTitle">还没有账号</div>
+        <div class="empty-sub" data-i18n="emptySub">点击上方「添加账号」按钮</div>
       </div>
   </div>
 </div>
@@ -996,22 +985,22 @@ class SidebarProvider implements vscode.WebviewViewProvider {
 <div id="tagEditOverlay" class="modal-overlay" hidden>
   <div class="modal-box" style="width:min(400px,90vw)">
     <div class="modal-header">
-      <h3 id="tagEditTitle">编辑标签</h3>
-      <button class="modal-close" id="tagEditClose" title="关闭">×</button>
+      <h3 id="tagEditTitle" data-i18n="tagEditTitle">编辑标签</h3>
+      <button class="modal-close" id="tagEditClose" data-i18n-title="close" title="关闭">×</button>
     </div>
     <div class="modal-body">
       <div id="tagEditSelected" class="tag-edit-selected" style="display:flex;flex-wrap:wrap;gap:4px;min-height:28px;margin-bottom:8px;padding:4px 0"></div>
       <div style="display:flex;gap:6px;align-items:center">
-        <input type="text" id="tagEditInput" placeholder="输入标签名称，回车添加" style="flex:1 1 auto;min-width:0;width:100%;box-sizing:border-box">
-        <button id="tagEditAddBtn" style="flex:0 0 auto;padding:5px 14px;font-size:12px;white-space:nowrap;border-radius:6px;border:1px solid var(--accent,#10b981);background:var(--accent,#10b981);color:#fff;cursor:pointer">添加</button>
+        <input type="text" id="tagEditInput" placeholder="输入标签名称，回车添加" style="flex:1 1 auto;min-width:0;width:100%;box-sizing:border-box" data-i18n-ph="tagInputPh">
+        <button id="tagEditAddBtn" style="flex:0 0 auto;padding:5px 14px;font-size:12px;white-space:nowrap;border-radius:6px;border:1px solid var(--accent,#10b981);background:var(--accent,#10b981);color:#fff;cursor:pointer" data-i18n="add">添加</button>
       </div>
       <div style="margin-top:8px">
-        <label style="font-size:11px;opacity:0.7">已有标签（点击添加/移除）</label>
+        <label style="font-size:11px;opacity:0.7" data-i18n="existingTags">已有标签（点击添加/移除）</label>
         <div id="tagEditExisting" class="tag-edit-existing" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;max-height:120px;overflow-y:auto"></div>
       </div>
       <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
-        <button class="modal-cancel-btn" id="tagEditCancel" style="min-width:72px;padding:6px 20px">取消</button>
-        <button class="primary" id="tagEditSave" style="width:auto;min-width:72px;padding:6px 20px">保存</button>
+        <button class="modal-cancel-btn" id="tagEditCancel" style="min-width:72px;padding:6px 20px" data-i18n="cancel">取消</button>
+        <button class="primary" id="tagEditSave" style="width:auto;min-width:72px;padding:6px 20px" data-i18n="save">保存</button>
       </div>
     </div>
   </div>
@@ -1021,14 +1010,14 @@ class SidebarProvider implements vscode.WebviewViewProvider {
 <div id="confirmOverlay" class="modal-overlay" hidden>
   <div class="modal-box">
     <div class="modal-header">
-      <h3 id="confirmTitle">确认操作</h3>
-      <button class="modal-close" id="confirmClose" title="关闭">×</button>
+      <h3 id="confirmTitle" data-i18n="confirmTitle">确认操作</h3>
+      <button class="modal-close" id="confirmClose" data-i18n-title="close" title="关闭">×</button>
     </div>
     <div class="modal-body">
       <div class="confirm-message" id="confirmMessage"></div>
       <div class="confirm-actions">
-        <button class="modal-cancel-btn" id="confirmCancel" style="min-width:72px;padding:6px 20px">取消</button>
-        <button class="confirm-danger-btn" id="confirmOk">确认</button>
+        <button class="modal-cancel-btn" id="confirmCancel" style="min-width:72px;padding:6px 20px" data-i18n="cancel">取消</button>
+        <button class="confirm-danger-btn" id="confirmOk" data-i18n="ok">确认</button>
       </div>
     </div>
   </div>
@@ -1036,24 +1025,24 @@ class SidebarProvider implements vscode.WebviewViewProvider {
 
 <!-- 设置弹窗（工具栏齿轮入口） -->
 <div id="settingsOverlay" class="modal-overlay" hidden>
-  <div class="modal-box" style="width:min(440px,94vw);max-height:88vh;">
+  <div class="modal-box">
     <div class="modal-header">
-      <h3>设置</h3>
-      <button class="modal-close" id="settingsClose" title="关闭">×</button>
+      <h3 data-i18n="settings">设置</h3>
+      <button class="modal-close" id="settingsClose" data-i18n-title="close" title="关闭">×</button>
     </div>
-    <div class="modal-body" style="padding:14px;display:flex;flex-direction:column;gap:10px;">
+    <div class="modal-body">
 
       <div class="settings-group">
         <div class="settings-group-head">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
-          <span>自动更新</span>
+          <span data-i18n="autoUpdate">自动更新</span>
         </div>
         <div class="settings-row">
-          <span class="settings-row-label">启动时检查更新</span>
+          <span class="settings-row-label" data-i18n="autoCheckRow">启动时检查更新</span>
           <label class="as-switch"><input type="checkbox" id="setUpdateAutoCheck"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
         </div>
         <div class="settings-row">
-          <span class="settings-row-label">发现新版本时静默安装</span>
+          <span class="settings-row-label" data-i18n="autoInstallRow">发现新版本时静默安装</span>
           <label class="as-switch"><input type="checkbox" id="setUpdateAutoInstall"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
         </div>
       </div>
@@ -1061,40 +1050,90 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       <div class="settings-group">
         <div class="settings-group-head">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          <span>切号与调试</span>
+          <span data-i18n="switchDebug">切号与调试</span>
         </div>
         <div class="settings-row">
-          <span class="settings-row-label">切换账号时自动确认安全声明</span>
+          <span class="settings-row-label" data-i18n="autoConfirmRow">切换账号时自动确认安全声明</span>
           <label class="as-switch"><input type="checkbox" id="setAutoConfirm"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
         </div>
         <div class="settings-row">
-          <span class="settings-row-label">调试端口</span>
+          <span class="settings-row-label" data-i18n="cdpPortRow">调试端口</span>
           <input type="number" class="settings-input" id="setCdpPort" min="1024" max="65535" placeholder="9333">
         </div>
-        <div class="settings-hint">切号时通过该端口与 IDE 通信，9222 会作为兜底自动尝试。</div>
+        <div class="settings-hint" data-i18n="cdpPortHint">切号时通过该端口与 IDE 通信，9222 会作为兜底自动尝试。</div>
       </div>
 
       <div class="settings-group">
         <div class="settings-group-head">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-          <span>界面</span>
+          <span data-i18n="appearance">界面</span>
         </div>
         <div class="settings-row">
-          <span class="settings-row-label">提示语言</span>
+          <span class="settings-row-label" data-i18n="localeRow">提示语言</span>
           <select class="settings-select" id="setLocale">
-            <option value="auto">跟随 IDE</option>
-            <option value="zh-CN">中文</option>
-            <option value="en">English</option>
+            <option value="auto" data-i18n="localeAuto">跟随 IDE</option>
+            <option value="zh-CN" data-i18n="localeZh">中文</option>
+            <option value="en" data-i18n="localeEn">English</option>
           </select>
         </div>
       </div>
 
+      <div class="settings-group">
+        <div class="settings-group-head">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="15" x2="21" y2="15"/></svg>
+          <span data-i18n="statusBar">状态栏</span>
+        </div>
+        <div class="settings-row">
+          <span class="settings-row-label" data-i18n="sbEnabledRow">显示状态栏</span>
+          <label class="as-switch"><input type="checkbox" id="setStatusEnabled"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+        <div class="settings-row">
+          <span class="settings-row-label" data-i18n="sbPositionRow">位置</span>
+          <select class="settings-select" id="setStatusPosition">
+            <option value="left" data-i18n="sbPositionLeft">左侧</option>
+            <option value="right" data-i18n="sbPositionRight">右侧</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <span class="settings-row-label" data-i18n="sbStyleRow">样式</span>
+          <select class="settings-select" id="setStatusStyle">
+            <option value="dot" data-i18n="sbStyleDot">状态灯 — 仅图标</option>
+            <option value="percent" data-i18n="sbStylePercent">75% — 仅最低百分比</option>
+            <option value="compact" data-i18n="sbStyleCompact">状态灯 75% — 图标 + 最低百分比</option>
+            <option value="dual" data-i18n="sbStyleDual">状态灯 75% + AI 积分 — 双指标</option>
+            <option value="labeled" data-i18n="sbStyleLabeled">账号 + 各模型额度 — 标签式</option>
+            <option value="full" data-i18n="sbStyleFull">账号 + 各模型额度 + AI 积分 — 完整</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <span class="settings-row-label" data-i18n="sbAccountRow">显示当前账号</span>
+          <label class="as-switch"><input type="checkbox" id="setStatusAccount"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+        <div class="settings-row">
+          <span class="settings-row-label" data-i18n="sbModelsRow">显示模型额度</span>
+          <label class="as-switch"><input type="checkbox" id="setStatusModels"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+        <div class="settings-row">
+          <span class="settings-row-label" data-i18n="sbCreditsRow">显示 AI 积分</span>
+          <label class="as-switch"><input type="checkbox" id="setStatusCredits"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+        <div class="settings-row">
+          <span class="settings-row-label" data-i18n="sbPoolRow">显示号池统计</span>
+          <label class="as-switch"><input type="checkbox" id="setStatusPool"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+        <div class="settings-row">
+          <span class="settings-row-label" data-i18n="sbRefreshRow">额度刷新间隔</span>
+          <input type="number" class="settings-input" id="setStatusRefresh" min="10" max="600" placeholder="30">
+        </div>
+        <div class="settings-hint" data-i18n="sbRefreshHint">极简样式只显示最低额度，标签式逐项列出各模型；改动即时生效。</div>
+      </div>
+
     </div>
     <div class="modal-footer">
-      <button class="modal-cancel-btn" id="settingsReset" type="button">恢复默认</button>
+      <button class="modal-cancel-btn" id="settingsReset" type="button" data-i18n="resetDefaults">恢复默认</button>
       <div style="display:flex;gap:8px;">
-        <button class="modal-cancel-btn" id="settingsCancel" type="button">取消</button>
-        <button class="primary" id="settingsSave" type="button" style="min-width:80px;">保存设置</button>
+        <button class="modal-cancel-btn" id="settingsCancel" type="button" data-i18n="cancel">取消</button>
+        <button class="primary" id="settingsSave" type="button" style="min-width:80px;" data-i18n="saveSettings">保存设置</button>
       </div>
     </div>
   </div>
@@ -1114,6 +1153,20 @@ window.onerror = function(msg, url, line, col, err) {
   } catch(e) {}
 };
 const vscode = acquireVsCodeApi();
+// ── i18n：宿主按当前语言注入的语言包 + 静态 DOM 文案应用 ──
+const L = ${JSON.stringify(localeBundle('ui.'))};
+function tl(key) {
+  let s = L[key] || key;
+  for (let i = 1; i < arguments.length; i++) {
+    s = s.split('{' + (i - 1) + '}').join(String(arguments[i]));
+  }
+  return s;
+}
+(function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = tl(el.getAttribute('data-i18n')); });
+  document.querySelectorAll('[data-i18n-ph]').forEach(el => { el.placeholder = tl(el.getAttribute('data-i18n-ph')); });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => { el.title = tl(el.getAttribute('data-i18n-title')); });
+})();
 let accounts = [];
 let currentEmail = '';
 let searchTerm = '';
@@ -1209,16 +1262,6 @@ function planTierClass(tierId) {
   return 'tier-unknown';
 }
 
-function shortModelName(label) {
-  if (!label) return '未知模型';
-  return label
-    .replace(/^models\\//, '')
-    .replace(/^gemini-/i, 'Gemini ')
-    .replace(/^claude-/i, 'Claude ')
-    .replace(/-latest$/i, '')
-    .replace(/-\\d{8}$/i, '');
-}
-
 function refreshUsage(email) {
   vscode.postMessage({ type: 'refreshUsage', email: email });
 }
@@ -1253,21 +1296,7 @@ document.getElementById('searchClear').onclick = () => {
   renderAccounts();
 };
 
-// 过滤器
-// 状态筛选按钮已移除（并入工具栏下拉）；setFilter 保留供下拉状态项使用
-const _chipAll = document.getElementById('filterAll');
-if (_chipAll) _chipAll.onclick = () => setFilter('all');
-const _chipActive = document.getElementById('filterActive');
-if (_chipActive) _chipActive.onclick = () => setFilter('active');
-const _chipDisabled = document.getElementById('filterDisabled');
-if (_chipDisabled) _chipDisabled.onclick = () => setFilter('disabled');
-
-function setFilter(filter) {
-  activeFilter = filter;
-  currentPage = 1;
-  syncFilterChips();
-  renderAccounts();
-}
+// 过滤器（状态筛选按钮已移除，统一并入工具栏下拉）
 
 // 排序
 document.getElementById('sortSelect').onchange = (e) => {
@@ -1299,7 +1328,7 @@ document.getElementById('privacyModeBtn').onclick = () => {
   const btn = document.getElementById('privacyModeBtn');
   btn.classList.toggle('is-active', privacyMode);
   btn.innerHTML = privacyMode ? PRIVACY_EYE_OFF_SVG : PRIVACY_EYE_SVG;
-  btn.title = privacyMode ? '隐私模式：已隐藏邮箱' : '隐私模式：隐藏邮箱';
+  btn.title = privacyMode ? tl('privacyOn') : tl('privacyOff');
   renderAccounts();
 };
 
@@ -1321,9 +1350,6 @@ if (_sortDirBtn) _sortDirBtn.onclick = () => {
   renderAccounts();
 };
 
-// 切号预检（状态保留供后端同步，UI 控件已移除）
-let preflightEnabled = false;
-
 // 筛选下拉（套餐 / 标签 / 状态三组，接活过滤逻辑）
 let filterPlans = new Set(); // 套餐（tierId 大写）
 const _filterTrigger = document.getElementById('filterTrigger');
@@ -1342,7 +1368,7 @@ function renderFilterDropdown() {
   if (!planList || !tagList || !statusList) return;
   const plans = {};
   accounts.forEach(a => {
-    const t = ((a.usage && a.usage.tierId) || '未知').toUpperCase();
+    const t = ((a.usage && a.usage.tierId) || tl('unknown')).toUpperCase();
     plans[t] = (plans[t] || 0) + 1;
   });
   const planKeys = Object.keys(plans).sort();
@@ -1352,25 +1378,17 @@ function renderFilterDropdown() {
   if (tagSec) tagSec.style.display = tags.length ? '' : 'none';
   tagList.innerHTML = tags.map(t => filterCheckRow('tag', t, accounts.filter(a => getAccTags(a).includes(t)).length, filterTags.has(t))).join('');
   statusList.innerHTML = [
-    ['all', '全部'],
-    ['active', '活跃'],
-    ['disabled', '禁用']
+    ['all', tl('filterAll')],
+    ['active', tl('active')],
+    ['disabled', tl('disabled')]
   ].map(s => filterCheckRow('status', s[0],
     s[0] === 'all' ? accounts.length : accounts.filter(a => s[0] === 'active' ? !a.disabled : a.disabled).length,
     activeFilter === s[0], s[1])).join('');
 }
-function syncFilterChips() {
-  const a = document.getElementById('filterAll');
-  const fa = document.getElementById('filterActive');
-  const fd = document.getElementById('filterDisabled');
-  if (a) a.classList.toggle('is-active', activeFilter === 'all');
-  if (fa) fa.classList.toggle('is-active', activeFilter === 'active');
-  if (fd) fd.classList.toggle('is-active', activeFilter === 'disabled');
-}
 function updateFilterTriggerLabel() {
   const n = filterPlans.size + filterTags.size + (activeFilter !== 'all' ? 1 : 0);
   const label = document.getElementById('filterLabel');
-  if (label) label.textContent = n > 0 ? '已筛选 ' + n : 'ALL';
+  if (label) label.textContent = n > 0 ? tl('filteredCount', n) : tl('filterAll');
 }
 if (_filterTrigger && _filterDropdown) {
   _filterTrigger.onclick = (e) => {
@@ -1393,11 +1411,9 @@ if (_filterTrigger && _filterDropdown) {
     } else if (kind === 'tag') {
       if (cb.checked) filterTags.add(value); else filterTags.delete(value);
       persistTagFilters();
-      renderTagBar();
     } else if (kind === 'status') {
       activeFilter = value;
       _filterDropdown.querySelectorAll('input[data-kind="status"]').forEach(x => { if (x !== cb) x.checked = false; });
-      syncFilterChips();
     }
     currentPage = 1;
     updateFilterTriggerLabel();
@@ -1409,8 +1425,6 @@ if (_filterClearBtn) _filterClearBtn.onclick = () => {
   activeFilter = 'all';
   filterTags.clear();
   filterPlans.clear();
-  syncFilterChips();
-  renderTagBar();
   renderFilterDropdown();
   updateFilterTriggerLabel();
   currentPage = 1;
@@ -1430,7 +1444,7 @@ document.getElementById('selectModeBtn').onclick = () => {
 
 function updateBatchCount() {
   const el = document.getElementById('batchCount');
-  if (el) el.textContent = '已选 ' + selectedEmails.size;
+  if (el) el.textContent = tl('selectedCount', selectedEmails.size);
   const allCb = document.getElementById('batchCheckAll');
   const visible = getVisibleAccounts();
   if (allCb) allCb.checked = visible.length > 0 && visible.every(a => selectedEmails.has(a.email));
@@ -1449,7 +1463,7 @@ function getVisibleAccounts() {
     });
   }
   if (filterPlans.size > 0) {
-    list = list.filter(a => filterPlans.has(((a.usage && a.usage.tierId) || '未知').toUpperCase()));
+    list = list.filter(a => filterPlans.has(((a.usage && a.usage.tierId) || tl('unknown')).toUpperCase()));
   }
   return list;
 }
@@ -1468,7 +1482,7 @@ document.getElementById('batchCheckAll').onchange = (e) => {
 
 // 批量打标签
 document.getElementById('batchTagBtn').onclick = () => {
-  if (selectedEmails.size === 0) { showToast('请先选择账号', 'warning'); return; }
+  if (selectedEmails.size === 0) { showToast(tl('pickFirst'), 'warning'); return; }
   openTagEditModalBatch([...selectedEmails]);
 };
 
@@ -1487,9 +1501,9 @@ document.getElementById('batchDisableBtn').onclick = () => {
 // 批量删除
 document.getElementById('batchDeleteBtn').onclick = () => {
   if (selectedEmails.size === 0) return;
-  showConfirm('确定删除选中的 ' + selectedEmails.size + ' 个账号？此操作不可撤销。', {
-    title: '批量删除账号',
-    okText: '删除',
+  showConfirm(tl('confirmBatchDelete', selectedEmails.size), {
+    title: tl('batchDeleteTitle'),
+    okText: tl('batchDelete'),
     onConfirm: () => {
       vscode.postMessage({ type: 'batchDelete', emails: [...selectedEmails] });
       selectedEmails.clear();
@@ -1501,7 +1515,7 @@ document.getElementById('batchDeleteBtn').onclick = () => {
 // 批量导出
 const _batchExportBtn = document.getElementById('batchExportBtn');
 if (_batchExportBtn) _batchExportBtn.onclick = () => {
-  if (selectedEmails.size === 0) { showToast('请先选择账号', 'warning'); return; }
+  if (selectedEmails.size === 0) { showToast(tl('pickFirst'), 'warning'); return; }
   vscode.postMessage({ type: 'batchExport', emails: [...selectedEmails] });
 };
 
@@ -1518,99 +1532,6 @@ if (_batchCancelBtn) _batchCancelBtn.onclick = () => {
   renderAccounts();
 };
 
-// ── 标签过滤栏（多选+颜色） ──
-function renderTagBar() {
-  const tagListEl = document.getElementById('tagList');
-  const tagBarEl = document.getElementById('tagBar');
-  if (!tagListEl) return;
-
-  const tagCounts = {};
-  let untaggedCount = 0;
-  accounts.forEach(acc => {
-    const at = getAccTags(acc);
-    if (at.length > 0) {
-      at.forEach(t => { tagCounts[t] = (tagCounts[t] || 0) + 1; });
-    } else {
-      untaggedCount++;
-    }
-  });
-  const tags = Object.keys(tagCounts);
-
-  if (tags.length === 0 && untaggedCount === 0) {
-    tagBarEl.style.display = 'none';
-    return;
-  }
-  tagBarEl.style.display = 'flex';
-  tagListEl.innerHTML = '';
-
-  // "全部"按钮
-  const allChip = document.createElement('span');
-  allChip.className = 'tag-chip' + (filterTags.size === 0 ? ' is-active' : '');
-  allChip.textContent = '全部(' + accounts.length + ')';
-  allChip.onclick = () => {
-    filterTags.clear();
-    persistTagFilters();
-    currentPage = 1;
-    renderTagBar();
-    renderAccounts();
-  };
-  tagListEl.appendChild(allChip);
-
-  // 每个标签 chip（多选）
-  tags.forEach(tag => {
-    const chip = document.createElement('span');
-    const isActive = filterTags.has(tag);
-    chip.className = 'tag-chip' + (isActive ? ' is-active' : '');
-    chip.textContent = tag + '(' + (tagCounts[tag] || 0) + ')';
-    const tc = getTagColor(tag);
-    if (isActive) {
-      chip.style.background = tc;
-      chip.style.borderColor = tc;
-      chip.style.color = '#fff';
-    } else {
-      chip.style.background = tc + '20';
-      chip.style.borderColor = tc + '60';
-      chip.style.color = tc;
-    }
-    chip.onclick = () => {
-      if (filterTags.has(tag)) filterTags.delete(tag);
-      else filterTags.add(tag);
-      persistTagFilters();
-      currentPage = 1;
-      renderTagBar();
-      renderAccounts();
-    };
-    chip.oncontextmenu = (e) => { e.preventDefault(); openTagColorPicker(tag, chip); };
-    tagListEl.appendChild(chip);
-  });
-
-  // "未分类" chip
-  if (untaggedCount > 0) {
-    const untaggedChip = document.createElement('span');
-    const isActive = filterTags.has('未分类');
-    untaggedChip.className = 'tag-chip' + (isActive ? ' is-active' : '');
-    untaggedChip.textContent = '未分类(' + untaggedCount + ')';
-    if (isActive) {
-      untaggedChip.style.background = '#8b8b8b';
-      untaggedChip.style.borderColor = '#8b8b8b';
-      untaggedChip.style.color = '#fff';
-    } else {
-      untaggedChip.style.background = '#8b8b8b20';
-      untaggedChip.style.borderColor = '#8b8b8b60';
-      untaggedChip.style.color = '#8b8b8b';
-    }
-    untaggedChip.onclick = () => {
-      if (filterTags.has('未分类')) filterTags.delete('未分类');
-      else filterTags.add('未分类');
-      persistTagFilters();
-      currentPage = 1;
-      renderTagBar();
-      renderAccounts();
-    };
-    tagListEl.appendChild(untaggedChip);
-  }
-}
-
 // ── 标签颜色选择器 ──
 function openTagColorPicker(tag, anchorEl) {
   const existing = document.getElementById('tagColorPicker');
@@ -1619,18 +1540,18 @@ function openTagColorPicker(tag, anchorEl) {
   picker.id = 'tagColorPicker';
   picker.className = 'tag-color-picker';
   const currentColor = getTagColor(tag);
-  picker.innerHTML = '<div class="tag-color-picker-title">「' + escHtml(tag) + '」颜色</div>'
+  picker.innerHTML = '<div class="tag-color-picker-title">' + tl('tagColorTitle', tag) + '</div>'
     + '<div class="tag-color-picker-grid">'
     + TAG_PALETTE.map(c => '<span class="tag-color-dot' + (c === currentColor ? ' is-active' : '') + '" data-color="' + c + '" style="background:' + c + '"></span>').join('')
     + '</div>'
-    + '<div class="tag-color-picker-custom"><input type="color" class="tag-color-input" value="' + currentColor + '"><span class="tag-color-reset" title="重置为默认色">↺</span></div>';
+    + '<div class="tag-color-picker-custom"><input type="color" class="tag-color-input" value="' + currentColor + '"><span class="tag-color-reset" title="' + tl('colorResetTitle') + '">↺</span></div>';
   const rect = anchorEl.getBoundingClientRect();
   picker.style.position = 'fixed';
   picker.style.left = rect.left + 'px';
   picker.style.top = (rect.bottom + 4) + 'px';
   picker.style.zIndex = '9999';
   document.body.appendChild(picker);
-  function applyColorChange() { renderTagBar(); renderAccounts(); }
+  function applyColorChange() { renderAccounts(); }
   picker.querySelectorAll('.tag-color-dot').forEach(dot => {
     dot.addEventListener('click', () => { tagColors[tag] = dot.dataset.color; saveTagColors(); picker.remove(); applyColorChange(); });
   });
@@ -1652,7 +1573,7 @@ function openTagEditModal(email) {
   const acc = accounts.find(a => a.email === email);
   tagEditPendingTags = acc ? [...getAccTags(acc)] : [];
   document.getElementById('tagEditOverlay').hidden = false;
-  document.getElementById('tagEditTitle').textContent = '编辑标签 - ' + (email.split('@')[0]);
+  document.getElementById('tagEditTitle').textContent = tl('editTagsFor', email.split('@')[0]);
   renderTagEditUI();
 }
 function openTagEditModalBatch(emails) {
@@ -1668,7 +1589,7 @@ function openTagEditModalBatch(emails) {
     tagEditPendingTags = [];
   }
   document.getElementById('tagEditOverlay').hidden = false;
-  document.getElementById('tagEditTitle').textContent = '为 ' + emails.length + ' 个账号打标签';
+  document.getElementById('tagEditTitle').textContent = tl('tagBatchTitle', emails.length);
   renderTagEditUI();
 }
 function renderTagEditUI() {
@@ -1676,11 +1597,11 @@ function renderTagEditUI() {
   const existingEl = document.getElementById('tagEditExisting');
   if (!selectedEl || !existingEl) return;
   if (tagEditPendingTags.length === 0) {
-    selectedEl.innerHTML = '<span style="color:var(--muted);font-size:11px">暂无标签</span>';
+    selectedEl.innerHTML = '<span style="color:var(--muted);font-size:11px">' + tl('noTags') + '</span>';
   } else {
     selectedEl.innerHTML = tagEditPendingTags.map(t => {
       const tc = getTagColor(t);
-      return '<span class="tag-edit-chip" style="background:' + tc + '18;border:1px solid ' + tc + '60;color:' + tc + ';padding:2px 10px;border-radius:10px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:4px" data-tag="' + escHtml(t) + '"><span class="tag-edit-color-dot" data-tag="' + escHtml(t) + '" style="width:10px;height:10px;border-radius:50%;background:' + tc + ';cursor:pointer;flex-shrink:0;border:2px solid #fff;box-shadow:0 0 0 1px ' + tc + '" title="点击换色"></span>' + escHtml(t) + ' <span style="opacity:0.5;font-size:13px;margin-left:2px" class="tag-edit-remove">×</span></span>';
+      return '<span class="tag-edit-chip" style="background:' + tc + '18;border:1px solid ' + tc + '60;color:' + tc + ';padding:2px 10px;border-radius:10px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:4px" data-tag="' + escHtml(t) + '"><span class="tag-edit-color-dot" data-tag="' + escHtml(t) + '" style="width:10px;height:10px;border-radius:50%;background:' + tc + ';cursor:pointer;flex-shrink:0;border:2px solid #fff;box-shadow:0 0 0 1px ' + tc + '" title="' + tl('changeColor') + '"></span>' + escHtml(t) + ' <span style="opacity:0.5;font-size:13px;margin-left:2px" class="tag-edit-remove">×</span></span>';
     }).join('');
   }
   selectedEl.querySelectorAll('.tag-edit-chip').forEach(chip => {
@@ -1694,8 +1615,8 @@ function renderTagEditUI() {
   existingEl.innerHTML = allTags.map(t => {
     const tc = getTagColor(t);
     const selected = pending.has(t);
-    return '<span class="tag-edit-opt" style="padding:2px 8px;border-radius:10px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:4px;border:1px solid ' + tc + '60;background:' + (selected ? tc : tc + '20') + ';color:' + (selected ? '#fff' : tc) + '" data-tag="' + escHtml(t) + '"><span class="tag-edit-color-dot" data-tag="' + escHtml(t) + '" style="width:10px;height:10px;border-radius:50%;background:' + (selected ? '#fff' : tc) + ';cursor:pointer;flex-shrink:0;border:1px solid ' + (selected ? '#fff8' : tc + '80') + '" title="点击换色"></span>' + escHtml(t) + '</span>';
-  }).join('') || '<span style="color:var(--muted);font-size:11px">暂无标签</span>';
+    return '<span class="tag-edit-opt" style="padding:2px 8px;border-radius:10px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:4px;border:1px solid ' + tc + '60;background:' + (selected ? tc : tc + '20') + ';color:' + (selected ? '#fff' : tc) + '" data-tag="' + escHtml(t) + '"><span class="tag-edit-color-dot" data-tag="' + escHtml(t) + '" style="width:10px;height:10px;border-radius:50%;background:' + (selected ? '#fff' : tc) + ';cursor:pointer;flex-shrink:0;border:1px solid ' + (selected ? '#fff8' : tc + '80') + '" title="' + tl('changeColor') + '"></span>' + escHtml(t) + '</span>';
+  }).join('') || '<span style="color:var(--muted);font-size:11px">' + tl('noTags') + '</span>';
   existingEl.querySelectorAll('.tag-edit-opt').forEach(opt => {
     const colorDot = opt.querySelector('.tag-edit-color-dot');
     if (colorDot) colorDot.addEventListener('click', (e) => { e.stopPropagation(); openTagColorPicker(colorDot.dataset.tag, colorDot); });
@@ -1744,13 +1665,11 @@ window.addEventListener('message', e => {
   if (msg.type === 'accounts') {
     accounts = msg.accounts || [];
     currentEmail = msg.currentEmail || '';
-    renderTagBar();
     renderAccounts();
     updateSummary();
-    vscode.postMessage({ type: 'getUsageStats' });
   }
   if (msg.type === 'tagColorsSync') {
-    if (msg.colors) { tagColors = msg.colors; try { localStorage.setItem('kite-tag-colors', JSON.stringify(tagColors)); } catch(e) {} renderTagBar(); renderAccounts(); }
+    if (msg.colors) { tagColors = msg.colors; try { localStorage.setItem('kite-tag-colors', JSON.stringify(tagColors)); } catch(e) {} renderAccounts(); }
   }
   if (msg.type === 'usage') {
     const idx = accounts.findIndex(a => a.email === msg.email);
@@ -1781,12 +1700,6 @@ window.addEventListener('message', e => {
     switchingEmail = null;
     renderAccounts();
   }
-  if (msg.type === 'preflightSync') {
-    preflightEnabled = !!msg.enabled;
-    const btn = document.getElementById('preflightToggleBtn');
-    if (btn) btn.classList.toggle('is-active', preflightEnabled);
-  }
-  // versionSync：版本号已由视图标题承载（webviewView.title），webview 内不再显示
 });
 
 // Toast 通知（BuddyRelay 同款：图标 + 消息，底部容器统一管理）
@@ -1834,9 +1747,9 @@ function showConfirm(message, opts) {
   const msgEl = document.getElementById('confirmMessage');
   const okBtn = document.getElementById('confirmOk');
   if (!titleEl || !msgEl || !okBtn) return;
-  titleEl.textContent = opts.title || '确认操作';
+  titleEl.textContent = opts.title || tl('confirmTitle');
   msgEl.textContent = message;
-  okBtn.textContent = opts.okText || '确认';
+  okBtn.textContent = opts.okText || tl('ok');
   okBtn.style.background = opts.danger === false ? 'var(--ac-emerald, #10b981)' : 'var(--gh-red, #f85149)';
   _confirmCb = opts.onConfirm || null;
   document.getElementById('confirmOverlay').hidden = false;
@@ -1869,6 +1782,11 @@ function fillSettingsForm(s) {
   chk('setAutoConfirm', s.autoConfirmDeclaration !== false);
   set('setCdpPort', s.cdpPort || 9333);
   set('setLocale', s.locale || 'auto');
+  chk('setStatusEnabled', s.statusBarEnabled !== false);
+  chk('setStatusAccount', s.statusBarAccount !== false);
+  chk('setStatusModels', s.statusBarModels !== false);
+  chk('setStatusCredits', s.statusBarCredits !== false);
+  chk('setStatusPool', s.statusBarPool !== false);
 }
 
 function openSettingsModal() {
@@ -1900,7 +1818,15 @@ function closeSettingsModal() {
     updateAutoInstall: true,
     autoConfirmDeclaration: true,
     cdpPort: 9333,
-    locale: 'auto'
+    locale: 'auto',
+    statusBarEnabled: true,
+    statusBarPosition: 'right',
+    statusBarStyle: 'full',
+    statusBarRefresh: 30,
+    statusBarAccount: true,
+    statusBarModels: true,
+    statusBarCredits: true,
+    statusBarPool: true
   });
 
   const saveBtn = document.getElementById('settingsSave');
@@ -1915,7 +1841,12 @@ function closeSettingsModal() {
         updateAutoInstall: on('setUpdateAutoInstall'),
         autoConfirmDeclaration: on('setAutoConfirm'),
         cdpPort: num('setCdpPort', 9333),
-        locale: val('setLocale') || 'auto'
+        locale: val('setLocale') || 'auto',
+        statusBarEnabled: on('setStatusEnabled'),
+        statusBarAccount: on('setStatusAccount'),
+        statusBarModels: on('setStatusModels'),
+        statusBarCredits: on('setStatusCredits'),
+        statusBarPool: on('setStatusPool')
       }
     });
     closeSettingsModal();
@@ -1927,27 +1858,27 @@ let loadingToast = null;
 function handleImportStatus(msg) {
   if (msg.status === 'loading') {
     loadingToast = showToast(
-      '<span class="toast-spinner"></span> 正在从 ' + msg.source + ' 导入...', 
-      'loading', 
+      '<span class="toast-spinner"></span> ' + tl('importingFrom', escHtml(msg.source)),
+      'loading',
       0
     );
   } else if (msg.status === 'success') {
     if (loadingToast) { loadingToast.remove(); loadingToast = null; }
     const total = msg.imported + msg.skipped;
-    let text = '从 ' + msg.source + ' 导入完成';
-    if (msg.imported > 0) text += '<br><span class="toast-detail">新增 ' + msg.imported + ' 个账号</span>';
-    if (msg.skipped > 0) text += '<br><span class="toast-detail">跳过 ' + msg.skipped + ' 个已存在</span>';
-    if (total === 0) text = msg.source + ' 中没有找到账号';
+    let text = tl('importDone', escHtml(msg.source));
+    if (msg.imported > 0) text += '<br><span class="toast-detail">' + tl('importAdded', msg.imported) + '</span>';
+    if (msg.skipped > 0) text += '<br><span class="toast-detail">' + tl('importSkipped', msg.skipped) + '</span>';
+    if (total === 0) text = tl('importNone', escHtml(msg.source));
     showToast(text, msg.imported > 0 ? 'success' : 'warning', 4000);
   } else if (msg.status === 'error') {
     if (loadingToast) { loadingToast.remove(); loadingToast = null; }
-    showToast('导入失败<br><span class="toast-detail">' + msg.message + '</span>', 'error', 5000);
+    showToast(tl('importFailed') + '<br><span class="toast-detail">' + escHtml(msg.message) + '</span>', 'error', 5000);
   } else if (msg.status === 'cancelled') {
     if (loadingToast) { loadingToast.remove(); loadingToast = null; }
   }
 }
 
-// ── 标签卡片交互：点击筛选 / 右键改色 / 编辑标签 ──
+// ── 卡片交互（多选复选框）+ 标签编辑弹窗按钮 ──
 (function() {
   const accountGrid = document.getElementById('accountGrid');
   if (accountGrid) {
@@ -1963,39 +1894,6 @@ function handleImportStatus(msg) {
         }
         return;
       }
-      const chip = e.target.closest('.grid-tag-chip');
-      if (chip) {
-        const tag = chip.dataset.tag;
-        if (tag) {
-          if (filterTags.has(tag)) filterTags.delete(tag);
-          else filterTags.add(tag);
-          persistTagFilters();
-          currentPage = 1;
-          renderTagBar();
-          renderAccounts();
-        }
-        return;
-      }
-      const addBtn = e.target.closest('.grid-tag-add');
-      if (addBtn) {
-        const email = addBtn.dataset.email || addBtn.closest('.grid-card')?.dataset.email;
-        if (email) openTagEditModal(email);
-        return;
-      }
-    });
-    accountGrid.addEventListener('contextmenu', (e) => {
-      const chip = e.target.closest('.grid-tag-chip');
-      if (!chip) return;
-      e.preventDefault();
-      const tag = chip.dataset.tag;
-      if (tag) openTagColorPicker(tag, chip);
-    });
-    accountGrid.addEventListener('dblclick', (e) => {
-      const chip = e.target.closest('.grid-tag-chip');
-      if (!chip) return;
-      e.preventDefault();
-      const tag = chip.dataset.tag;
-      if (tag) openTagColorPicker(tag, chip);
     });
   }
   // 标签编辑弹窗按钮绑定
@@ -2023,16 +1921,16 @@ function showImportConfirmModal(email, exists, tokenExpired) {
   modal.id = 'importConfirmModal';
   modal.className = 'import-modal-overlay';
   
-  const maskedEmail = email ? email.replace(/(.{2}).*(@.*)/, '$1***$2') : '未知';
-  let title = exists ? '账号已在号池中' : '检测到本地账号';
-  let desc = exists 
-    ? '当前账号已存在于号池中，是否覆盖更新授权信息？'
-    : '当前账号不在号池中，是否添加到号池？';
-  const confirmText = exists ? '覆盖更新' : '添加到号池';
-  
+  const maskedEmail = email ? email.replace(/(.{2}).*(@.*)/, '$1***$2') : tl('unknown');
+  let title = exists ? tl('inPool') : tl('detectedLocal');
+  let desc = exists
+    ? tl('overwritePrompt')
+    : tl('addPrompt');
+  const confirmText = exists ? tl('overwrite') : tl('addToPool');
+
   // Token 过期提示
   const expiredWarning = tokenExpired
-    ? '<div class="import-modal-warning"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><circle cx="8" cy="8" r="6.5"/><line x1="8" y1="5" x2="8" y2="9" stroke-linecap="round"/><circle cx="8" cy="11.5" r="0.6" fill="currentColor" stroke="none"/></svg>授权已失效，导入后需要重新登录授权</div>'
+    ? '<div class="import-modal-warning"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><circle cx="8" cy="8" r="6.5"/><line x1="8" y1="5" x2="8" y2="9" stroke-linecap="round"/><circle cx="8" cy="11.5" r="0.6" fill="currentColor" stroke="none"/></svg>' + tl('expiredWarning') + '</div>'
     : '';
   
   modal.innerHTML = \`
@@ -2047,7 +1945,7 @@ function showImportConfirmModal(email, exists, tokenExpired) {
         \${expiredWarning}
       </div>
       <div class="import-modal-actions">
-        <button class="import-modal-btn cancel" onclick="closeImportModal()">取消</button>
+        <button class="import-modal-btn cancel" onclick="closeImportModal()">\${tl('cancel')}</button>
         <button class="import-modal-btn confirm" onclick="confirmImportAction()">\${confirmText}</button>
       </div>
     </div>
@@ -2069,7 +1967,7 @@ function confirmImportAction() {
 }
 
 function updateSummary() {
-  document.getElementById('gridCount').textContent = accounts.length + '个';
+  document.getElementById('gridCount').textContent = tl('accountsCount', accounts.length);
 }
 
 function renderAccounts() {
@@ -2101,7 +1999,7 @@ function renderAccounts() {
 
   // 套餐过滤
   if (filterPlans.size > 0) {
-    filtered = filtered.filter(a => filterPlans.has(((a.usage && a.usage.tierId) || '未知').toUpperCase()));
+    filtered = filtered.filter(a => filterPlans.has(((a.usage && a.usage.tierId) || tl('unknown')).toUpperCase()));
   }
 
   // 排序
@@ -2143,7 +2041,7 @@ function renderAccounts() {
   if (totalFiltered === 0) {
     grid.innerHTML = '';
     empty.style.display = 'block';
-    empty.querySelector('.empty-title').textContent = searchTerm ? '没有匹配的账号' : '还没有账号';
+    empty.querySelector('.empty-title').textContent = searchTerm ? tl('noMatchTitle') : tl('emptyTitle');
     renderPagination(0, 0);
     return;
   }
@@ -2152,7 +2050,8 @@ function renderAccounts() {
   grid.innerHTML = paged.map(a => {
     const isCurrent = a.email === currentEmail;
     const rawEmail = a.email;
-    const safeEmail = rawEmail.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // 邮箱 local-part 可合法含引号，内联 onclick 里必须一并转义，否则可破坏内联 JS
+    const safeEmail = rawEmail.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
     const showEmail = displayEmail(rawEmail).replace(/</g,'&lt;').replace(/>/g,'&gt;');
     // tags 由卡片内 getAccTags+getTagColor 动态渲染
     const isDisabled = a.disabled;
@@ -2202,8 +2101,8 @@ function renderAccounts() {
       + (selectMode ? '<div class="grid-check-col"><input type="checkbox" class="grid-check-input" data-email="' + safeEmail + '" ' + (selectedEmails.has(rawEmail) ? 'checked' : '') + '></div>' : '')
       + '<div class="grid-card-head">'
         + '<div class="grid-card-email" title="' + safeEmail + '">' + showEmail + '</div>'
-        + (isCurrent ? '<span class="grid-active-tag">当前</span>' : '')
-        + (isDisabled ? '<span class="grid-disabled-tag">已禁用</span>' : '')
+        + (isCurrent ? '<span class="grid-active-tag">' + tl('current') + '</span>' : '')
+        + (isDisabled ? '<span class="grid-disabled-tag">' + tl('disabledTag') + '</span>' : '')
       + '</div>'
       + '<div class="grid-card-meta">'
         + '<span class="grid-plan-chip ' + tierClass + '">' + tierLabel + '</span>'
@@ -2211,15 +2110,15 @@ function renderAccounts() {
       + '<div class="grid-card-quotas">' + quotasHtml + '</div>'
       + '<div class="grid-card-actions">'
         + (isCurrent
-          ? '<span class="grid-current-label"><span style="color:#3fb950">●</span> 使用中</span>'
+          ? '<span class="grid-current-label"><span style="color:#3fb950">●</span> ' + tl('inUse') + '</span>'
           : (switchingEmail === rawEmail
-            ? '<button class="grid-switch-btn is-loading" disabled><span class="btn-spinner"></span>切换中…</button>'
-            : '<button class="grid-switch-btn" onclick="setCurrent(\\x27' + safeEmail + '\\x27)">切换</button>'))
+            ? '<button class="grid-switch-btn is-loading" disabled><span class="btn-spinner"></span>' + tl('switching') + '</button>'
+            : '<button class="grid-switch-btn" onclick="setCurrent(\\x27' + safeEmail + '\\x27)">' + tl('switch') + '</button>'))
         + '<div class="grid-actions-right">'
-          + '<button class="icon-btn" onclick="openTagEditModal(\\x27' + safeEmail + '\\x27)" title="编辑标签"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>'
-          + '<button class="icon-btn" onclick="refreshUsage(\\x27' + safeEmail + '\\x27)" title="刷新配额"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>'
-          + '<button class="icon-btn danger" onclick="removeAccount(\\x27' + safeEmail + '\\x27)" title="从号池移除"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>'
-          + '<button class="status-switch ' + (isDisabled ? 'is-off' : 'is-on') + '" onclick="toggleDisabled(\\x27' + safeEmail + '\\x27)" title="' + (isDisabled ? '账号已禁用，点击启用' : '账号启用中，点击禁用') + '" aria-label="' + (isDisabled ? '启用账号' : '禁用账号') + '"><span class="status-switch-thumb"></span></button>'
+          + '<button class="icon-btn" onclick="openTagEditModal(\\x27' + safeEmail + '\\x27)" title="' + tl('editTagsT') + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>'
+          + '<button class="icon-btn" onclick="refreshUsage(\\x27' + safeEmail + '\\x27)" title="' + tl('refreshQuotaT') + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>'
+          + '<button class="icon-btn danger" onclick="removeAccount(\\x27' + safeEmail + '\\x27)" title="' + tl('removeT') + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>'
+          + '<button class="status-switch ' + (isDisabled ? 'is-off' : 'is-on') + '" onclick="toggleDisabled(\\x27' + safeEmail + '\\x27)" title="' + (isDisabled ? tl('disabledOnT') : tl('enabledOnT')) + '" aria-label="' + (isDisabled ? tl('ariaEnable') : tl('ariaDisable')) + '"><span class="status-switch-thumb"></span></button>'
         + '</div>'
       + '</div>'
     + '</div>';
@@ -2266,65 +2165,17 @@ function setCurrent(email) {
   vscode.postMessage({ type: 'setCurrentAccount', email });
 }
 function removeAccount(email) {
-  showConfirm('确定从号池移除 ' + email + ' ？', {
-    title: '删除账号',
-    okText: '删除',
+  showConfirm(tl('confirmRemove', email), {
+    title: tl('deleteTitle'),
+    okText: tl('batchDelete'),
     onConfirm: () => vscode.postMessage({ type: 'removeAccount', email })
   });
 }
 function toggleDisabled(email) { vscode.postMessage({ type: 'toggleDisabled', email }); }
 
-// ===== 用量统计面板逻辑 =====
-(function() {
-  function renderStats(summary) {
-    if (!summary) return;
-    const setNum = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-    setNum('statSwitches', summary.totalSwitches || 0);
-    setNum('statRefreshes', summary.totalRefreshes || 0);
-    setNum('statAvgUsed', (summary.avgUsedPct || 0) + '%');
-    setNum('statAccountCount', summary.accountCount || 0);
-    // 抽屉摘要行胶囊徽标（折叠态也可见）
-    const pillSwitches = document.getElementById('usagePillSwitches');
-    if (pillSwitches) pillSwitches.textContent = '+' + (summary.totalSwitches || 0) + ' 切';
-    const pillRefreshes = document.getElementById('usagePillRefreshes');
-    if (pillRefreshes) pillRefreshes.textContent = (summary.totalRefreshes || 0) + ' 检';
-    const dateEl = document.getElementById('usageStatsDate');
-    if (dateEl) dateEl.textContent = summary.date || '';
-    const usedPct = Math.min(100, summary.avgUsedPct || 0);
-    const bar = document.getElementById('statUsedBar');
-    if (bar) bar.style.width = usedPct + '%';
-    setNum('statUsedVal', (summary.avgUsedPct || 0) + '%');
-    const uptimeEl = document.getElementById('statUptime');
-    if (uptimeEl && summary.sessionStartTs) uptimeEl.textContent = formatDuration(Date.now() - summary.sessionStartTs);
-  }
-
-  function formatDuration(ms) {
-    const s = Math.floor(ms / 1000);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    if (h > 0) return h + 'h ' + m + 'm';
-    if (m > 0) return m + 'm';
-    return s + 's';
-  }
-
-  const usageDetails = document.getElementById('usageStatsDetails');
-  if (usageDetails) {
-    usageDetails.addEventListener('toggle', function() {
-      if (this.open) vscode.postMessage({ type: 'getUsageStats' });
-    });
-    if (usageDetails.open) vscode.postMessage({ type: 'getUsageStats' });
-  }
-
-  const openBtn = document.getElementById('openLogPanelBtn');
-  if (openBtn) openBtn.addEventListener('click', (e) => { e.stopPropagation(); vscode.postMessage({ type: 'openLogPanel', tab: 'quota' }); });
-  const hintBtn = document.getElementById('openLogPanelHintBtn');
-  if (hintBtn) hintBtn.addEventListener('click', () => vscode.postMessage({ type: 'openLogPanel', tab: 'quota' }));
-
-  window.addEventListener('message', (event) => {
-    const msg = event.data;
-    if (msg.type === 'usageStats') renderStats(msg.summary);
-  });
-})();
+// ── 就绪信号：至此 message 监听器已全部注册。宿主收到 webviewReady 后才推数据，
+// 防止推送早于监听器就绪（CSS 等资源加载慢于消息投递时，首屏账号会静默丢失） ──
+try { vscode.postMessage({ type: 'webviewReady' }); } catch (e) {}
 </script>
 </body>
 </html>`;

@@ -6,6 +6,7 @@
 import * as https from 'https';
 import { StoredAccount, UsageSnapshot } from './types';
 import * as accountStore from './accountStore';
+import { t } from './i18n';
 
 const CLOUDCODE_DAILY_URL = 'https://daily-cloudcode-pa.googleapis.com';
 const CLOUDCODE_PROD_URL = 'https://cloudcode-pa.googleapis.com';
@@ -86,6 +87,16 @@ function getLoadCodeAssistUA(): string {
 /** fetchAvailableModels 用的 User-Agent */
 function getCloudCodeUA(): string {
   return `antigravity/${OFFICIAL_IDE_VERSION} ${getOsName()}/${getArchName()}`;
+}
+
+/**
+ * retrieveUserQuotaSummary 用的 User-Agent。
+ * 服务端按 UA 版本区分返回内容：实测 1.20.5 只返回 3p 组（缺 Gemini 组），
+ * >= 2.25.0 才返回完整的 5h + Weekly 双窗 bucket（2026-10-31 实测，与 Cockpit Tools 一致）。
+ */
+const SUMMARY_IDE_VERSION = '2.25.0';
+function getSummaryUA(): string {
+  return `antigravity/${SUMMARY_IDE_VERSION} ${getOsName()}/${getArchName()}`;
 }
 
 /** 刷新 accessToken（Google 刷新响应可能携带 id_token，一并取回） */
@@ -191,15 +202,16 @@ async function loadCodeAssistRequest<T>(
 }
 
 /**
- * 发送 fetchAvailableModels 请求（带重试）
+ * 发送 Cloud Code v1internal 请求（带重试；fetchAvailableModels 与 retrieveUserQuotaSummary 共用）
  */
-async function fetchModelsRequest<T>(
+async function cloudCodePost<T>(
+  methodPath: string,
   body: object,
   accessToken: string,
+  userAgent: string,
   maxRetries = 3,
 ): Promise<T> {
-  const baseUrl = CLOUDCODE_DAILY_URL;
-  const url = `${baseUrl}/v1internal:fetchAvailableModels`;
+  const url = `${CLOUDCODE_DAILY_URL}/v1internal:${methodPath}`;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
@@ -209,7 +221,7 @@ async function fetchModelsRequest<T>(
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${accessToken}`,
-          'User-Agent': getCloudCodeUA(),
+          'User-Agent': userAgent,
           'Content-Type': 'application/json',
           'Accept-Encoding': 'gzip',
         },
@@ -231,7 +243,7 @@ async function fetchModelsRequest<T>(
       clearTimeout(timeout);
     }
   }
-  throw new Error('fetchAvailableModels: max retries exceeded');
+  throw new Error(`${methodPath}: max retries exceeded`);
 }
 
 /**
@@ -334,7 +346,68 @@ async function fetchAvailableModels(
   projectId?: string,
 ): Promise<CloudCodeQuotaResponse> {
   const payload = projectId ? { project: projectId } : {};
-  return fetchModelsRequest<CloudCodeQuotaResponse>(payload, accessToken);
+  return cloudCodePost<CloudCodeQuotaResponse>('fetchAvailableModels', payload, accessToken, getCloudCodeUA());
+}
+
+/** retrieveUserQuotaSummary 响应：官方窗口级配额摘要（5h + Weekly 双窗真数据） */
+interface QuotaSummaryResponse {
+  groups?: Array<{
+    displayName?: string;
+    description?: string;
+    buckets?: Array<{
+      bucketId?: string;
+      displayName?: string;
+      window?: string;
+      resetTime?: string;
+      remainingFraction?: number;
+    }>;
+  }>;
+}
+
+/**
+ * 获取官方窗口级配额摘要（Claude/Gemini 各自的 5h 窗与周窗）
+ */
+async function fetchQuotaSummary(
+  accessToken: string,
+  projectId?: string,
+): Promise<QuotaSummaryResponse> {
+  const payload = projectId ? { project: projectId } : {};
+  return cloudCodePost<QuotaSummaryResponse>('retrieveUserQuotaSummary', payload, accessToken, getSummaryUA());
+}
+
+/**
+ * 官方 bucketId → 模型族 × 时间窗口。
+ * 实测 bucketId：3p-5h / 3p-weekly（Claude 与 GPT 组）、gemini-5h / gemini-weekly（Gemini 组）；
+ * gemini-argon-* 为 ULTRA 独立 Argon 窗口，当前卡片无第三列，跳过不显示。
+ */
+const SUMMARY_BUCKET_MAP: Record<string, { family: 'claude' | 'gemini'; window: '5h' | 'weekly' }> = {
+  '3p-5h': { family: 'claude', window: '5h' },
+  '3p-weekly': { family: 'claude', window: 'weekly' },
+  'gemini-5h': { family: 'gemini', window: '5h' },
+  'gemini-weekly': { family: 'gemini', window: 'weekly' },
+};
+
+/** 从官方摘要构建窗口级配额（label 格式与 extractQuotaFromModels 保持一致，UI 正则依赖） */
+function extractQuotaFromSummary(response: QuotaSummaryResponse): import('./types').ModelQuota[] {
+  const modelQuotas: import('./types').ModelQuota[] = [];
+  for (const group of response?.groups || []) {
+    for (const bucket of group.buckets || []) {
+      const mapped = bucket.bucketId ? SUMMARY_BUCKET_MAP[bucket.bucketId] : undefined;
+      if (!mapped) continue;
+      const fraction = bucket.remainingFraction;
+      const percent = typeof fraction === 'number' && fraction >= 0 && fraction <= 1
+        ? Math.round(fraction * 100)
+        : 100;
+      const familyLabel = mapped.family === 'claude' ? 'Claude' : 'Gemini';
+      modelQuotas.push({
+        label: mapped.window === '5h' ? `${familyLabel} 5h` : `${familyLabel} 周额度`,
+        modelId: `${mapped.family}:${mapped.window}`,
+        remainingPercent: percent,
+        resetTime: bucket.resetTime,
+      });
+    }
+  }
+  return modelQuotas;
 }
 
 /** 黑名单模型（不计入配额显示）：后台 tab 预览与内置 chat 占位模型 */
@@ -445,20 +518,40 @@ export async function fetchUsage(account: StoredAccount): Promise<UsageSnapshot>
   // 1. 获取项目信息（projectId、tierId、availableAICredits）
   const projectInfo = await loadProjectInfo(accessToken);
 
-  // 2. 获取配额模型
+  // 2. 获取配额模型（模型级数据，作为摘要失败时的可见降级来源）
   const modelsResponse = await fetchAvailableModels(accessToken, projectInfo.projectId);
 
-  // 3. 提取配额信息
-  const snapshot = extractQuotaFromModels(modelsResponse.models);
+  // 3. 优先取官方窗口级摘要（retrieveUserQuotaSummary，含 5h/Weekly 双窗真数据）；
+  //    摘要失败时退回模型级推断并显式标注错误，绝不静默吞掉失败
+  let snapshot: UsageSnapshot;
+  try {
+    const summary = await fetchQuotaSummary(accessToken, projectInfo.projectId);
+    const summaryModels = extractQuotaFromSummary(summary);
+    if (summaryModels.length === 0) {
+      throw new Error(t('usNoQuotaBuckets'));
+    }
+    snapshot = {
+      minRemainingPercent: Math.min(...summaryModels.map(m => m.remainingPercent)),
+      models: summaryModels,
+      updatedAt: Date.now(),
+    };
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.warn('[UsageService] 周限摘要获取失败，退回模型级推断:', reason);
+    snapshot = extractQuotaFromModels(modelsResponse.models);
+    snapshot.loadError = '周限摘要获取失败（当前为模型级推断，可能缺 Weekly）: ' + reason;
+  }
 
   // 4. 补充订阅级别和 AI 积分
   snapshot.tierId = projectInfo.tierId;
   snapshot.availableAICredits = projectInfo.availableAICredits;
   if (projectInfo.loadError) {
-    snapshot.loadError = projectInfo.loadError;
+    snapshot.loadError = snapshot.loadError
+      ? snapshot.loadError + '；' + projectInfo.loadError
+      : projectInfo.loadError;
   }
   if (snapshot.models.length === 0 && !snapshot.loadError) {
-    snapshot.loadError = '响应中无可用配额模型（models 为空）';
+    snapshot.loadError = t('usNoQuotaModels');
   }
 
   return snapshot;
