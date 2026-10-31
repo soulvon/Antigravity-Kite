@@ -19,6 +19,7 @@ scripts/test_*
 # Exclude ALL documentation files except README.md
 *.md
 !README.md
+!README_en.md
 spec/
 
 # Local preview harness (offline webview renderer)
