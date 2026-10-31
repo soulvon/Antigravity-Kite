@@ -29,3 +29,8 @@ tmp/
 .codebuddy/
 devloop.project.json
 x.identifier
+
+# >>> experience-ignore >>>
+docs/experience/
+docs/tasks/
+# <<< experience-ignore <<<
