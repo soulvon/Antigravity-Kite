@@ -822,6 +822,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
 <html lang="${getLang() === 'zh' ? 'zh-CN' : 'en'}">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data: blob:; script-src ${webview.cspSource} 'unsafe-inline'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource} data:;">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="${cssUri}?v=${Date.now()}">
 </head>

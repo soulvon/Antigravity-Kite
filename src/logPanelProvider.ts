@@ -36,7 +36,7 @@ export function openLogPanel(
   const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'webview', 'log-panel.css'));
   const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'webview', 'log-panel.js'));
 
-  webview.html = buildHtml(cssUri.toString(), jsUri.toString(), ver, tab || 'quota');
+  webview.html = buildHtml(cssUri.toString(), jsUri.toString(), ver, tab || 'quota', webview.cspSource);
 
   setTimeout(() => pushAllData(ctx, tracker, webview), 300);
 
@@ -108,10 +108,11 @@ export function pushLogPanelData(ctx: vscode.ExtensionContext, tracker: UsageTra
   if (_panel) pushAllData(ctx, tracker, _panel.webview);
 }
 
-function buildHtml(cssUri: string, jsUri: string, version: string, initialTab: string): string {
+function buildHtml(cssUri: string, jsUri: string, version: string, initialTab: string, cspSource: string): string {
   return `<!DOCTYPE html>
 <html lang="${getLang() === 'zh' ? 'zh-CN' : 'en'}"><head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} data: blob:; script-src ${cspSource} 'unsafe-inline'; style-src ${cspSource} 'unsafe-inline'; font-src ${cspSource} data:;">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="${cssUri}">
 </head>

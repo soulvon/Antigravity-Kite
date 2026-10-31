@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -190,7 +190,7 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./ && node scripts/check-i18n.js",
+    "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_webview_hardening.mjs",
     "watch": "tsc -watch -p ./",
     "package": "node ./scripts/update-version.js && npm run compile && vsce package --skip-license"
   },
