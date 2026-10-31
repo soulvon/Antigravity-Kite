@@ -16,7 +16,13 @@ import * as http from 'http';
 import * as vscode from 'vscode';
 import { logInfo, logWarn } from './logger';
 
-const HEARTBEAT_MS = 2000;
+/** 心跳间隔：读设置（默认 500ms， clamp 200~5000），每轮动态读取（改设置即时生效） */
+function getHeartbeatMs(): number {
+  const raw = vscode.workspace.getConfiguration('antigravityKite').get<number>('cdpHeartbeatMs', 500);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 500;
+  return Math.min(5000, Math.max(200, n));
+}
 const INJECTED = new Set<string>(); // CDP target id（/json/list 的 id）
 
 let timer: NodeJS.Timeout | null = null;
@@ -171,12 +177,22 @@ async function tick(): Promise<void> {
   }
 }
 
+/** 自调度循环：每轮重新读设置（改间隔即时生效） */
+function loop(): void {
+  timer = setTimeout(() => {
+    void (async () => {
+      await tick();
+      loop();
+    })();
+  }, getHeartbeatMs());
+}
+
 /** 启动守护（静默轮询；端口不可用时自动空转） */
 export function startDeclarationSuppressor(): void {
   if (timer) return;
-  timer = setInterval(() => { void tick(); }, HEARTBEAT_MS);
+  loop();
   setTimeout(() => { void tick(); }, 1000);
-  logInfo('declGuard.start', { heartbeatMs: HEARTBEAT_MS });
+  logInfo('declGuard.start', { heartbeatMs: getHeartbeatMs() });
 }
 
 export function stopDeclarationSuppressor(): void {

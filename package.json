@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "Antigravity Kite",
   "description": "为 Antigravity IDE 量身打造的无感多账号切换与号池管理插件",
-  "version": "0.8.45",
+  "version": "0.9.3",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -85,6 +85,25 @@
           "type": "number",
           "default": 9333,
           "description": "调试端口号（--remote-debugging-port）。9222 会作为兜底自动尝试。通常无需修改。"
+        },
+        "antigravityKite.cdpHeartbeatMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 200,
+          "maximum": 5000,
+          "description": "自动确认安全声明的心跳间隔（毫秒）。越小弹窗消失越快，CPU 占用略增；改动即时生效。"
+        },
+        "antigravityKite.quotaRefreshMinutes": {
+          "type": "number",
+          "default": 15,
+          "minimum": 5,
+          "maximum": 120,
+          "description": "后台自动刷新全部账号配额的间隔（分钟）。重启 IDE 后生效。"
+        },
+        "antigravityKite.switch.syncGeminiFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "切号时同步 ~/.gemini 的 oauth_creds.json 与 google_accounts.json。仅当 AgyHop / Cockpit 等其它工具也在管理这些文件时才关闭。"
         },
         "antigravityKite.locale": {
           "type": "string",

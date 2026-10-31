@@ -122,8 +122,9 @@ export function activate(context: vscode.ExtensionContext) {
   // 延迟 2 秒执行首次后台静默全局额度刷新
   setTimeout(() => backgroundRefreshAllUsage(context), 2000);
 
-  // 每 15 分钟后台低优先级定时刷新
-  const refreshInterval = setInterval(() => backgroundRefreshAllUsage(context), 15 * 60 * 1000);
+  // 后台定时刷新（间隔可配置，默认 15 分钟，重启生效）
+  const refreshMinutes = Math.max(5, vscode.workspace.getConfiguration('antigravityKite').get<number>('quotaRefreshMinutes', 15));
+  const refreshInterval = setInterval(() => backgroundRefreshAllUsage(context), refreshMinutes * 60 * 1000);
   context.subscriptions.push({ dispose: () => clearInterval(refreshInterval) });
 }
 
@@ -260,7 +261,6 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       settings: {
         updateAutoCheck: cfg.get<boolean>('update.autoCheck', true),
         updateAutoInstall: cfg.get<boolean>('update.autoInstall', true),
-        customIdeExePath: cfg.get<string>('customIdeExePath', ''),
         autoConfirmDeclaration: cfg.get<boolean>('autoConfirmDeclaration', true),
         cdpPort: cfg.get<number>('cdpPort', 9333),
         locale: cfg.get<string>('locale', 'auto'),
@@ -275,30 +275,11 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     const port = Number(s.cdpPort);
     await cfg.update('update.autoCheck', s.updateAutoCheck !== false, target);
     await cfg.update('update.autoInstall', s.updateAutoInstall !== false, target);
-    await cfg.update('customIdeExePath', String(s.customIdeExePath ?? ''), target);
     await cfg.update('autoConfirmDeclaration', s.autoConfirmDeclaration !== false, target);
     await cfg.update('cdpPort', Number.isFinite(port) && port > 0 ? port : 9333, target);
     await cfg.update('locale', String(s.locale ?? 'auto'), target);
     logInfo('settings.saved', { ...s });
     this._view?.webview.postMessage({ type: 'toast', status: 'success', message: '设置已保存' });
-    this._pushSettings();
-  }
-
-  /** 选择 Antigravity 主程序路径（多实例分身用） */
-  private async _pickCustomExePath() {
-    const picked = await vscode.window.showOpenDialog({
-      canSelectFiles: true,
-      canSelectFolders: false,
-      canSelectMany: false,
-      title: '选择 Antigravity 主程序',
-      openLabel: '选择',
-      filters: process.platform === 'win32' ? { 可执行文件: ['exe'] } : undefined,
-    });
-    if (!picked || picked.length === 0) {
-      return;
-    }
-    const cfg = vscode.workspace.getConfiguration('antigravityKite');
-    await cfg.update('customIdeExePath', picked[0].fsPath, vscode.ConfigurationTarget.Global);
     this._pushSettings();
   }
 
@@ -660,15 +641,18 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             });
             logInfo('switch.hot.files', { agyPtr: agyPtr.ok, gemini: gs.ok, error: agyPtr.error || gs.error });
 
-            // 3.5) ~/.gemini 两处凭据文件同步（弹窗根因修复）
-            //     对照矩阵实证：google_accounts.active + oauth_creds 的 token 必须同时指向
-            //     目标账号，缺任一项 → agent 面板判定账号变更 → 每次切号弹安全声明。
-            const geminiLocal = syncGeminiLocalCreds({
-              email: account.email,
-              accessToken: switchToken.accessToken,
-              refreshToken: switchToken.refreshToken,
-              expiryMs,
-            });
+            // 3.5) ~/.gemini 两处凭据文件同步（可关：AgyHop/Cockpit 用户自行管理时）
+            let geminiLocal: { ok: boolean; error?: string } = { ok: true };
+            if (vscode.workspace.getConfiguration('antigravityKite').get<boolean>('switch.syncGeminiFiles', true)) {
+              geminiLocal = syncGeminiLocalCreds({
+                email: account.email,
+                accessToken: switchToken.accessToken,
+                refreshToken: switchToken.refreshToken,
+                expiryMs,
+              });
+            } else {
+              geminiLocal = { ok: true, error: 'skipped (setting off)' };
+            }
             logInfo('switch.hot.gemini', { ok: geminiLocal.ok, error: geminiLocal.error });
 
             // 4) 会话层 token 热切 + 总线身份推送（尽力而为，失败不阻塞）
@@ -719,10 +703,6 @@ class SidebarProvider implements vscode.WebviewViewProvider {
 
       case 'saveSettings':
         await this._saveSettings(msg.settings || {});
-        break;
-
-      case 'pickCustomExePath':
-        await this._pickCustomExePath();
         break;
 
       case 'exportAccounts':
@@ -1091,15 +1071,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
           <span class="settings-row-label">调试端口</span>
           <input type="number" class="settings-input" id="setCdpPort" min="1024" max="65535" placeholder="9333">
         </div>
-        <div class="settings-field">
-          <span class="settings-row-label">主程序路径</span>
-          <div class="settings-path-row">
-            <input type="text" class="settings-input" id="setExePath" placeholder="自动探测" readonly>
-            <button class="settings-mini-btn" id="setExePick" type="button">浏览</button>
-            <button class="settings-mini-btn" id="setExeClear" type="button" title="恢复自动探测">清除</button>
-          </div>
-        </div>
-        <div class="settings-hint">主程序路径仅用于多版本启动分身，留空时自动探测。</div>
+        <div class="settings-hint">切号时通过该端口与 IDE 通信，9222 会作为兜底自动尝试。</div>
       </div>
 
       <div class="settings-group">
@@ -1896,7 +1868,6 @@ function fillSettingsForm(s) {
   chk('setUpdateAutoInstall', s.updateAutoInstall !== false);
   chk('setAutoConfirm', s.autoConfirmDeclaration !== false);
   set('setCdpPort', s.cdpPort || 9333);
-  set('setExePath', s.customIdeExePath || '');
   set('setLocale', s.locale || 'auto');
 }
 
@@ -1923,21 +1894,12 @@ function closeSettingsModal() {
   if (cancelBtn) cancelBtn.onclick = closeSettingsModal;
   ov.addEventListener('click', (e) => { if (e.target === ov) closeSettingsModal(); });
 
-  const pickBtn = document.getElementById('setExePick');
-  if (pickBtn) pickBtn.onclick = () => vscode.postMessage({ type: 'pickCustomExePath' });
-  const clearBtn = document.getElementById('setExeClear');
-  if (clearBtn) clearBtn.onclick = () => {
-    const p = document.getElementById('setExePath');
-    if (p) p.value = '';
-  };
-
   const resetBtn = document.getElementById('settingsReset');
   if (resetBtn) resetBtn.onclick = () => fillSettingsForm({
     updateAutoCheck: true,
     updateAutoInstall: true,
     autoConfirmDeclaration: true,
     cdpPort: 9333,
-    customIdeExePath: '',
     locale: 'auto'
   });
 
@@ -1953,7 +1915,6 @@ function closeSettingsModal() {
         updateAutoInstall: on('setUpdateAutoInstall'),
         autoConfirmDeclaration: on('setAutoConfirm'),
         cdpPort: num('setCdpPort', 9333),
-        customIdeExePath: String(val('setExePath')).trim(),
         locale: val('setLocale') || 'auto'
       }
     });
