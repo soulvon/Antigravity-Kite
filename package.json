@@ -204,5 +204,17 @@
   },
   "dependencies": {
     "sql.js": "^1.14.1"
-  }
+  },
+  "keywords": [
+    "antigravity",
+    "multi-account",
+    "account-switcher",
+    "account-pool",
+    "seamless-switch",
+    "quota-monitor",
+    "gemini",
+    "claude",
+    "auto-switch",
+    "ide-extension"
+  ]
 }
