@@ -192,12 +192,14 @@
   "scripts": {
     "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_webview_hardening.mjs",
     "watch": "tsc -watch -p ./",
-    "package": "node ./scripts/update-version.js && npm run compile && vsce package --skip-license"
+    "package": "node ./scripts/update-version.js && npm run compile && vsce package --skip-license",
+    "check:release": "node scripts/check_release_readiness.mjs"
   },
   "devDependencies": {
     "@types/node": "^18.0.0",
     "@types/vscode": "^1.80.0",
     "@vscode/vsce": "^2.22.0",
+    "adm-zip": "^0.6.1",
     "typescript": "^5.0.0"
   },
   "dependencies": {
