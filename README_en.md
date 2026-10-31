@@ -215,6 +215,16 @@ All credentials stay on your machine (Windows Credential Manager integration) �
 
 ---
 
+---
+
+## ⭐ Star History
+
+**如果这个工具帮到了你，点一个 Star 让更多开发者看到它 · If this project helps you, a star means a lot.**
+
+[![Star History Chart](https://api.star-history.com/svg?repos=soulvon/soulvon/Antigravity-Kite&type=Date)](https://star-history.com/#soulvon/soulvon/Antigravity-Kite&Date)
+
+---
+
 ## 📄 License
 
 Released under the [MIT License](LICENSE).

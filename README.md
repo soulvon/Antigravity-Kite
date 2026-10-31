@@ -215,6 +215,16 @@ antigravity-ide --install-extension antigravity-kite-1.0.3.vsix --force
 
 ---
 
+---
+
+## ⭐ Star History
+
+**如果这个工具帮到了你，点一个 Star 让更多开发者看到它 · If this project helps you, a star means a lot.**
+
+[![Star History Chart](https://api.star-history.com/svg?repos=soulvon/soulvon/Antigravity-Kite&type=Date)](https://star-history.com/#soulvon/soulvon/Antigravity-Kite&Date)
+
+---
+
 ## 📄 开源许可证
 
 本项目基于 [MIT License](LICENSE) 开源发布。
