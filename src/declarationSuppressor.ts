@@ -16,7 +16,7 @@ import * as http from 'http';
 import * as vscode from 'vscode';
 import { logInfo, logWarn } from './logger';
 
-const HEARTBEAT_MS = 10000;
+const HEARTBEAT_MS = 2000;
 const INJECTED = new Set<string>(); // CDP target id（/json/list 的 id）
 
 let timer: NodeJS.Timeout | null = null;
@@ -175,7 +175,7 @@ async function tick(): Promise<void> {
 export function startDeclarationSuppressor(): void {
   if (timer) return;
   timer = setInterval(() => { void tick(); }, HEARTBEAT_MS);
-  setTimeout(() => { void tick(); }, 5000);
+  setTimeout(() => { void tick(); }, 1000);
   logInfo('declGuard.start', { heartbeatMs: HEARTBEAT_MS });
 }
 

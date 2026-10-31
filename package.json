@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "Antigravity Kite",
   "description": "为 Antigravity IDE 量身打造的无感多账号切换与号池管理插件",
-  "version": "0.8.44",
+  "version": "0.8.45",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -76,11 +76,6 @@
           "default": true,
           "description": "发现新版本时自动静默安装"
         },
-        "antigravityKite.customIdeExePath": {
-          "type": "string",
-          "default": "",
-          "description": "自定义 Antigravity 主程序可执行文件路径 (用于多版本启动分身)"
-        },
         "antigravityKite.autoConfirmDeclaration": {
           "type": "boolean",
           "default": true,
@@ -115,14 +110,12 @@
     "package": "node ./scripts/update-version.js && npm run compile && vsce package --skip-license"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^18.0.0",
     "@types/vscode": "^1.80.0",
     "@vscode/vsce": "^2.22.0",
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "better-sqlite3": "^12.10.0",
     "sql.js": "^1.14.1"
   }
 }
