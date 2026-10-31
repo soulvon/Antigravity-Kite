@@ -12,6 +12,8 @@
 [![GitHub release](https://img.shields.io/github/v/release/soulvon/Antigravity-Kite?color=orange&style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases)
 [![GitHub Downloads](https://img.shields.io/github/downloads/soulvon/Antigravity-Kite/total?color=orange&style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases)
 
+[English](README_en.md) • [简体中文](README.md)
+
 [📥 下载安装](#-下载与安装) •
 [🖼️ 界面预览](#️-界面预览) •
 [⚡ 解决什么问题](#-它解决什么问题) •
