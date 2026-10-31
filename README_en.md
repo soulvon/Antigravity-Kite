@@ -4,9 +4,9 @@
 
 ### Seamless multi-account switching & account pool management for Antigravity IDE
 
-**Switch without restart · Dual-model dual-window real quotas (Claude / Gemini) · Auto-confirm security notice · Bilingual UI**
+**Switch without restart · Real dual-window quotas for Claude / Gemini / Gemini 4 · Auto-confirm security notice · Bilingual UI**
 
-[![Version](https://img.shields.io/badge/version-1.0.3-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.0.7-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)]()
 [![GitHub release](https://img.shields.io/github/v/release/soulvon/Antigravity-Kite?color=orange&style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases)
@@ -34,7 +34,7 @@ Antigravity Kite is a multi-account manager and seamless switcher for the **Anti
 
 ## 🖼️ Preview
 
-Sidebar account card flow: **dual-column quota bars for Claude & Gemini** (weekly + 5h windows, live percentages and reset countdowns), current account highlighted, with toggle, edit, refresh and delete at hand:
+Sidebar account card flow: **single-column vertical quota bars for Claude / Gemini / Gemini 4** (weekly + 5h windows, live percentages and reset countdowns without redundant empty slots), current account highlighted, with toggle, edit, refresh and delete at hand:
 
 <div align="center">
   <img src="resources/preview-sidebar.webp" width="420" alt="Antigravity Kite account cards with dual-model dual-window quota dashboard">

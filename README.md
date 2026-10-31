@@ -4,9 +4,9 @@
 
 ### Antigravity 多账号无感切号与号池管理扩展
 
-**切号不重启 IDE · Claude / Gemini 双模型双窗口真配额 · 安全声明自动确认 · 中英双语自适应**
+**切号不重启 IDE · Claude / Gemini / Gemini 4 真实双窗配额流 · 安全声明自动确认 · 中英双语自适应**
 
-[![Version](https://img.shields.io/badge/version-1.0.3-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.0.7-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)]()
 [![GitHub release](https://img.shields.io/github/v/release/soulvon/Antigravity-Kite?color=orange&style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases)
@@ -34,7 +34,7 @@ Antigravity Kite 是一款面向 **Antigravity IDE** 的多账号管理与无感
 
 ## 🖼️ 界面预览
 
-侧栏账号卡片流：**Claude 与 Gemini 双列配额条**（Weekly 周窗 + 5h 短窗，百分比与重置倒计时实时可视），当前账号高亮，启停开关、编辑、刷新、删除一应俱全：
+侧栏账号卡片流：**Claude / Gemini / Gemini 4 单列竖排配额条**（周额度 + 5h 短窗，百分比与重置倒计时实时可视，无空位冗余），当前账号高亮，启停开关、编辑、刷新、删除一应俱全：
 
 <div align="center">
   <img src="resources/preview-sidebar.webp" width="420" alt="Antigravity Kite 账号卡片流与双模型双窗口配额看板">

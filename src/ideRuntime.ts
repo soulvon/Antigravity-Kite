@@ -7,15 +7,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as cp from 'child_process';
+import { getAppDataDir } from './platformPaths';
 
 const isWindows = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
-
-function getAppDataDir(): string {
-  if (isWindows) return process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-  if (isMac) return path.join(os.homedir(), 'Library', 'Application Support');
-  return process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-}
 
 function getDefaultUserDataDir(): string {
   const candidates = [
@@ -257,6 +252,23 @@ interface IdeProcessInfo {
 
 async function listIdeProcesses(): Promise<IdeProcessInfo[]> {
   const out: IdeProcessInfo[] = [];
+  if (!isWindows) {
+    // POSIX：ps aux 快照，解析主进程命令行（与 getRunningEntriesUnix 同源）
+    const stdout = await runShellAsync('ps aux', 8000);
+    if (!stdout) return out;
+    for (const line of stdout.split('\n')) {
+      if (!/antigravity/i.test(line) || /grep/i.test(line)) continue;
+      const parts = line.trim().split(/\s+/);
+      const pid = parseInt(parts[1], 10);
+      if (!pid || isNaN(pid)) continue;
+      let cmd = '';
+      try { cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' '); } catch {
+        cmd = parts.slice(10).join(' ');
+      }
+      out.push({ pid, cmd });
+    }
+    return out;
+  }
   try {
     const stdout = await runShellAsync(
       'wmic process where "name=\'Antigravity IDE.exe\' or name=\'Antigravity.exe\'" get ProcessId,CommandLine /FORMAT:LIST',
@@ -323,6 +335,25 @@ interface ProcSnapshot {
 }
 
 async function listAllProcesses(): Promise<ProcSnapshot[]> {
+  if (!isWindows) {
+    // POSIX：ps -eo 快照，cmd 为完整命令行（含可执行路径），ppid 直接可得
+    const out: ProcSnapshot[] = [];
+    const stdout = await runShellAsync('ps -eo pid=,ppid=,command=', 15000);
+    if (stdout) {
+      for (const line of stdout.split('\n')) {
+        const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+        if (!m) continue;
+        const pid = parseInt(m[1], 10);
+        const ppid = parseInt(m[2], 10);
+        if (!pid) continue;
+        const cmd = m[3];
+        // 进程名取可执行文件末段（真实 macOS/Linux 上 agy 引擎不带 .exe 后缀）
+        const name = cmd.split(/\s+/)[0].split('/').pop() || '';
+        out.push({ name, pid, ppid, cmd });
+      }
+    }
+    return out;
+  }
   const psCmd = `Get-CimInstance Win32_Process | Select-Object Name,ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress`;
   const stdout = await runPowerShellAsync(psCmd, 15000);
   const out: ProcSnapshot[] = [];
@@ -363,8 +394,12 @@ async function listAllProcesses(): Promise<ProcSnapshot[]> {
 }
 
 function isIdeMainProcess(p: ProcSnapshot): boolean {
-  if (!/antigravity(\s|\.)/i.test(p.name) && !/antigravity.*ide\.exe/i.test(p.name)) return false;
   if (/--type=/i.test(p.cmd)) return false;
+  if (isWindows) {
+    if (!/antigravity(\s|\.)/i.test(p.name) && !/antigravity.*ide\.exe/i.test(p.name)) return false;
+    return /antigravity/i.test(p.cmd);
+  }
+  // POSIX：ps 快照的 name 是可执行文件末段（如 Electron），主进程判定走完整命令行
   return /antigravity/i.test(p.cmd);
 }
 
@@ -409,11 +444,12 @@ export async function killAgyEngine(): Promise<{ killed: number; error?: string;
     }
   }
 
-  // 4) 后代里的 agy.exe
-  let agyPids = all.filter((p) => /(^|\\)agy\.exe$/i.test(p.name) && descendants.has(p.pid)).map((p) => p.pid);
+  // 4) 后代里的 agy 引擎（Windows: agy.exe；POSIX: agy，按平台匹配名称与路径分隔符）
+  const agyNameRe = isWindows ? /(^|\\)agy\.exe$/i : /(^|\/)agy$/i;
+  let agyPids = all.filter((p) => agyNameRe.test(p.name) && descendants.has(p.pid)).map((p) => p.pid);
 
-  // 5) 兜底：树内没找到但系统里有 agy.exe（单实例场景安全）
-  const allAgy = all.filter((p) => /(^|\\)agy\.exe$/i.test(p.name)).map((p) => p.pid);
+  // 5) 兜底：树内没找到但系统里有 agy（单实例场景安全）
+  const allAgy = all.filter((p) => agyNameRe.test(p.name)).map((p) => p.pid);
   const agyWasRunning = allAgy.length > 0;
   if (agyPids.length === 0 && allAgy.length > 0) {
     agyPids = allAgy;
@@ -426,7 +462,11 @@ export async function killAgyEngine(): Promise<{ killed: number; error?: string;
 
   let killed = 0;
   for (const pid of agyPids) {
-    await runShellAsync(`taskkill /PID ${pid} /T /F`, 5000);
+    if (isWindows) {
+      await runShellAsync(`taskkill /PID ${pid} /T /F`, 5000);
+    } else {
+      try { process.kill(pid, 'SIGKILL'); } catch { /* 已退出即目标态 */ }
+    }
     killed += 1;
   }
   return { killed, agyWasRunning };

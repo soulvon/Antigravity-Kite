@@ -378,27 +378,49 @@ async function fetchQuotaSummary(
 /**
  * 官方 bucketId → 模型族 × 时间窗口。
  * 实测 bucketId：3p-5h / 3p-weekly（Claude 与 GPT 组）、gemini-5h / gemini-weekly（Gemini 组）；
- * gemini-argon-* 为 ULTRA 独立 Argon 窗口，当前卡片无第三列，跳过不显示。
+ * gemini-argon-* 为 Gemini 4（Argon）独立配额池（包含 5h 与 Weekly 双窗，按前缀通配）。
  */
-const SUMMARY_BUCKET_MAP: Record<string, { family: 'claude' | 'gemini'; window: '5h' | 'weekly' }> = {
+const SUMMARY_BUCKET_MAP: Record<string, { family: 'claude' | 'gemini' | 'argon'; window: '5h' | 'weekly' }> = {
   '3p-5h': { family: 'claude', window: '5h' },
   '3p-weekly': { family: 'claude', window: 'weekly' },
   'gemini-5h': { family: 'gemini', window: '5h' },
   'gemini-weekly': { family: 'gemini', window: 'weekly' },
+  'gemini-argon-5h': { family: 'argon', window: '5h' },
+  'gemini-argon-wtu-weekly': { family: 'argon', window: 'weekly' },
 };
 
-/** 从官方摘要构建窗口级配额（label 格式与 extractQuotaFromModels 保持一致，UI 正则依赖） */
-function extractQuotaFromSummary(response: QuotaSummaryResponse): import('./types').ModelQuota[] {
+const FAMILY_LABELS: Record<'claude' | 'gemini' | 'argon', string> = {
+  claude: 'Claude',
+  gemini: 'Gemini',
+  argon: 'Gemini 4',
+};
+
+function mapSummaryBucket(bucketId: string): { family: 'claude' | 'gemini' | 'argon'; window: '5h' | 'weekly' } | undefined {
+  const direct = SUMMARY_BUCKET_MAP[bucketId];
+  if (direct) return direct;
+  if (bucketId.startsWith('gemini-argon-')) {
+    if (bucketId.endsWith('-weekly') || bucketId.endsWith('weekly')) {
+      return { family: 'argon', window: 'weekly' };
+    }
+    if (bucketId.endsWith('-5h') || bucketId.endsWith('5h')) {
+      return { family: 'argon', window: '5h' };
+    }
+  }
+  return undefined;
+}
+
+/** 从官方摘要构建窗口级配额（全中文标签：5h / 周额度；没有的数据不生成条目） */
+export function extractQuotaFromSummary(response: QuotaSummaryResponse): import('./types').ModelQuota[] {
   const modelQuotas: import('./types').ModelQuota[] = [];
   for (const group of response?.groups || []) {
     for (const bucket of group.buckets || []) {
-      const mapped = bucket.bucketId ? SUMMARY_BUCKET_MAP[bucket.bucketId] : undefined;
+      const mapped = bucket.bucketId ? mapSummaryBucket(bucket.bucketId) : undefined;
       if (!mapped) continue;
       const fraction = bucket.remainingFraction;
       const percent = typeof fraction === 'number' && fraction >= 0 && fraction <= 1
         ? Math.round(fraction * 100)
         : 100;
-      const familyLabel = mapped.family === 'claude' ? 'Claude' : 'Gemini';
+      const familyLabel = FAMILY_LABELS[mapped.family];
       modelQuotas.push({
         label: mapped.window === '5h' ? `${familyLabel} 5h` : `${familyLabel} 周额度`,
         modelId: `${mapped.family}:${mapped.window}`,

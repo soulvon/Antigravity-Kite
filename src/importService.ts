@@ -39,7 +39,10 @@ function getAntigravityManagerDir(): string {
 
 function tokenExpiryToIso(token: ExternalAccount['token']): string | undefined {
   if (typeof token.expiry_timestamp === 'number' && Number.isFinite(token.expiry_timestamp)) {
-    return new Date(token.expiry_timestamp * 1000).toISOString();
+    // 秒/毫秒自适应（阈值 1e10 ≈ 2286 年）：Cockpit Tools 数据单位未经契约保证，
+    // 写死 *1000 时毫秒数据会算出公元五万年、账号永不判过期
+    const ms = token.expiry_timestamp > 10_000_000_000 ? token.expiry_timestamp : token.expiry_timestamp * 1000;
+    return new Date(ms).toISOString();
   }
   if (typeof token.expires_in === 'number' && Number.isFinite(token.expires_in)) {
     return new Date(Date.now() + token.expires_in * 1000).toISOString();

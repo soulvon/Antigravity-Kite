@@ -13,8 +13,20 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { t } from './i18n';
 
 export const IDE_CRED_TARGET = 'gemini:antigravity';
+
+/**
+ * 平台门控：凭据写入依赖 Windows Credential Manager（CredReadW/CredWriteW）。
+ * macOS Keychain / Linux libsecret 的等价实现须先逆向对应平台 IDE 的凭据服务名，
+ * 未实证前显式失败，严禁用跨平台壳伪装成功。
+ */
+function assertWindowsCredAvailable(): void {
+  if (process.platform !== 'win32') {
+    throw new Error(t('credWindowsOnly'));
+  }
+}
 
 export interface IdeCredential {
   token: {
@@ -151,6 +163,7 @@ export interface IdeCredentialReadResult {
 /** 读取 IDE 凭据（gemini:antigravity；targetOverride 仅供自测） */
 export async function readIdeCredential(targetOverride?: string): Promise<IdeCredentialReadResult> {
   try {
+    assertWindowsCredAvailable();
     const script = PS_TEMPLATE
       .replace('<MODE>', 'Read')
       .replace('<TARGET>', (targetOverride || IDE_CRED_TARGET).replace(/'/g, "''"))
@@ -168,6 +181,7 @@ export async function readIdeCredential(targetOverride?: string): Promise<IdeCre
 /** 写入 IDE 凭据（blobBase64 为 UTF-8 JSON 字节的 base64；targetOverride 仅供自测） */
 export async function writeIdeCredentialBlob(blobBase64: string, user: string, targetOverride?: string): Promise<{ ok: boolean; error?: string }> {
   try {
+    assertWindowsCredAvailable();
     const script = PS_TEMPLATE
       .replace('<MODE>', 'Write')
       .replace('<TARGET>', (targetOverride || IDE_CRED_TARGET).replace(/'/g, "''"))

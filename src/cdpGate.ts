@@ -133,10 +133,15 @@ export async function ensureCdpGate(context: vscode.ExtensionContext): Promise<G
 
   if (pick === t('gateEnable')) {
     const p = cdpPort();
-    const patched = await patchShortcuts(p);
-    logInfo('cdpGate.shortcuts', { patched: patched.patched, details: patched.details.slice(0, 3) });
-    if (patched.patched === 0) {
-      logWarn('cdpGate.shortcuts.none', {});
+    if (process.platform === 'win32') {
+      const patched = await patchShortcuts(p);
+      logInfo('cdpGate.shortcuts', { patched: patched.patched, details: patched.details.slice(0, 3) });
+      if (patched.patched === 0) {
+        logWarn('cdpGate.shortcuts.none', {});
+      }
+    } else {
+      // POSIX 无 .lnk 快捷方式可 patch：本次 relaunch 直接带端口；用户日后手动启动需自行附加参数
+      logWarn('cdpGate.shortcuts.unsupported', { platform: process.platform });
     }
     try {
       const launch = await ideRuntime.getCurrentLaunchInfo();

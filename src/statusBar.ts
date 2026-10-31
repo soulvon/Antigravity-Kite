@@ -16,6 +16,14 @@ import { fetchUsage } from './usageService';
 import { UsageSnapshot } from './types';
 import { t } from './i18n';
 
+function formatModelLabel(m: { modelId?: string; label?: string }): string {
+  const isWeekly = m.modelId?.endsWith(':weekly') || /week/i.test(m.label || '');
+  const family = /argon/i.test(m.modelId || '') ? 'Gemini 4'
+    : /claude/i.test(m.modelId || m.label || '') ? 'Claude'
+    : 'Gemini';
+  return `${family} ${isWeekly ? t('quotaWeekly') : t('quota5h')}`;
+}
+
 /** 状态栏左段信息密度：dot/percent/compact 极简（只看最低额度）；labeled 账号+各模型；full 完整（加积分） */
 export type StatusBarStyle = 'dot' | 'percent' | 'compact' | 'dual' | 'labeled' | 'full';
 
@@ -87,7 +95,7 @@ export class StatusBarManager implements vscode.Disposable {
               detailsParts.push(`$(credit-card) ${usage.availableAICredits}`);
             }
             for (const m of usage.models) {
-              detailsParts.push(`${m.label}: ${m.remainingPercent}%`);
+              detailsParts.push(`${formatModelLabel(m)}: ${m.remainingPercent}%`);
             }
             details = detailsParts.join(' | ');
           }
@@ -311,7 +319,7 @@ export class StatusBarManager implements vscode.Disposable {
       }
       if (usage && usage.models.length > 0 && this._sbCfg('showModels', true)) {
         for (const m of usage.models) {
-          segments.push(`${this._getStatusIcon(m.remainingPercent)} ${m.label}: ${m.remainingPercent}%`);
+          segments.push(`${this._getStatusIcon(m.remainingPercent)} ${formatModelLabel(m)}: ${m.remainingPercent}%`);
         }
         if (style === 'full' && showCredits) {
           segments.push(`$(credit-card) ${credits}`);
@@ -352,7 +360,7 @@ export class StatusBarManager implements vscode.Disposable {
       // 显示各分组配额（每组独立状态图标）
       for (const model of usage.models) {
         const icon = this._getStatusIcon(model.remainingPercent);
-        md.appendMarkdown(`${icon} **${model.label}**：${model.remainingPercent}%\n\n`);
+        md.appendMarkdown(`${icon} **${formatModelLabel(model)}**：${model.remainingPercent}%\n\n`);
       }
       // AI 积分
       if (usage.availableAICredits !== undefined) {

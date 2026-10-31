@@ -11,6 +11,7 @@ import * as path from 'path';
 import * as cp from 'child_process';
 import { switchIdeStateIdentity } from './ideStateDb';
 import { writeIdeCredentialBlob, syncGeminiAccountFiles } from './winCredential';
+import { getAppDataDir } from './platformPaths';
 import { t } from './i18n';
 
 interface PendingPlan {
@@ -36,10 +37,10 @@ const CLOSE_TIMEOUT_MS = 20000;   // 优雅关闭等待上限（参考实现对�
 const FORCE_TIMEOUT_MS = 5000;    // 强杀后等待上限
 const POST_EXIT_SETTLE_MS = 1000; // 退出后等文件句柄/WAL 收尾
 
-/** 助手独立日志：与扩展共用共享目录，前缀 [helper]，便于事后确认关-写-重启每步结果 */
+/** 助手独立日志：与扩展共用共享目录（getAppDataDir 单一真源，两端目录必须一致），前缀 [helper] */
 function helperLog(stage: string, detail?: unknown): void {
   try {
-    const dir = path.join(process.env.APPDATA || os.homedir(), '.antigravity-kite');
+    const dir = path.join(getAppDataDir(), '.antigravity-kite');
     fs.mkdirSync(dir, { recursive: true });
     const line = `[${new Date().toISOString()}] [INFO] [helper.${stage}]${detail === undefined ? '' : ' ' + JSON.stringify(detail)}`;
     fs.appendFileSync(path.join(dir, 'kite.log'), line + '\n', 'utf8');
@@ -66,14 +67,23 @@ function run(cmd: string): Promise<string | null> {
 
 async function closeIde(pid: number): Promise<void> {
   if (!pidAlive(pid)) return;
-  // 优雅关闭：taskkill 不带 /F 会向进程树窗口投递 WM_CLOSE
-  await run(`taskkill /PID ${pid} /T`);
+  if (process.platform === 'win32') {
+    // 优雅关闭：taskkill 不带 /F 会向进程树窗口投递 WM_CLOSE
+    await run(`taskkill /PID ${pid} /T`);
+  } else {
+    // POSIX：SIGTERM 触发 Electron 优雅退出，子进程随主进程收尾
+    try { process.kill(pid, 'SIGTERM'); } catch { /* 进程恰好退出即目标态 */ }
+  }
   const deadline = Date.now() + CLOSE_TIMEOUT_MS;
   while (Date.now() < deadline && pidAlive(pid)) {
     await sleep(300);
   }
   if (pidAlive(pid)) {
-    await run(`taskkill /PID ${pid} /T /F`);
+    if (process.platform === 'win32') {
+      await run(`taskkill /PID ${pid} /T /F`);
+    } else {
+      try { process.kill(pid, 'SIGKILL'); } catch { /* 已退出 */ }
+    }
     const forceDeadline = Date.now() + FORCE_TIMEOUT_MS;
     while (Date.now() < forceDeadline && pidAlive(pid)) {
       await sleep(200);

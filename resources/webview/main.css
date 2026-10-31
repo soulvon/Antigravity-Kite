@@ -6999,7 +6999,7 @@ body.vscode-high-contrast-light #tabAccounts .search-bar:focus-within {
     padding: 10px 12px !important;
     display: flex !important;
     flex-direction: column !important;
-    gap: 8px !important;
+    gap: 0 !important;
 }
 
 .settings-group-head {
@@ -7009,7 +7009,7 @@ body.vscode-high-contrast-light #tabAccounts .search-bar:focus-within {
     font-size: 12px !important;
     font-weight: 600 !important;
     color: var(--vscode-foreground) !important;
-    padding-bottom: 2px;
+    padding-bottom: 8px !important;
 }
 
 .settings-group-head svg {
@@ -7072,6 +7072,88 @@ body.vscode-high-contrast-light #tabAccounts .search-bar:focus-within {
     line-height: 1.4 !important;
     padding-top: 2px !important;
     border-top: 1px dashed var(--card-border) !important;
+}
+
+/* 设置弹窗内的胶囊标签：放大到 12px 字号与更大热区（全局 v2-tag 不受影响） */
+.settings-group .v2-tag {
+    font-size: 12px !important;
+    padding: 7px 12px !important;
+    cursor: pointer !important;
+}
+
+.settings-group .v2-tag:hover {
+    border-color: color-mix(in srgb, var(--ac-emerald, #10b981) 45%, transparent) !important;
+    color: var(--vscode-foreground) !important;
+}
+
+.settings-group .v2-tag.is-on:hover {
+    color: #fff !important;
+    filter: brightness(1.06);
+}
+
+/* 设置弹窗：Kite 选项行排版（label 固定宽度保证左右对齐，控件统一撑满） */
+.settings-group .v2-opt-row {
+    gap: 12px !important;
+    padding: 6px 0 !important;
+    min-height: 36px !important;
+}
+
+.settings-group .v2-opt-label {
+    flex: 0 0 96px !important;
+    min-width: 96px !important;
+    font-size: 12px !important;
+    white-space: nowrap !important;
+}
+
+.settings-group .v2-sel {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    height: 32px !important;
+    font-size: 12px !important;
+}
+
+.settings-group .v2-param-val {
+    height: 32px !important;
+    width: 56px !important;
+}
+
+/* 端口等窄输入框：不撑满，靠右 */
+.settings-group .sb-port-input {
+    flex: 0 0 110px !important;
+    margin-left: auto !important;
+    text-align: center !important;
+}
+
+.settings-group .settings-hint {
+    margin-top: 8px !important;
+}
+
+/* 状态栏组专用：标签组与数字行 */
+.sb-tag-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+}
+
+.sb-num-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+}
+
+/* 实时生效标记 */
+.settings-live-tag {
+    margin-left: auto;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--ac-emerald, #10b981);
+    background: color-mix(in srgb, var(--ac-emerald, #10b981) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--ac-emerald, #10b981) 32%, transparent);
 }
 
 /* 标签编辑弹窗：chip 的配色由 JS 内联控制，这里只补输入框与悬停反馈 */

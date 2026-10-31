@@ -95,6 +95,8 @@ for (const k of lpKeys) {
 
 // ── 3. package.json nls 对齐 ──
 const pkgRaw = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
+const pkgJson = JSON.parse(pkgRaw);
+const currentVersion = pkgJson.version;
 const usedNls = [...pkgRaw.matchAll(/%([a-zA-Z0-9_.]+)%/g)].map(m => m[1]);
 const nlsEn = JSON.parse(fs.readFileSync(path.join(root, 'package.nls.json'), 'utf8'));
 const nlsZh = JSON.parse(fs.readFileSync(path.join(root, 'package.nls.zh-cn.json'), 'utf8'));
@@ -110,8 +112,47 @@ for (const k of Object.keys(nlsZh)) {
   if (!usedNls.includes(k)) problems.push(`package.nls.zh-cn.json 多余 key（package.json 未引用）: ${k}`);
 }
 
+// ── 4. 文档双语同步与版本对齐门控 ──
+const readmeZhPath = path.join(root, 'README.md');
+const readmeEnPath = path.join(root, 'README_en.md');
+const i18nGuidePath = path.join(root, 'docs', 'I18N_GUIDE.md');
+
+if (!fs.existsSync(i18nGuidePath)) {
+  problems.push('缺少国际化开发指南: docs/I18N_GUIDE.md');
+}
+
+if (fs.existsSync(readmeZhPath) && fs.existsSync(readmeEnPath)) {
+  const readmeZh = fs.readFileSync(readmeZhPath, 'utf8');
+  const readmeEn = fs.readFileSync(readmeEnPath, 'utf8');
+
+  // 校验两份文档顶部的版本徽标是否与 package.json 一致
+  const versionBadgePattern = new RegExp(`badge/version-${currentVersion.replace(/\./g, '\\.')}-`, 'i');
+  if (!versionBadgePattern.test(readmeZh)) {
+    problems.push(`README.md 版本徽标未更新为当前版本 v${currentVersion}`);
+  }
+  if (!versionBadgePattern.test(readmeEn)) {
+    problems.push(`README_en.md 版本徽标未更新为当前版本 v${currentVersion}`);
+  }
+} else {
+  problems.push('缺少双语 README 文档（需同时具备 README.md 与 README_en.md）');
+}
+
+// ── 5. 源码关键 UI 渲染区硬编码中文防御 ──
+// 重点扫描卡片配额渲染与状态栏渲染区，杜绝直接写死汉字
+const extSrc = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf8');
+const quotasBlockMatch = extSrc.match(/\/\/ 模型配额：单列竖排[\s\S]*?quotasHtml = phHtml \+ loadErrorHtml;/);
+if (quotasBlockMatch) {
+  const quotasCode = quotasBlockMatch[0];
+  // 排除注释后，不应出现中文字符串字面量
+  const codeWithoutComments = quotasCode.replace(/\/\/.*/g, '');
+  const chineseInCode = codeWithoutComments.match(/['"][^'"]*[\u4e00-\u9fa5]+[^'"]*['"]/g);
+  if (chineseInCode) {
+    problems.push(`src/extension.ts 配额渲染区包含裸露的硬编码中文字符串: ${chineseInCode.join(', ')}（必须使用 tl()）`);
+  }
+}
+
 // ── 结果 ──
-console.log(`[check-i18n] 字典 ${Object.keys(dict).length} 条 | 宿主 ${hostKeys.size} + 侧栏 ${uiKeys.size} + 统计面板 ${lpKeys.size} 个使用点 | nls ${usedNls.length} 个占位符`);
+console.log(`[check-i18n] 字典 ${Object.keys(dict).length} 条 | 宿主 ${hostKeys.size} + 侧栏 ${uiKeys.size} + 统计面板 ${lpKeys.size} 个使用点 | nls ${usedNls.length} 个占位符 | 文档 v${currentVersion} 对齐校验通过`);
 if (problems.length) {
   console.error('[check-i18n] FAIL — 以下问题必须修复（改动文案请同步补齐中英双语）:');
   for (const p of problems) console.error('  - ' + p);

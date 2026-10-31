@@ -1,16 +1,9 @@
 import * as path from 'path';
-import * as os from 'os';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
+import { getAppDataDir } from './platformPaths';
 
-const isWindows = process.platform === 'win32';
-const isMac = process.platform === 'darwin';
-
-export function getAppDataDir(): string {
-  if (isWindows) return process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-  if (isMac) return path.join(os.homedir(), 'Library', 'Application Support');
-  return process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-}
+export { getAppDataDir } from './platformPaths';
 
 export function getSharedStorageDir(): string {
   const dir = path.join(getAppDataDir(), '.antigravity-kite');

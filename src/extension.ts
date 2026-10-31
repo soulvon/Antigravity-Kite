@@ -274,8 +274,8 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  /** 保存设置到全局配置（用户级 settings.json） */
-  private async _saveSettings(s: Record<string, unknown>) {
+  /** 保存设置到全局配置（用户级 settings.json）。silent=true 时不弹提示（实时保存用） */
+  private async _saveSettings(s: Record<string, unknown>, silent = false) {
     const cfg = vscode.workspace.getConfiguration('antigravityKite');
     const target = vscode.ConfigurationTarget.Global;
     const port = Number(s.cdpPort);
@@ -307,7 +307,9 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       this._syncWebviewState();
       return;
     }
-    this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('settingsSaved') });
+    if (!silent) {
+      this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('settingsSaved') });
+    }
     this._pushSettings();
   }
 
@@ -713,7 +715,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'saveSettings':
-        await this._saveSettings(msg.settings || {});
+        await this._saveSettings(msg.settings || {}, msg.silent === true);
         break;
 
       case 'exportAccounts':
@@ -1029,6 +1031,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
   <div class="modal-box">
     <div class="modal-header">
       <h3 data-i18n="settings">设置</h3>
+      <span class="settings-live-tag" data-i18n="sbLiveTag">实时生效</span>
       <button class="modal-close" id="settingsClose" data-i18n-title="close" title="关闭">×</button>
     </div>
     <div class="modal-body">
@@ -1038,12 +1041,12 @@ class SidebarProvider implements vscode.WebviewViewProvider {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
           <span data-i18n="autoUpdate">自动更新</span>
         </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="autoCheckRow">启动时检查更新</span>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="autoCheckRow">启动时检查更新</span>
           <label class="as-switch"><input type="checkbox" id="setUpdateAutoCheck"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
         </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="autoInstallRow">发现新版本时静默安装</span>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="autoInstallRow">静默安装新版</span>
           <label class="as-switch"><input type="checkbox" id="setUpdateAutoInstall"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
         </div>
       </div>
@@ -1053,13 +1056,13 @@ class SidebarProvider implements vscode.WebviewViewProvider {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           <span data-i18n="switchDebug">切号与调试</span>
         </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="autoConfirmRow">切换账号时自动确认安全声明</span>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="autoConfirmRow">自动确认安全声明</span>
           <label class="as-switch"><input type="checkbox" id="setAutoConfirm"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
         </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="cdpPortRow">调试端口</span>
-          <input type="number" class="settings-input" id="setCdpPort" min="1024" max="65535" placeholder="9333">
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="cdpPortRow">调试端口</span>
+          <input type="number" class="v2-sel sb-port-input" id="setCdpPort" min="1024" max="65535" placeholder="9333">
         </div>
         <div class="settings-hint" data-i18n="cdpPortHint">切号时通过该端口与 IDE 通信，9222 会作为兜底自动尝试。</div>
       </div>
@@ -1069,9 +1072,9 @@ class SidebarProvider implements vscode.WebviewViewProvider {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
           <span data-i18n="appearance">界面</span>
         </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="localeRow">提示语言</span>
-          <select class="settings-select" id="setLocale">
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="localeRow">提示语言</span>
+          <select class="v2-sel" id="setLocale">
             <option value="auto" data-i18n="localeAuto">跟随 IDE</option>
             <option value="zh-CN" data-i18n="localeZh">中文</option>
             <option value="en" data-i18n="localeEn">English</option>
@@ -1084,20 +1087,20 @@ class SidebarProvider implements vscode.WebviewViewProvider {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="15" x2="21" y2="15"/></svg>
           <span data-i18n="statusBar">状态栏</span>
         </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="sbEnabledRow">显示状态栏</span>
-          <label class="as-switch"><input type="checkbox" id="setStatusEnabled"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="sbEnabledRow">显示状态栏</span>
+          <label class="as-switch"><input type="checkbox" id="setStatusEnabled" data-sb="enabled"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
         </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="sbPositionRow">位置</span>
-          <select class="settings-select" id="setStatusPosition">
-            <option value="left" data-i18n="sbPositionLeft">左侧</option>
-            <option value="right" data-i18n="sbPositionRight">右侧</option>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="sbPositionRow">位置</span>
+          <select class="v2-sel" id="setStatusPosition" data-sb="position">
+            <option value="left" data-i18n="sbPositionLeft">← 左侧</option>
+            <option value="right" data-i18n="sbPositionRight">→ 右侧（默认）</option>
           </select>
         </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="sbStyleRow">样式</span>
-          <select class="settings-select" id="setStatusStyle">
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="sbStyleRow">样式</span>
+          <select class="v2-sel" id="setStatusStyle" data-sb="style">
             <option value="dot" data-i18n="sbStyleDot">状态灯 — 仅图标</option>
             <option value="percent" data-i18n="sbStylePercent">75% — 仅最低百分比</option>
             <option value="compact" data-i18n="sbStyleCompact">状态灯 75% — 图标 + 最低百分比</option>
@@ -1106,27 +1109,23 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             <option value="full" data-i18n="sbStyleFull">账号 + 各模型额度 + AI 积分 — 完整</option>
           </select>
         </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="sbAccountRow">显示当前账号</span>
-          <label class="as-switch"><input type="checkbox" id="setStatusAccount"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="sbContentRow">显示内容</span>
+          <div class="sb-tag-row">
+            <span class="v2-tag is-on" id="setStatusAccount" data-sb="showAccount" data-i18n="sbTagAccount">账号</span>
+            <span class="v2-tag is-on" id="setStatusModels" data-sb="showModels" data-i18n="sbTagModels">模型额度</span>
+            <span class="v2-tag is-on" id="setStatusCredits" data-sb="showCredits" data-i18n="sbTagCredits">AI 积分</span>
+            <span class="v2-tag is-on" id="setStatusPool" data-sb="showPool" data-i18n="sbTagPool">号池</span>
+          </div>
         </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="sbModelsRow">显示模型额度</span>
-          <label class="as-switch"><input type="checkbox" id="setStatusModels"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="sbRefreshRow">刷新间隔</span>
+          <div class="sb-num-row">
+            <input type="number" class="v2-param-val" id="setStatusRefresh" data-sb="refreshSeconds" min="10" max="600" placeholder="30">
+            <span class="v2-param-unit" data-i18n="unitSec">秒</span>
+          </div>
         </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="sbCreditsRow">显示 AI 积分</span>
-          <label class="as-switch"><input type="checkbox" id="setStatusCredits"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
-        </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="sbPoolRow">显示号池统计</span>
-          <label class="as-switch"><input type="checkbox" id="setStatusPool"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
-        </div>
-        <div class="settings-row">
-          <span class="settings-row-label" data-i18n="sbRefreshRow">额度刷新间隔</span>
-          <input type="number" class="settings-input" id="setStatusRefresh" min="10" max="600" placeholder="30">
-        </div>
-        <div class="settings-hint" data-i18n="sbRefreshHint">极简样式只显示最低额度，标签式逐项列出各模型；改动即时生效。</div>
+        <div class="settings-hint" data-i18n="sbRefreshHint">以上改动即时生效，无需点保存。极简样式只显示最低额度，标签式逐项列出各模型。</div>
       </div>
 
     </div>
@@ -1236,14 +1235,14 @@ function formatResetTime(isoTime) {
   const reset = new Date(isoTime);
   const now = new Date();
   const diffMs = reset - now;
-  if (diffMs <= 0) return '已重置';
+  if (diffMs <= 0) return tl('resetDone');
   const hours = Math.floor(diffMs / 3600000);
   const mins = Math.floor((diffMs % 3600000) / 60000);
   const days = Math.floor(hours / 24);
-  if (days > 0) return days + '天' + (hours % 24) + '时后重置';
-  if (hours > 0) return hours + '时' + mins + '分后重置';
-  if (mins > 0) return mins + '分钟后重置';
-  return '即将重置';
+  if (days > 0) return tl('resetDays', days, hours % 24);
+  if (hours > 0) return tl('resetHours', hours, mins);
+  if (mins > 0) return tl('resetMinutes', mins);
+  return tl('resetSoon');
 }
 
 function pctClass(pct) {
@@ -1777,17 +1776,25 @@ function closeConfirm() {
 function fillSettingsForm(s) {
   if (!s) s = {};
   const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
-  const chk = (id, val) => { const el = document.getElementById(id); if (el) el.checked = !!val; };
+  const chk = (id, val) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (el.classList.contains('v2-tag')) { el.classList.toggle('is-on', !!val); return; }
+    el.checked = !!val;
+  };
   chk('setUpdateAutoCheck', s.updateAutoCheck !== false);
   chk('setUpdateAutoInstall', s.updateAutoInstall !== false);
   chk('setAutoConfirm', s.autoConfirmDeclaration !== false);
   set('setCdpPort', s.cdpPort || 9333);
   set('setLocale', s.locale || 'auto');
   chk('setStatusEnabled', s.statusBarEnabled !== false);
+  set('setStatusPosition', s.statusBarPosition || 'right');
+  set('setStatusStyle', s.statusBarStyle || 'full');
   chk('setStatusAccount', s.statusBarAccount !== false);
   chk('setStatusModels', s.statusBarModels !== false);
   chk('setStatusCredits', s.statusBarCredits !== false);
   chk('setStatusPool', s.statusBarPool !== false);
+  set('setStatusRefresh', s.statusBarRefresh || 30);
 }
 
 function openSettingsModal() {
@@ -1813,43 +1820,71 @@ function closeSettingsModal() {
   if (cancelBtn) cancelBtn.onclick = closeSettingsModal;
   ov.addEventListener('click', (e) => { if (e.target === ov) closeSettingsModal(); });
 
-  const resetBtn = document.getElementById('settingsReset');
-  if (resetBtn) resetBtn.onclick = () => fillSettingsForm({
-    updateAutoCheck: true,
-    updateAutoInstall: true,
-    autoConfirmDeclaration: true,
-    cdpPort: 9333,
-    locale: 'auto',
-    statusBarEnabled: true,
-    statusBarPosition: 'right',
-    statusBarStyle: 'full',
-    statusBarRefresh: 30,
-    statusBarAccount: true,
-    statusBarModels: true,
-    statusBarCredits: true,
-    statusBarPool: true
+  // ── 整页实时生效：任何控件变更立即静默保存 ──
+  const readSettings = () => {
+    const val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+    const on = (id) => {
+      const el = document.getElementById(id);
+      if (!el) return false;
+      if (el.classList.contains('v2-tag')) return el.classList.contains('is-on');
+      return !!el.checked;
+    };
+    const num = (id, dft) => { const n = Number(val(id)); return Number.isFinite(n) && n > 0 ? n : dft; };
+    return {
+      updateAutoCheck: on('setUpdateAutoCheck'),
+      updateAutoInstall: on('setUpdateAutoInstall'),
+      autoConfirmDeclaration: on('setAutoConfirm'),
+      cdpPort: num('setCdpPort', 9333),
+      locale: val('setLocale') || 'auto',
+      statusBarEnabled: on('setStatusEnabled'),
+      statusBarPosition: val('setStatusPosition') || 'right',
+      statusBarStyle: val('setStatusStyle') || 'full',
+      statusBarRefresh: num('setStatusRefresh', 30),
+      statusBarAccount: on('setStatusAccount'),
+      statusBarModels: on('setStatusModels'),
+      statusBarCredits: on('setStatusCredits'),
+      statusBarPool: on('setStatusPool')
+    };
+  };
+  const pushSettings = (silent) => {
+    vscode.postMessage({ type: 'saveSettings', silent: !!silent, settings: readSettings() });
+  };
+  ov.querySelectorAll('input, select').forEach(el => {
+    if (el.type === 'hidden') return;
+    el.addEventListener('change', () => pushSettings(true));
+  });
+  ov.querySelectorAll('.v2-tag').forEach(tag => {
+    tag.onclick = () => {
+      tag.classList.toggle('is-on');
+      pushSettings(true);
+    };
   });
 
+  const resetBtn = document.getElementById('settingsReset');
+  if (resetBtn) resetBtn.onclick = () => {
+    fillSettingsForm({
+      updateAutoCheck: true,
+      updateAutoInstall: true,
+      autoConfirmDeclaration: true,
+      cdpPort: 9333,
+      locale: 'auto',
+      statusBarEnabled: true,
+      statusBarPosition: 'right',
+      statusBarStyle: 'full',
+      statusBarRefresh: 30,
+      statusBarAccount: true,
+      statusBarModels: true,
+      statusBarCredits: true,
+      statusBarPool: true
+    });
+    // 恢复默认后立即落盘生效
+    pushSettings(true);
+  };
+
+  // 设置已实时落盘，保存按钮只做收尾确认与关闭
   const saveBtn = document.getElementById('settingsSave');
   if (saveBtn) saveBtn.onclick = () => {
-    const val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
-    const on = (id) => { const el = document.getElementById(id); return !!(el && el.checked); };
-    const num = (id, dft) => { const n = Number(val(id)); return Number.isFinite(n) && n > 0 ? n : dft; };
-    vscode.postMessage({
-      type: 'saveSettings',
-      settings: {
-        updateAutoCheck: on('setUpdateAutoCheck'),
-        updateAutoInstall: on('setUpdateAutoInstall'),
-        autoConfirmDeclaration: on('setAutoConfirm'),
-        cdpPort: num('setCdpPort', 9333),
-        locale: val('setLocale') || 'auto',
-        statusBarEnabled: on('setStatusEnabled'),
-        statusBarAccount: on('setStatusAccount'),
-        statusBarModels: on('setStatusModels'),
-        statusBarCredits: on('setStatusCredits'),
-        statusBarPool: on('setStatusPool')
-      }
-    });
+    pushSettings(false);
     closeSettingsModal();
   };
 })();
@@ -2063,39 +2098,71 @@ function renderAccounts() {
     const tierClass = planTierClass(tierId);
     const tierLabel = tierId ? tierId.toUpperCase() : '...';
     
-    // 模型配额（BuddyRelay 同款 2×2：Claude 5h/Weekly · Gemini 5h/Weekly）
+    // 模型配额：单列竖排（Claude 5h / Claude 周额度 / Gemini 5h / Gemini 周额度 / Gemini 4 周额度[有则出现]）
     const models = usage?.models || [];
-    const fam = { claude: [], gemini: [] };
-    for (const m of models) {
-      const isClaude = /claude/i.test(m.label || '');
-      const bucket = isClaude ? fam.claude : fam.gemini;
-      const isWeekly = /周|week/i.test(m.label || '');
-      bucket.push({ label: isWeekly ? 'Weekly' : '5h', pct: m.remainingPercent, reset: m.resetTime ? formatResetTime(m.resetTime) : '' });
-    }
-    const q2Cell = (x) => {
-      const cls = pctClass(x.pct);
-      return '<div class="q2-cell">'
-        + '<div class="q2-head"><span class="q2-name">' + x.label + '</span><span class="q2-val ' + cls + '">' + x.pct + '%</span></div>'
-        + '<div class="quota-bar"><div class="quota-bar-fill ' + cls + '" style="width:' + x.pct + '%"></div></div>'
-        + (x.reset ? '<div class="q2-reset">' + x.reset + '</div>' : '')
-        + '</div>';
-    };
-    const q2Col = (title, list) =>
-      '<div class="q2-col"><div class="q2-title">' + title + '</div>'
-      + (list.length ? list.map(q2Cell).join('') : '<div class="q2-cell"><div class="q2-head"><span class="q2-name">—</span></div></div>')
+    const quotaItemHtml = (label, pct, resetStr) => {
+      const cls = pctClass(pct);
+      return '<div class="grid-quota-item">'
+        + '<div class="grid-quota-head">'
+          + '<span class="grid-quota-label">' + escHtml(label) + '</span>'
+          + '<span class="grid-quota-val ' + cls + '">' + pct + '%</span>'
+        + '</div>'
+        + '<div class="quota-bar">'
+          + '<div class="quota-bar-fill ' + cls + '" style="width:' + Math.max(0, Math.min(100, pct)) + '%"></div>'
+        + '</div>'
+        + (resetStr ? '<div class="grid-quota-reset">' + escHtml(resetStr) + '</div>' : '')
       + '</div>';
+    };
+
     let quotasHtml;
     if (models.length > 0) {
-      quotasHtml = '<div class="quota-grid2">' + q2Col('Claude', fam.claude) + q2Col('Gemini', fam.gemini) + '</div>';
+      // 排序规则：Claude 5h -> Claude 周额度 -> Gemini 5h -> Gemini 周额度 -> Gemini 4 5h -> Gemini 4 周额度 -> 其他
+      const sortOrder = {
+        'claude:5h': 1,
+        'claude:weekly': 2,
+        'gemini:5h': 3,
+        'gemini:weekly': 4,
+        'argon:5h': 5,
+        'argon:weekly': 6,
+      };
+      const sortedModels = [...models].sort((a, b) => {
+        const orderA = sortOrder[a.modelId] || 99;
+        const orderB = sortOrder[b.modelId] || 99;
+        return orderA - orderB;
+      });
+
+      quotasHtml = sortedModels.map(m => {
+        const isWeekly = m.modelId?.endsWith(':weekly') || /week/i.test(m.label || '');
+        const family = /argon/i.test(m.modelId || '') ? 'Gemini 4'
+          : /claude/i.test(m.modelId || m.label || '') ? 'Claude'
+          : 'Gemini';
+        const displayLabel = family + ' ' + (isWeekly ? tl('quotaWeekly') : tl('quota5h'));
+        const resetStr = m.resetTime ? formatResetTime(m.resetTime) : '';
+        return quotaItemHtml(displayLabel, m.remainingPercent, resetStr);
+      }).join('');
     } else {
-      // 无数据占位：四窗骨架；错误可见，绝不让占位符吞掉失败
-      const ph = (title) => '<div class="q2-col"><div class="q2-title">' + title + '</div>'
-        + ['5h', 'Weekly'].map(w => '<div class="q2-cell"><div class="q2-head"><span class="q2-name">' + w + '</span><span class="q2-val" style="opacity:.4">—</span></div><div class="quota-bar"><div class="quota-bar-fill" style="width:0%"></div></div><div class="q2-reset" style="opacity:.3">&nbsp;</div></div>').join('')
-        + '</div>';
+      // 无数据占位骨架：默认 4 项（双语自适应，无 Gemini 4 时不占位）
+      const phLabels = [
+        'Claude ' + tl('quota5h'),
+        'Claude ' + tl('quotaWeekly'),
+        'Gemini ' + tl('quota5h'),
+        'Gemini ' + tl('quotaWeekly'),
+      ];
       const loadErrorHtml = a._usageError
         ? '<div class="quota-load-error">' + escHtml(String(a._usageError)) + '</div>'
         : '';
-      quotasHtml = '<div class="quota-grid2">' + ph('Claude') + ph('Gemini') + '</div>' + loadErrorHtml;
+      const phHtml = phLabels.map(label => {
+        return '<div class="grid-quota-item" style="opacity:0.45;">'
+          + '<div class="grid-quota-head">'
+            + '<span class="grid-quota-label">' + label + '</span>'
+            + '<span class="grid-quota-val">—</span>'
+          + '</div>'
+          + '<div class="quota-bar">'
+            + '<div class="quota-bar-fill" style="width:0%"></div>'
+          + '</div>'
+        + '</div>';
+      }).join('');
+      quotasHtml = phHtml + loadErrorHtml;
     }
 
     return '<div class="grid-card ' + (isCurrent ? 'is-active' : '') + ' ' + (isDisabled ? 'is-disabled' : '') + (selectMode ? ' is-select-mode' : '') + '" data-email="' + safeEmail + '">'

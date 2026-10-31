@@ -11,7 +11,9 @@
  * IDE 运行中写入的 userStatus 只要会话内无更新事件就不会被内存态覆盖，重启后生效。
  */
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import { getAppDataDir } from './platformPaths';
 import { t } from './i18n';
 
 export interface IdeTokenInfo {
@@ -223,15 +225,33 @@ function updateUserStatusEmail(payload: Buffer, email: string): Buffer {
 // ── 状态库定位与写入 ──
 
 function resolveIdeStateDbPaths(): string[] {
-  const appData = process.env.APPDATA || '';
-  const home = process.env.USERPROFILE || process.env.HOME || '';
   const candidates: string[] = [];
-  if (appData) {
-    candidates.push(path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'));
-    candidates.push(path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb'));
-  }
-  if (home) {
-    candidates.push(path.join(home, '.antigravity-ide', 'User', 'globalStorage', 'state.vscdb'));
+  const appDataNames = ['Antigravity IDE', 'Antigravity'];
+  const homeCandidates = ['Antigravity IDE', 'Antigravity'];
+  if (process.platform === 'win32') {
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    for (const name of appDataNames) {
+      candidates.push(path.join(getAppDataDir(), name, 'User', 'globalStorage', 'state.vscdb'));
+    }
+    if (home) {
+      candidates.push(path.join(home, '.antigravity-ide', 'User', 'globalStorage', 'state.vscdb'));
+    }
+  } else if (process.platform === 'darwin') {
+    // ~/Library/Application Support/<IDE>/...；getAppDataDir 为单一真源
+    for (const name of appDataNames) {
+      candidates.push(path.join(getAppDataDir(), name, 'User', 'globalStorage', 'state.vscdb'));
+    }
+    for (const name of homeCandidates) {
+      candidates.push(path.join(os.homedir(), `.${name.toLowerCase()}`, 'User', 'globalStorage', 'state.vscdb'));
+    }
+  } else {
+    // $XDG_CONFIG_HOME~/.config/<IDE>/...；getAppDataDir 为单一真源
+    for (const name of appDataNames) {
+      candidates.push(path.join(getAppDataDir(), name, 'User', 'globalStorage', 'state.vscdb'));
+    }
+    for (const name of homeCandidates) {
+      candidates.push(path.join(os.homedir(), `.${name.toLowerCase()}`, 'User', 'globalStorage', 'state.vscdb'));
+    }
   }
   return candidates;
 }

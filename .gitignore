@@ -25,3 +25,7 @@ spec/
 # Local preview harness (offline webview renderer)
 .preview/
 tmp/
+
+.codebuddy/
+devloop.project.json
+x.identifier
