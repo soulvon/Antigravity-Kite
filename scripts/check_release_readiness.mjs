@@ -72,7 +72,9 @@ gate('R5.2 nls zh/en key 集一致', JSON.stringify(Object.keys(nlsZh).sort()) =
 
 // ── R6 发布渠道 (依赖 gh/网络, 失败 SKIP 不阻断本地) ──
 try {
-  const assets = execSync(`gh release view v${V} -R soulvon/Antigravity-Kite --json assets --jq "[.assets[].name] | join(',')"`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  // 坑: execSync 经 cmd.exe 时 gh 内置 jq 不认单引号字符串(join(',')), 必须改为 Node 端解析
+  const rel = JSON.parse(execSync(`gh release view v${V} -R soulvon/Antigravity-Kite --json assets`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim());
+  const assets = rel.assets.map(a => a.name).join(',');
   gate('R6.1 GitHub Release v' + V + ' 存在且挂 vsix (自动更新链)', assets.includes(`antigravity-kite-${V}.vsix`));
 } catch { gate('R6.1 GitHub Release v' + V + ' 存在且挂 vsix', false, true); }
 try {
