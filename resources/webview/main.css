@@ -60,6 +60,25 @@
     --ac-pink: #ec4899;
     --ac-accent: var(--ac-emerald);
 
+    /* 功能色：数值、标签、待办按钮统一走这一组，两套主题同值 */
+    --tone-ok: #10b981;
+    --tone-ok-soft: rgba(16, 185, 129, 0.12);
+    --tone-ok-line: rgba(16, 185, 129, 0.28);
+    --tone-warn: #f59e0b;
+    --tone-warn-soft: rgba(245, 158, 11, 0.12);
+    --tone-warn-line: rgba(245, 158, 11, 0.28);
+    --tone-danger: #f87171;
+    --tone-danger-soft: rgba(248, 113, 113, 0.12);
+    --tone-danger-line: rgba(248, 113, 113, 0.28);
+    --tone-info: #60a5fa;
+
+    /* 权益标识色：一档一色，用于套餐 chip 的实心底与文字 */
+    --chip-free: #8b949e;
+    --chip-trial: #b8934a;
+    --chip-pro: #6b8fb8;
+    --chip-team: #4f9d7c;
+    --chip-enterprise: #8f7ac4;
+
     /* GitHub-style palette */
     --gh-blue: #0e639c;
     --gh-blue-light: #58a6ff;
@@ -87,6 +106,25 @@ body.vscode-light {
     --border-dim: rgba(0, 0, 0, 0.13);
     --card-border: var(--border-subtle);
     --card-border-hover: var(--border-dim);
+
+    /* 功能色 · 亮色版：与暗色同值，保证两套主题观感一致 */
+    --tone-ok: #10b981;
+    --tone-ok-soft: rgba(16, 185, 129, 0.12);
+    --tone-ok-line: rgba(16, 185, 129, 0.28);
+    --tone-warn: #f59e0b;
+    --tone-warn-soft: rgba(245, 158, 11, 0.12);
+    --tone-warn-line: rgba(245, 158, 11, 0.28);
+    --tone-danger: #f87171;
+    --tone-danger-soft: rgba(248, 113, 113, 0.12);
+    --tone-danger-line: rgba(248, 113, 113, 0.28);
+    --tone-info: #60a5fa;
+
+    /* 权益标识色 · 亮色版 */
+    --chip-free: #4b5563;
+    --chip-trial: #b45309;
+    --chip-pro: #1d6fe8;
+    --chip-team: #059669;
+    --chip-enterprise: #6d28d9;
 }
 body.vscode-light .as-switch-track,
 body.vscode-light .v2-mini-toggle {
@@ -1434,7 +1472,7 @@ details > summary::marker { display: none; content: ''; }
 }
 .tag-chip:hover { border-color: var(--card-border-hover); }
 .tag-chip.active,
-.tag-chip.is-active { background: var(--ac-emerald); border-color: var(--ac-emerald); color: #fff; }
+.tag-chip.is-active { background: var(--tone-ok); border-color: var(--tone-ok); color: #fff; }
 #tagAddBtn {
     font-size: 11px;
     padding: 2px 6px;
@@ -1574,43 +1612,25 @@ details > summary::marker { display: none; content: ''; }
     gap: 6px;
     flex-wrap: wrap;
 }
+/* 权益标识：不透明实心底，一档一色，按权益层级递增 */
 .grid-plan-chip {
     font-size: 10px;
-    font-weight: 500;
+    font-weight: 600;
     padding: 3px 10px;
     border-radius: 999px;
     line-height: 1.3;
     white-space: nowrap;
-    background: rgba(167, 139, 250, 0.22);
-    color: var(--gh-purple);
-    border: 1px solid rgba(167, 139, 250, 0.35);
+    --chip-tone: var(--chip-free);
+    background: color-mix(in srgb, var(--chip-tone) 20%, var(--ui-surface-raised, #242424));
+    color: color-mix(in srgb, var(--chip-tone) 55%, var(--vscode-foreground));
+    border: 1px solid color-mix(in srgb, var(--chip-tone) 40%, transparent);
 }
 .grid-plan-chip.tier-free,
-.grid-plan-chip.tier-unknown {
-    background: rgba(139, 148, 158, 0.18);
-    color: var(--gh-gray);
-    border-color: rgba(139, 148, 158, 0.3);
-}
-.grid-plan-chip.tier-trial {
-    background: rgba(210, 153, 34, 0.2);
-    color: var(--gh-yellow);
-    border-color: rgba(210, 153, 34, 0.35);
-}
-.grid-plan-chip.tier-pro {
-    background: rgba(88, 166, 255, 0.2);
-    color: var(--gh-blue-light);
-    border-color: rgba(88, 166, 255, 0.35);
-}
-.grid-plan-chip.tier-team {
-    background: rgba(63, 185, 80, 0.18);
-    color: var(--gh-green);
-    border-color: rgba(63, 185, 80, 0.3);
-}
-.grid-plan-chip.tier-enterprise {
-    background: rgba(167, 139, 250, 0.22);
-    color: var(--gh-purple);
-    border-color: rgba(167, 139, 250, 0.35);
-}
+.grid-plan-chip.tier-unknown { --chip-tone: var(--chip-free); }
+.grid-plan-chip.tier-trial { --chip-tone: var(--chip-trial); }
+.grid-plan-chip.tier-pro { --chip-tone: var(--chip-pro); }
+.grid-plan-chip.tier-team { --chip-tone: var(--chip-team); }
+.grid-plan-chip.tier-enterprise { --chip-tone: var(--chip-enterprise); }
 .grid-server { font-size: 10px; color: var(--muted); }
 .grid-tag-chip {
     font-size: 9px;
@@ -1701,10 +1721,11 @@ details > summary::marker { display: none; content: ''; }
     font-size: 11.5px;
     font-family: var(--vscode-editor-font-family, monospace);
 }
-.grid-quota-val.is-ok { color: var(--gh-green); }
-.grid-quota-val.is-info { color: var(--gh-blue-light); }
-.grid-quota-val.is-warn { color: var(--gh-orange); }
-.grid-quota-val.is-danger { color: var(--gh-red); }
+/* 百分比是卡片里唯一的读数，保留功能色便于扫读；进度条同步同色 */
+.grid-quota-val.is-ok { color: var(--tone-ok); }
+.grid-quota-val.is-info { color: var(--tone-info); }
+.grid-quota-val.is-warn { color: var(--tone-warn); }
+.grid-quota-val.is-danger { color: var(--tone-danger); }
 .grid-quota-reset { font-size: 10px; color: var(--muted); opacity: 0.8; }
 
 .quota-bar {
@@ -1843,11 +1864,11 @@ details > summary::marker { display: none; content: ''; }
     font-family: inherit;
 }
 .status-toggle-btn.is-enabled {
-    color: var(--gh-green);
-    background: rgba(63, 185, 80, 0.1);
-    border-color: rgba(63, 185, 80, 0.25);
+    color: var(--tone-ok);
+    background: var(--tone-ok-soft);
+    border-color: var(--tone-ok-line);
 }
-.status-toggle-btn.is-enabled:hover { background: rgba(63, 185, 80, 0.18); }
+.status-toggle-btn.is-enabled:hover { background: color-mix(in srgb, var(--tone-ok) 18%, transparent); }
 .status-toggle-btn.is-disabled {
     color: var(--muted);
     background: var(--surface-bg);
@@ -7186,5 +7207,72 @@ body.vscode-high-contrast-light #tabAccounts .search-bar:focus-within {
 .tag-edit-remove:hover {
     opacity: 1;
     color: var(--gh-red);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   统一配色收口：动作区尺寸、暗色表面配方、亮色标签形态
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* 卡片底部动作区：切换 / 当前 / 待办 三处尺寸对齐 */
+.grid-switch-btn,
+.status-toggle-btn,
+.grid-active-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    line-height: 1.4;
+    border-radius: 999px;
+    box-sizing: border-box;
+    min-height: 0;
+}
+
+.grid-active-tag {
+    font-weight: 600;
+    border: 1px solid transparent;
+}
+
+/* 暗色表面配方：中性灰阶，与亮色同一套三层结构（表面 / 内高光 / 外投影） */
+body.vscode-dark {
+    --ui-surface: color-mix(in srgb, var(--vscode-sideBar-background, #181818) 96%, #ffffff);
+    --ui-surface-raised: color-mix(in srgb, var(--vscode-sideBar-background, #181818) 95%, #ffffff);
+    --ui-surface-hover: color-mix(in srgb, var(--vscode-sideBar-background, #181818) 92%, #ffffff);
+    --ui-border: rgba(255, 255, 255, 0.085);
+    --ui-border-strong: rgba(255, 255, 255, 0.14);
+    --ui-shadow-soft: 0 1px 0 rgba(255, 255, 255, 0.045) inset,
+        0 2px 8px rgba(0, 0, 0, 0.32);
+    --ui-shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset,
+        0 1px 3px rgba(0, 0, 0, 0.26);
+    --ui-shadow-active: 0 0 0 1px color-mix(in srgb, var(--tone-ok) 22%, transparent),
+        0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* 卡片：纯色表面 + 顶部内高光，去掉横扫卡片的亮带 */
+body.vscode-dark .grid-card,
+body.vscode-dark .inst-card,
+body.vscode-dark .list-card,
+body.vscode-dark .split-card,
+body.vscode-dark .search-bar {
+    background: var(--ui-surface-raised);
+    border-color: var(--ui-border);
+    box-shadow: var(--ui-shadow-card);
+}
+
+/* 激活卡：只留边与一圈光圈，不再整卡染色 */
+body.vscode-dark .grid-card.is-active {
+    background: var(--ui-surface-raised);
+    border-color: color-mix(in srgb, var(--tone-ok) 34%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone-ok) 10%, transparent),
+        var(--ui-shadow-card);
+}
+
+body.vscode-dark .grid-card.is-selected {
+    background: var(--ui-surface-raised);
+    border-color: color-mix(in srgb, var(--ac-blue) 46%, transparent);
+}
+
+/* 亮色：标签不用半透明底与半透明描边 —— 要么实心，要么纯彩字 + 实色描边 */
+body.vscode-light .grid-plan-chip {
+    background: transparent;
+    border-color: var(--chip-tone);
+    color: var(--chip-tone);
 }
 
