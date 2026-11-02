@@ -1,7 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as https from 'https';
-import initSqlJs from 'sql.js';
 import { StoredAccount } from './types';
 import { t } from './i18n';
 
@@ -12,30 +11,37 @@ const CLIENT_SECRET = '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';
 const OAUTH_TOKEN_KEY = 'antigravityUnifiedStateSync.oauthToken';
 const USER_STATUS_KEY = 'antigravityUnifiedStateSync.userStatus';
 
-// sql.js 单例
-let sqlJsInstance: Awaited<ReturnType<typeof initSqlJs>> | null = null;
-
-async function getSqlJs() {
-  if (!sqlJsInstance) {
-    sqlJsInstance = await initSqlJs();
+function loadSqlite(): { DatabaseSync: any } | null {
+  try {
+    // Node 22.13+/23.4+ 内置 node:sqlite（ext host Node 22.21 可用）；动态 require 避免打包依赖
+    const moduleName = 'node:sqlite';
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require(moduleName);
+  } catch {
+    return null;
   }
-  return sqlJsInstance;
 }
 
 // 用 SQL 读取 state 值
 async function readStateValue(dbPath: string, key: string): Promise<string> {
-  const SQL = await getSqlJs();
-  const fileBuffer = fs.readFileSync(dbPath);
-  const db = new SQL.Database(fileBuffer);
-  try {
-    const result = db.exec(`SELECT value FROM ItemTable WHERE key = '${key.replace(/'/g, "''")}'`);
-    if (result.length > 0 && result[0].values.length > 0) {
-      return String(result[0].values[0][0]).trim();
+  const sqlite = loadSqlite();
+  if (sqlite) {
+    let db: any;
+    try {
+      db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+      const stmt = db.prepare('SELECT value FROM ItemTable WHERE key = ?');
+      const row = stmt.get(key);
+      if (row && row.value !== undefined && row.value !== null) {
+        return String(row.value).trim();
+      }
+      throw new Error(t('lrNoToken'));
+    } finally {
+      if (db) {
+        try { db.close(); } catch { /* ignore */ }
+      }
     }
-    throw new Error(t('lrNoToken'));
-  } finally {
-    db.close();
   }
+  throw new Error('SQLite engine not available in environment');
 }
 
 // state.vscdb 路径（仅支持 Antigravity IDE 2.0）

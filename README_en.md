@@ -6,7 +6,7 @@
 
 **Switch without restart · Real dual-window quotas for Claude / Gemini / Gemini 4 · Auto-confirm security notice · Bilingual UI**
 
-[![Version](https://img.shields.io/badge/version-1.0.9-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.0.10-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)]()
 [![GitHub release](https://img.shields.io/github/v/release/soulvon/Antigravity-Kite?color=orange&style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases)
@@ -37,7 +37,7 @@ Antigravity Kite is a multi-account manager and seamless switcher for the **Anti
 Sidebar account card flow: **single-column vertical quota bars for Claude / Gemini / Gemini 4** (weekly + 5h windows, live percentages and reset countdowns without redundant empty slots), current account highlighted, with toggle, edit, refresh and delete at hand:
 
 <div align="center">
-  <img src="resources/preview-sidebar.webp" width="420" alt="Antigravity Kite account cards with dual-model dual-window quota dashboard">
+  <img src="https://raw.githubusercontent.com/soulvon/Antigravity-Kite/main/resources/preview-sidebar.webp" width="420" alt="Antigravity Kite account cards with dual-model dual-window quota dashboard">
 </div>
 
 ---
@@ -46,7 +46,7 @@ Sidebar account card flow: **single-column vertical quota bars for Claude / Gemi
 
 ### Option 1: Extensions panel (recommended)
 
-1. Download the latest `antigravity-kite-1.0.9.vsix` ([GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest));
+1. Download the latest `antigravity-kite-1.0.10.vsix` ([GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest));
 2. Open the **Antigravity IDE**;
 3. Open the Extensions view (`Ctrl+Shift+X` / macOS `Cmd+Shift+X`);
 4. Click the `...` menu ➔ **"Install from VSIX..."**;
@@ -55,7 +55,7 @@ Sidebar account card flow: **single-column vertical quota bars for Claude / Gemi
 ### Option 2: Command line
 
 ```bash
-antigravity-ide --install-extension antigravity-kite-1.0.9.vsix --force
+antigravity-ide --install-extension antigravity-kite-1.0.10.vsix --force
 ```
 
 ---

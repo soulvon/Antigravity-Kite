@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -201,9 +201,6 @@
     "@vscode/vsce": "^2.22.0",
     "adm-zip": "^0.6.1",
     "typescript": "^5.0.0"
-  },
-  "dependencies": {
-    "sql.js": "^1.14.1"
   },
   "keywords": [
     "antigravity",

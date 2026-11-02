@@ -48,6 +48,9 @@ if (fs.existsSync(vsixPath)) {
   gate('R3.3 vsix 内 README 徽章 == package.json 版本 (快照过期治理)', readmeInVsix.includes(`version-${V}-blue`));
   gate('R3.4 vsix 内 README 无旧版本徽章残留', !/version-0\.\d+\.\d+-blue/.test(readmeInVsix));
   gate('R3.5 out/extension.js 含 CSP 声明', fs.readFileSync(path.join(ROOT, 'out', 'extension.js'), 'utf8').includes('Content-Security-Policy'));
+  gate('R3.6 包体瘦身: vsix 严格排除 node_modules (由 node:sqlite 原生承载, 零打包依赖)', !names.some(n => /(^|\/)node_modules\//.test(n)));
+  gate('R3.7 包体瘦身: vsix 严格排除非运行时预览大图 resources/preview-*', !names.some(n => /resources\/preview-/.test(n)));
+  gate('R3.8 包体瘦身: vsix 严格排除 .github/ 与 AGENTS.md', !names.some(n => /(^|\/)(\.github|AGENTS\.md)/.test(n)));
 } else {
   gate(`R3.* vsix antigravity-kite-${V}.vsix 不存在 (先 vsce package)`, false);
 }
