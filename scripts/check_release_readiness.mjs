@@ -43,7 +43,7 @@ try {
 
   // 内容特征扫描: 严禁在已跟踪代码或文档中硬编码真实高熵 Token / 私钥
   const secretPatterns = [
-    { name: 'Open VSX 访问令牌 (ovsx_...)', regex: /ovsx_[A-Za-z0-9_-]{20,}/ },
+    { name: 'Open VSX 访问令牌 (ovsx_ / ovsxap_ 等前缀变体)', regex: /ovsx[a-zA-Z0-9]*_[A-Za-z0-9_-]{20,}/ },
     { name: 'GitHub 经典令牌 (ghp_...)', regex: /ghp_[A-Za-z0-9]{36}/ },
     { name: 'GitHub 精细令牌 (github_pat_...)', regex: /github_pat_[A-Za-z0-9_]{50,}/ },
     { name: 'RSA/EC 私钥明文', regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ }

@@ -77,11 +77,11 @@ export async function getAliveCdpPorts(): Promise<number[]> {
     if (p) candidates.add(p);
   }
 
-  const alive: number[] = [];
-  for (const p of candidates) {
-    if (await cdpAlive(p)) alive.push(p);
-  }
-  return alive;
+  // 并行探测：串行时几个不通的候选端口会把切号起手和设置面板的检测一起拖到 4s+
+  const checks = await Promise.all(
+    [...candidates].map(async (p) => ((await cdpAlive(p, 800)) ? p : 0)),
+  );
+  return checks.filter((p) => p > 0);
 }
 
 /** 探测可用端口：优先配置端口，依次尝试存活端口 */
@@ -118,8 +118,11 @@ async function listAppTargets(port: number): Promise<TargetInfo[]> {
               url.startsWith('https://127.0.0.1:') ||
               url.startsWith('http://localhost:') ||
               url.startsWith('https://localhost:');
-            const isVscodePage = url.startsWith('vscode-file://') || url.startsWith('vscode-webview://');
-            if (isLocalWeb || isVscodePage) {
+            const isWorkbench = url.startsWith('vscode-file://');
+            // Antigravity 的声明 / 引导卡片都挂在 /c/<id> 会话页上；
+            // IDE 内部 webview（vscode-webview://，含本扩展自己的侧栏）不再注入，避免干扰别的扩展
+            const isAgentHub = isLocalWeb && /\/c\/[^/?]+/.test(url);
+            if (isAgentHub || isWorkbench) {
               out.push({ id, ws, type });
             }
           }

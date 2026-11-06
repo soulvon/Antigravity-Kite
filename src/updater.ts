@@ -431,6 +431,8 @@ export async function showUpdateNotesOnStartup(context: vscode.ExtensionContext)
       okText: t('updViewRelease'),
       cancelText: t('updKnown'),
       linkUrl: gitHubUrl,
+      // 启动时不抢编辑器焦点：侧栏没开就排队，等用户打开侧栏再补发
+      silent: true,
     });
   }, 2000);
 }

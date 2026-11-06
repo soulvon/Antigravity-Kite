@@ -62,7 +62,7 @@ export function decryptSecureAccount(data: EncryptedPayload, key: Buffer): Recor
   const iv = Buffer.from(data.nonce || '', 'base64');
   const boxed = Buffer.from(data.ciphertext || '', 'base64');
   if (iv.length < 8 || boxed.length <= 16) {
-    throw new Error('nonce 或 ciphertext 长度非法');
+    throw new Error(t('errCredLength'));
   }
   const tag = boxed.subarray(boxed.length - 16);
   const body = boxed.subarray(0, boxed.length - 16);

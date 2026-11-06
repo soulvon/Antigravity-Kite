@@ -126,7 +126,7 @@ function shouldRefreshForSwitch(account: StoredAccount): boolean {
 
 export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: true; token: PreparedSwitchToken } | { ok: false; message: string }> {
   if (!account.refreshToken) {
-    return { ok: false, message: '缺少 refreshToken' };
+    return { ok: false, message: t('errNoRefreshToken') };
   }
 
   const beforeAccessToken = account.accessToken || '';
@@ -140,12 +140,12 @@ export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: 
     refreshedToken = await refreshAccessToken(account.refreshToken);
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, message: `刷新 accessToken 失败：${err}` };
+    return { ok: false, message: t('errTokenRefreshFailed', err) };
   }
   if (!refreshedToken || !refreshedToken.accessToken) {
     return {
       ok: false,
-      message: '刷新 accessToken 失败（网络或代理不可用）：已取消切号，避免写入权限不足的 token 导致 agent 后端崩溃',
+      message: t('errTokenRefreshCancelled'),
     };
   }
 
@@ -159,7 +159,7 @@ export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: 
   if (!expiryMs) {
     return {
       ok: false,
-      message: '目标账号缺少有效 expiresAt，无法确认 token 有效期，请重新授权该账号',
+      message: t('errTokenExpiryInvalid'),
     };
   }
 
@@ -239,7 +239,7 @@ export async function seamlessSwitch(account: StoredAccount): Promise<SwitchResu
           return {
             success: false,
             email: account.email,
-            message: '无感切号写入后读回校验不一致，宿主未应用目标账号 accessToken'
+            message: t('errSwitchReadback')
           };
         }
       } catch (e) {
@@ -250,7 +250,7 @@ export async function seamlessSwitch(account: StoredAccount): Promise<SwitchResu
     return {
       success: true,
       email: account.email,
-      message: '无感切号成功',
+      message: t('switchSuccessMsg'),
       token: {
         accessToken: prepared.token.accessToken,
         refreshToken: prepared.token.refreshToken,
@@ -303,7 +303,7 @@ interface UssSyncApi {
 export async function pushLiveIdentityUpdate(email: string): Promise<{ ok: boolean; error?: string }> {
   const uss = (vscode as unknown as { antigravityUnifiedStateSync?: UssSyncApi }).antigravityUnifiedStateSync;
   if (!uss || typeof uss.pushUpdate !== 'function') {
-    return { ok: false, error: '宿主未暴露 antigravityUnifiedStateSync.pushUpdate' };
+    return { ok: false, error: t('errNoPushUpdate') };
   }
 
   await uss.pushUpdate({

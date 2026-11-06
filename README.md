@@ -6,7 +6,7 @@
 
 **切号不重启 IDE · Claude / Gemini / Gemini 4 真实双窗配额流 · 安全声明自动确认 · 中英双语自适应**
 
-[![Version](https://img.shields.io/badge/version-1.1.7-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.1.12-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)]()
 [![GitHub release](https://img.shields.io/github/v/release/soulvon/Antigravity-Kite?color=orange&style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases)
@@ -34,10 +34,11 @@ Antigravity Kite 是一款面向 **Antigravity IDE** 的多账号管理与无感
 
 ## 🖼️ 界面预览
 
-侧栏账号卡片流：**Claude / Gemini / Gemini 4 单列竖排配额条**（周额度 + 5h 短窗，百分比与重置倒计时实时可视，无空位冗余），当前账号高亮，启停开关、编辑、刷新、删除一应俱全：
+侧栏账号卡片流：**Claude / Gemini / Gemini 4 单列竖排配额条**（5h 短窗 + 周额度，百分比与重置倒计时实时可视，隐私模式一键遮罩邮箱），当前账号高亮，启停开关、编辑、刷新、删除一应俱全。添加账号支持 Google 登录、本地数据库、Cockpit Tools、Antigravity Manager、JSON 文件五种来源：
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/soulvon/Antigravity-Kite/main/resources/preview-sidebar.webp" width="420" alt="Antigravity Kite 账号卡片流与双模型双窗口配额看板">
+  <img src="https://raw.githubusercontent.com/soulvon/Antigravity-Kite/main/resources/preview-sidebar.webp" width="320" alt="Antigravity Kite 账号卡片流与配额看板">
+  <img src="https://raw.githubusercontent.com/soulvon/Antigravity-Kite/main/resources/preview-add-account.webp" width="320" alt="添加账号：五种导入方式">
 </div>
 
 ---
@@ -46,7 +47,7 @@ Antigravity Kite 是一款面向 **Antigravity IDE** 的多账号管理与无感
 
 ### 方式一：扩展面板安装（推荐）
 
-1. 下载最新版 `antigravity-kite-1.1.7.vsix`（[GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest)）；
+1. 下载最新版 `antigravity-kite-1.1.12.vsix`（[GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest)）；
 2. 打开 **Antigravity IDE**；
 3. 进入左侧扩展面板（快捷键 `Ctrl+Shift+X` / macOS `Cmd+Shift+X`）；
 4. 点击面板右上角 `...` 菜单 ➔ 选择 **"从 VSIX 安装..." (Install from VSIX...)**；
@@ -55,7 +56,7 @@ Antigravity Kite 是一款面向 **Antigravity IDE** 的多账号管理与无感
 ### 方式二：命令行安装
 
 ```bash
-antigravity-ide --install-extension antigravity-kite-1.1.7.vsix --force
+antigravity-ide --install-extension antigravity-kite-1.1.12.vsix --force
 ```
 
 ---

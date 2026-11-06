@@ -162,7 +162,7 @@ export async function importFromCockpitTools(): Promise<{ imported: number; skip
 
   const { accounts, failures } = await loadAccountsFromDir(dataDir);
   if (accounts.length === 0) {
-    const detail = failures.length > 0 ? `：${failures.slice(0, 3).join('；')}${failures.length > 3 ? ` 等 ${failures.length} 项` : ''}` : '';
+    const detail = failures.length > 0 ? `：${failures.slice(0, 3).join('；')}${failures.length > 3 ? t('errImportMore', failures.length) : ''}` : '';
     throw new Error(t('impCockpitNoAccounts', detail));
   }
   if (failures.length > 0) {
@@ -196,7 +196,7 @@ export async function importFromAntigravityManager(): Promise<{ imported: number
 
   const { accounts, failures } = await loadAccountsFromDir(dataDir);
   if (accounts.length === 0) {
-    const detail = failures.length > 0 ? `：${failures.slice(0, 3).join('；')}${failures.length > 3 ? ` 等 ${failures.length} 项` : ''}` : '';
+    const detail = failures.length > 0 ? `：${failures.slice(0, 3).join('；')}${failures.length > 3 ? t('errImportMore', failures.length) : ''}` : '';
     throw new Error(t('impManagerNoAccounts', detail));
   }
   if (failures.length > 0) {

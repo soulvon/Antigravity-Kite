@@ -12,6 +12,7 @@ import * as path from 'path';
 import * as cp from 'child_process';
 import { getSharedStorageDir } from './storage';
 import { SwitchToken } from './seamlessSwitcher';
+import { t } from './i18n';
 
 const PENDING_FILE = 'switch-restart-pending.json';
 const RESULT_FILE = 'switch-restart-result.json';
@@ -72,7 +73,7 @@ export function clearSwitchRestartResult(): void {
  */
 export async function scheduleSwitchRestart(plan: SwitchRestartPlan): Promise<{ scheduled: boolean; error?: string }> {
   if (!plan.mainPid) {
-    return { scheduled: false, error: '未定位到 Antigravity IDE 主进程 PID' };
+    return { scheduled: false, error: t('errMainPid') };
   }
   if (!plan.exePath || !fs.existsSync(plan.exePath)) {
     return { scheduled: false, error: `未找到 Antigravity IDE 可执行文件：${plan.exePath}` };

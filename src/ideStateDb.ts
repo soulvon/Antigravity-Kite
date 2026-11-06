@@ -299,15 +299,15 @@ export function switchIdeStateIdentity(
 ): IdeStateSwitchResult {
   const sqlite = loadSqlite();
   if (!sqlite) {
-    return { dbWritten: false, dbPath: '', error: 'node:sqlite 不可用（ext host Node 版本过低）' };
+    return { dbWritten: false, dbPath: '', error: t('errSqliteUnavailable') };
   }
 
   const dbPath = options.dbPath || resolveIdeStateDbPaths().find(p => fs.existsSync(p));
   if (!dbPath) {
-    return { dbWritten: false, dbPath: '', error: '未找到 IDE 状态库 state.vscdb' };
+    return { dbWritten: false, dbPath: '', error: t('errStateDbNotFound') };
   }
   if (!fs.existsSync(dbPath)) {
-    return { dbWritten: false, dbPath, error: `状态库不存在：${dbPath}` };
+    return { dbWritten: false, dbPath, error: t('errStateDbMissing', dbPath) };
   }
 
   let db: any;
@@ -318,7 +318,7 @@ export function switchIdeStateIdentity(
     // 校验目标库确实承载 antigravity 状态（防误写别的库）
     const probe = db.prepare(`SELECT value FROM ItemTable WHERE key = '${OAUTH_TOKEN_KEY}'`).get();
     if (!probe || !probe.value) {
-      return { dbWritten: false, dbPath, error: '目标库缺少 oauthToken 条目，跳过写入' };
+      return { dbWritten: false, dbPath, error: t('errStateDbNoOauth') };
     }
 
     // 1) oauthToken topic：保留其他条目，替换 oauthTokenInfoSentinelKey

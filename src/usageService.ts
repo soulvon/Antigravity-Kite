@@ -333,7 +333,7 @@ async function loadProjectInfo(accessToken: string): Promise<ProjectInfo> {
       availableAICredits = sumAvailableCredits(data2.paidTier?.availableCredits);
     } catch (e) {
       // 积分拉取失败不再静默：进快照 loadError，卡片可见
-      loadError = 'AI积分拉取失败: ' + (e instanceof Error ? e.message : String(e));
+      loadError = t('errCreditsFetch') + (e instanceof Error ? e.message : String(e));
       console.warn('[UsageService]', loadError);
     }
   }
@@ -511,7 +511,7 @@ function extractQuotaFromModels(response: CloudCodeQuotaResponse['models']): Usa
   ];
   const windowOrder: Array<{ window: '5h' | 'weekly'; label: string }> = [
     { window: '5h', label: '5h' },
-    { window: 'weekly', label: '周额度' },
+    { window: 'weekly', label: t('quotaWeekly') },
   ];
 
   let minPercent = 100;
@@ -519,7 +519,7 @@ function extractQuotaFromModels(response: CloudCodeQuotaResponse['models']): Usa
     for (const w of windowOrder) {
       const entry = windows.get(`${f.family}:${w.window}`);
       if (!entry) continue;
-      const label = w.window === '5h' ? `${f.label} 5h` : `${f.label} 周额度`;
+      const label = `${f.label} ${w.label}`;
       modelQuotas.push({
         label,
         modelId: `${f.family}:${w.window}`,
@@ -572,7 +572,7 @@ export async function fetchUsage(account: StoredAccount): Promise<UsageSnapshot>
     const reason = e instanceof Error ? e.message : String(e);
     console.warn('[UsageService] 周限摘要获取失败，退回模型级推断:', reason);
     snapshot = extractQuotaFromModels(modelsResponse.models);
-    snapshot.loadError = '周限摘要获取失败（当前为模型级推断，可能缺 Weekly）: ' + reason;
+    snapshot.loadError = t('errQuotaSummaryFallback') + reason;
   }
 
   // 4. 补充订阅级别和 AI 积分

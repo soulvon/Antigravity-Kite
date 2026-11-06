@@ -134,7 +134,7 @@ export async function startOAuth(): Promise<StoredAccount> {
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(failHtml(t('oauthStateMismatch')));
         cleanup();
-        reject(new Error('OAuth state 校验失败'));
+        reject(new Error(t('oauthStateMismatch')));
         return;
       }
 
@@ -142,15 +142,15 @@ export async function startOAuth(): Promise<StoredAccount> {
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(failHtml(error));
         cleanup();
-        reject(new Error(`OAuth 错误: ${error}`));
+        reject(new Error(t('errOauthError', error)));
         return;
       }
 
       if (!code) {
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(failHtml('缺少授权码'));
+        res.end(failHtml(t('errOauthNoCode')));
         cleanup();
-        reject(new Error('OAuth 回调缺少 code'));
+        reject(new Error(t('errOauthCallbackNoCode')));
         return;
       }
 

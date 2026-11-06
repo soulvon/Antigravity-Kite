@@ -122,7 +122,7 @@ async function main(): Promise<void> {
     await closeIde(plan.mainPid);
     helperLog('ide.closed', { mainPid: plan.mainPid });
   } catch (e) {
-    const msg = '关闭 IDE 失败：' + (e instanceof Error ? e.message : String(e));
+    const msg = t('errCloseIde') + (e instanceof Error ? e.message : String(e));
     helperLog('ide.close.fail', { error: msg });
     try {
       fs.writeFileSync(resultPath, JSON.stringify({ ok: false, error: msg, email: plan.email, finishedAt: Date.now() }, null, 2), 'utf8');

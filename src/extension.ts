@@ -222,16 +222,19 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         if (wasOpen) this._view?.webview.postMessage({ type: 'askDismiss', id });
       }, 120000);
       this._askResolvers.set(id, settle);
-      this._post({ type: 'ask', id, ...options });
-      // 侧栏拉不起来（容器被隐藏等）按取消收口，避免切号等流程被挂住
-      setTimeout(() => {
-        if (!settled && !this._webviewReady) settle(false, 'sidebar-unavailable');
-      }, 5000);
+      this._post({ type: 'ask', id, ...options }, !options.silent);
+      // 侧栏拉不起来（容器被隐藏等）按取消收口，避免切号等流程被挂住；
+      // silent 询问本来就是等用户下次打开侧栏，不能提前判死（否则弹了也没人收结果）
+      if (!options.silent) {
+        setTimeout(() => {
+          if (!settled && !this._webviewReady) settle(false, 'sidebar-unavailable');
+        }, 5000);
+      }
     });
   }
 
-  /** 投递一条消息：webview 就绪立即发，否则入队并拉出侧栏 */
-  private _post(msg: any) {
+  /** 投递一条消息：webview 就绪立即发，否则入队；focusSidebar=false 时不抢前台焦点 */
+  private _post(msg: any, focusSidebar = true) {
     if (this._webviewReady && this._view) {
       const res = this._view.webview.postMessage(msg);
       if (res && typeof (res as unknown as PromiseLike<boolean>).then === 'function') {
@@ -244,6 +247,10 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     }
     if (this._outbox.length > 20) this._outbox.shift();
     this._outbox.push(msg);
+    if (!focusSidebar) {
+      logInfo('ui.queued', { type: msg.type, silent: true });
+      return;
+    }
     void vscode.commands.executeCommand('antigravityKite.sidebar.focus').then(
       () => logInfo('ui.focus', { ok: true }),
       (e) => logWarn('ui.focus', e),
@@ -918,6 +925,11 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
       case 'webviewError':
         notifyUi('error', `Webview Error: ${msg.message} (Line ${msg.line}, Col ${msg.col})\n${msg.stack || ''}`);
         break;
+
+      default:
+        // 未处理的消息类型必须留痕：静默丢弃会让"点了没反应"无法排查
+        logWarn('msg.unknown', { type: msg.type });
+        break;
     }
   }
 
@@ -942,7 +954,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         <h3 data-i18n="myAccounts">我的账号</h3>
         <span class="list-arrow"></span>
         <div style="flex:1"></div>
-        <span class="grid-count" id="gridCount">0 个</span>
+        <span class="grid-count" id="gridCount"></span>
         <button class="add-account-btn" id="addAccountBtn" data-i18n="addAccount">添加账号</button>
       </div>
       <div class="panel-divider"></div>
@@ -1019,7 +1031,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
       <div class="batch-bar" id="batchBar" hidden>
         <label class="batch-check-all"><input type="checkbox" id="batchCheckAll"><span data-i18n="selectAll">全选</span></label>
         <div style="flex:1"></div>
-        <span class="batch-count" id="batchCount">已选 0</span>
+        <span class="batch-count" id="batchCount"></span>
         <button class="batch-action-btn" id="batchTagBtn" data-i18n-title="batchTagTitle" data-i18n="batchTag" title="为选中账号设置标签">加标签</button>
         <button class="batch-action-btn" id="batchEnableBtn" data-i18n-title="batchEnableTitle" data-i18n="batchEnable" title="启用选中账号">启用</button>
         <button class="batch-action-btn" id="batchDisableBtn" data-i18n-title="batchDisableTitle" data-i18n="batchDisable" title="禁用选中账号">禁用</button>
@@ -1296,6 +1308,11 @@ function tl(key) {
   document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = tl(el.getAttribute('data-i18n')); });
   document.querySelectorAll('[data-i18n-ph]').forEach(el => { el.placeholder = tl(el.getAttribute('data-i18n-ph')); });
   document.querySelectorAll('[data-i18n-title]').forEach(el => { el.title = tl(el.getAttribute('data-i18n-title')); });
+  // 两个计数带参数，静态 HTML 不写死中文，交给 tl() 按当前语言填
+  const gridCount = document.getElementById('gridCount');
+  if (gridCount) gridCount.textContent = tl('accountsCount', 0);
+  const batchCount = document.getElementById('batchCount');
+  if (batchCount) batchCount.textContent = tl('selectedCount', 0);
 })();
 let accounts = [];
 let currentEmail = '';
@@ -1478,8 +1495,22 @@ document.getElementById('privacyModeBtn').onclick = () => {
   btn.classList.toggle('is-active', privacyMode);
   btn.innerHTML = privacyMode ? PRIVACY_EYE_OFF_SVG : PRIVACY_EYE_SVG;
   btn.title = privacyMode ? tl('privacyOn') : tl('privacyOff');
+  try { const st = vscode.getState() || {}; st._privacy = privacyMode; vscode.setState(st); } catch (e) {}
   renderAccounts();
 };
+// 恢复上次的隐私开关：窗口重载后不该自动把邮箱亮出来
+(function initPrivacyMode() {
+  let saved = false;
+  try { saved = !!(vscode.getState() && vscode.getState()._privacy); } catch (e) {}
+  if (!saved) return;
+  privacyMode = true;
+  const btn = document.getElementById('privacyModeBtn');
+  if (btn) {
+    btn.classList.add('is-active');
+    btn.innerHTML = PRIVACY_EYE_OFF_SVG;
+    btn.title = tl('privacyOn');
+  }
+})();
 
 // 导出按钮
 const _exportBtn = document.getElementById('exportAccountsBtn');
@@ -1608,7 +1639,7 @@ function getVisibleAccounts() {
     list = list.filter(a => {
       const at = getAccTags(a);
       if (at.length > 0) return at.some(t => filterTags.has(t));
-      return filterTags.has('未分类');
+      return filterTags.has(tl('untagged'));
     });
   }
   if (filterPlans.size > 0) {
@@ -1857,8 +1888,10 @@ window.addEventListener('message', e => {
       setRefreshSpinning(REFRESH_SPIN_SELECTOR, false);
     } else {
       stopRefreshSpin(document.getElementById('refreshAllBtn'));
-      const sel = '.icon-btn.is-refresh[data-refresh-email="' + String(msg.email || '').replace(/"/g, '\\\\"') + '"]';
-      document.querySelectorAll(sel).forEach(stopRefreshSpin);
+      // 用 dataset 比较而不是拼选择器：邮箱里的特殊字符不会破坏 CSS 选择器
+      document.querySelectorAll('.icon-btn.is-refresh').forEach(el => {
+        if (el.dataset.refreshEmail === msg.email) stopRefreshSpin(el);
+      });
     }
   }
   if (msg.type === 'ask') {
@@ -1893,7 +1926,8 @@ function renderAsk(data) {
   ok.textContent = data.okText || tl('ok');
   document.getElementById('askCancel').textContent = data.cancelText || tl('askCancelBtn');
   ov.hidden = false;
-  ok.focus();
+  // 只在 webview 本来就是焦点时聚焦按钮：启动时的提示不该把光标从编辑器里抢走
+  if (document.hasFocus()) ok.focus();
 }
 function closeAskOverlay() {
   const ov = document.getElementById('askOverlay');
@@ -1926,7 +1960,7 @@ const TOAST_ICONS = {
   warning: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="6.5"/><line x1="8" y1="5" x2="8" y2="9" stroke-linecap="round"/><circle cx="8" cy="11.5" r="0.6" fill="currentColor" stroke="none"/></svg>',
   info: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="6.5"/><line x1="8" y1="11.5" x2="8" y2="7.5" stroke-linecap="round"/><circle cx="8" cy="4.8" r="0.6" fill="currentColor" stroke="none"/></svg>'
 };
-function showToast(message, type = 'info', duration = 3000) {
+function showToast(message, type = 'info', duration = 3000, raw = false) {
   let container = document.getElementById('toastContainer');
   if (!container) {
     container = document.createElement('div');
@@ -1942,7 +1976,9 @@ function showToast(message, type = 'info', duration = 3000) {
   const icon = type === 'loading'
     ? '<span class="toast-spinner"></span>'
     : '<span class="toast-icon">' + (TOAST_ICONS[type] || TOAST_ICONS.info) + '</span>';
-  toast.innerHTML = icon + '<span class="toast-msg">' + message + '</span>';
+  // 默认转义：错误文案可能来自服务端返回的 HTML 片段；raw=true 仅用于调用方自建的排版片段
+  const body = raw ? String(message) : escHtml(String(message));
+  toast.innerHTML = icon + '<span class="toast-msg">' + body + '</span>';
   container.appendChild(toast);
 
   requestAnimationFrame(() => toast.classList.add('show'));
@@ -2054,7 +2090,24 @@ function renderCdpStatus(s) {
     renderCdpStatus(null);
     vscode.postMessage({ type: 'getCdpStatus' });
   };
+  // 重启会关掉整个 IDE：按钮内两段式确认，不额外弹窗也不打断
+  let armed = false;
+  let armTimer = null;
   if (enable) enable.onclick = () => {
+    if (!armed) {
+      armed = true;
+      enable.textContent = tl('cdpConfirmRestart');
+      enable.classList.add('is-armed');
+      armTimer = setTimeout(() => {
+        armed = false;
+        enable.textContent = tl('cdpEnableRestart');
+        enable.classList.remove('is-armed');
+      }, 5000);
+      return;
+    }
+    if (armTimer) clearTimeout(armTimer);
+    armed = false;
+    enable.classList.remove('is-armed');
     const text = document.getElementById('cdpStatusText');
     const dot = document.getElementById('cdpStatusDot');
     if (text) text.textContent = tl('cdpRestarting');
@@ -2147,11 +2200,8 @@ function renderCdpStatus(s) {
 let loadingToast = null;
 function handleImportStatus(msg) {
   if (msg.status === 'loading') {
-    loadingToast = showToast(
-      '<span class="toast-spinner"></span> ' + tl('importingFrom', escHtml(msg.source)),
-      'loading',
-      0
-    );
+    // loading 类型的图标本身就是 spinner，message 里不要再塞一个
+    loadingToast = showToast(tl('importingFrom', msg.source), 'loading', 0);
   } else if (msg.status === 'success') {
     if (loadingToast) { loadingToast.remove(); loadingToast = null; }
     const total = msg.imported + msg.skipped;
@@ -2159,10 +2209,10 @@ function handleImportStatus(msg) {
     if (msg.imported > 0) text += '<br><span class="toast-detail">' + tl('importAdded', msg.imported) + '</span>';
     if (msg.skipped > 0) text += '<br><span class="toast-detail">' + tl('importSkipped', msg.skipped) + '</span>';
     if (total === 0) text = tl('importNone', escHtml(msg.source));
-    showToast(text, msg.imported > 0 ? 'success' : 'warning', 4000);
+    showToast(text, msg.imported > 0 ? 'success' : 'warning', 4000, true);
   } else if (msg.status === 'error') {
     if (loadingToast) { loadingToast.remove(); loadingToast = null; }
-    showToast(tl('importFailed') + '<br><span class="toast-detail">' + escHtml(msg.message) + '</span>', 'error', 5000);
+    showToast(tl('importFailed') + '<br><span class="toast-detail">' + escHtml(msg.message) + '</span>', 'error', 5000, true);
   } else if (msg.status === 'cancelled') {
     if (loadingToast) { loadingToast.remove(); loadingToast = null; }
   }
@@ -2230,7 +2280,7 @@ function showImportConfirmModal(email, exists, tokenExpired) {
         <button class="import-modal-close" onclick="closeImportModal()">×</button>
       </div>
       <div class="import-modal-body">
-        <div class="import-modal-email">\${maskedEmail}</div>
+        <div class="import-modal-email">\${escHtml(maskedEmail)}</div>
         <div class="import-modal-desc">\${desc}</div>
         \${expiredWarning}
       </div>
@@ -2283,7 +2333,7 @@ function renderAccounts() {
     filtered = filtered.filter(a => {
       const at = getAccTags(a);
       if (at.length > 0) return at.some(t => filterTags.has(t));
-      return filterTags.has('未分类');
+      return filterTags.has(tl('untagged'));
     });
   }
 
@@ -2343,6 +2393,8 @@ function renderAccounts() {
     // 邮箱 local-part 可合法含引号，内联 onclick 里必须一并转义，否则可破坏内联 JS
     const safeEmail = rawEmail.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
     const showEmail = displayEmail(rawEmail).replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // 隐私模式连 title 一起遮：否则 hover 一下就漏了完整邮箱
+    const emailTitle = showEmail.replace(/'/g,'&#39;').replace(/"/g,'&quot;');
     // tags 由卡片内 getAccTags+getTagColor 动态渲染
     const isDisabled = a.disabled;
     
@@ -2423,7 +2475,7 @@ function renderAccounts() {
     const html = '<div class="grid-card ' + (isCurrent ? 'is-active' : '') + ' ' + (isDisabled ? 'is-disabled' : '') + (selectMode ? ' is-select-mode' : '') + '" data-email="' + safeEmail + '" data-sig="' + sig + '">'
       + (selectMode ? '<div class="grid-check-col"><input type="checkbox" class="grid-check-input" data-email="' + safeEmail + '" ' + (selectedEmails.has(rawEmail) ? 'checked' : '') + '></div>' : '')
       + '<div class="grid-card-head">'
-        + '<div class="grid-card-email" title="' + safeEmail + '">' + showEmail + '</div>'
+        + '<div class="grid-card-email" title="' + emailTitle + '">' + showEmail + '</div>'
         + (isCurrent ? '<span class="grid-active-tag">' + tl('current') + '</span>' : '')
         + (isDisabled ? '<span class="grid-disabled-tag">' + tl('disabledTag') + '</span>' : '')
       + '</div>'
@@ -2460,6 +2512,7 @@ function cardSig(a) {
     a.email,
     a.disabled ? '1' : '0',
     a.email === currentEmail ? '1' : '0',
+    privacyMode ? '1' : '0',
     switchingEmail === a.email ? '1' : '0',
     selectedEmails.has(a.email) ? '1' : '0',
     selectMode ? '1' : '0',

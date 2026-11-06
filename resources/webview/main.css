@@ -3928,6 +3928,8 @@ body.vscode-light .grid-health-overlay-text { color: rgba(146, 64, 14, 0.9); }
     padding: 5px 14px;
     font-size: 12px;
 }
+.cdp-enable-btn.is-armed { background: var(--gh-red, #f85149); }
+.cdp-enable-btn.is-armed:hover { background: #d63c34; }
 
 /* ═══════ Toast ═══════ */
 /* 实底 + 阴影：深色主题下曾只有浅色覆写、无主背景，导致提示透出底下的卡片 */

@@ -6,7 +6,7 @@
 
 **Switch without restart · Real dual-window quotas for Claude / Gemini / Gemini 4 · Auto-confirm security notice · Bilingual UI**
 
-[![Version](https://img.shields.io/badge/version-1.1.7-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.1.12-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)]()
 [![GitHub release](https://img.shields.io/github/v/release/soulvon/Antigravity-Kite?color=orange&style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases)
@@ -34,10 +34,11 @@ Antigravity Kite is a multi-account manager and seamless switcher for the **Anti
 
 ## 🖼️ Preview
 
-Sidebar account card flow: **single-column vertical quota bars for Claude / Gemini / Gemini 4** (weekly + 5h windows, live percentages and reset countdowns without redundant empty slots), current account highlighted, with toggle, edit, refresh and delete at hand:
+Sidebar account card flow: **single-column vertical quota bars for Claude / Gemini / Gemini 4** (5h + weekly windows, live percentages and reset countdowns, one-click email masking), current account highlighted, with toggle, edit, refresh and delete at hand. Adding accounts supports Google sign-in, local database, Cockpit Tools, Antigravity Manager and JSON files:
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/soulvon/Antigravity-Kite/main/resources/preview-sidebar.webp" width="420" alt="Antigravity Kite account cards with dual-model dual-window quota dashboard">
+  <img src="https://raw.githubusercontent.com/soulvon/Antigravity-Kite/main/resources/preview-sidebar.webp" width="320" alt="Antigravity Kite account cards and quota dashboard">
+  <img src="https://raw.githubusercontent.com/soulvon/Antigravity-Kite/main/resources/preview-add-account.webp" width="320" alt="Add account: five import sources">
 </div>
 
 ---
@@ -46,7 +47,7 @@ Sidebar account card flow: **single-column vertical quota bars for Claude / Gemi
 
 ### Option 1: Extensions panel (recommended)
 
-1. Download the latest `antigravity-kite-1.1.7.vsix` ([GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest));
+1. Download the latest `antigravity-kite-1.1.12.vsix` ([GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest));
 2. Open the **Antigravity IDE**;
 3. Open the Extensions view (`Ctrl+Shift+X` / macOS `Cmd+Shift+X`);
 4. Click the `...` menu ➔ **"Install from VSIX..."**;
@@ -55,7 +56,7 @@ Sidebar account card flow: **single-column vertical quota bars for Claude / Gemi
 ### Option 2: Command line
 
 ```bash
-antigravity-ide --install-extension antigravity-kite-1.1.7.vsix --force
+antigravity-ide --install-extension antigravity-kite-1.1.12.vsix --force
 ```
 
 ---

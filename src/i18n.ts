@@ -71,10 +71,6 @@ const S: Record<string, [string, string]> = {
     'Quick switch done: agent/quota switched to ',
   ],
   switchCancelled: ['切号已取消：', 'Switch cancelled: '],
-  switchGeminiSyncFail: [
-    '切号已取消：同步本地凭据文件失败（',
-    'Switch cancelled: failed to sync local credential files (',
-  ],
 
   // ── 切号重启反馈 ──
   restartIncomplete: [
@@ -88,9 +84,6 @@ const S: Record<string, [string, string]> = {
 
   // ── 设置 ──
   settingsSaved: ['设置已保存', 'Settings saved'],
-  pickExeTitle: ['选择 Antigravity 主程序', 'Select Antigravity executable'],
-  pickExeOpen: ['选择', 'Select'],
-  pickExeFilter: ['可执行文件', 'Executable'],
 
   // ── 导出 ──
   noAccountsToExport: ['没有可导出的账号', 'No accounts to export'],
@@ -100,6 +93,40 @@ const S: Record<string, [string, string]> = {
   exportDialogTitle: ['导出 Antigravity Kite 账号', 'Export Antigravity Kite accounts'],
   exported: ['已导出 {0} 个账号到 {1}', 'Exported {0} accounts to {1}'],
   exportFailed: ['导出失败: {0}', 'Export failed: {0}'],
+
+  // ── 服务层状态/错误文案（会显示在 toast、卡片错误态、OAuth 回调页） ──
+  errSqliteUnavailable: ['node:sqlite 不可用（扩展宿主 Node 版本过低）', 'node:sqlite unavailable (extension host Node is too old)'],
+  errStateDbNotFound: ['未找到 IDE 状态库 state.vscdb', 'IDE state database state.vscdb not found'],
+  errStateDbNoOauth: ['目标库缺少 oauthToken 条目，跳过写入', 'Target DB has no oauthToken entry; write skipped'],
+  errStateDbMissing: ['状态库不存在：{0}', 'State DB not found: {0}'],
+  errImportMore: [' 等 {0} 项', ' and {0} more'],
+  errOauthNoCode: ['缺少授权码', 'Missing authorization code'],
+  errOauthCallbackNoCode: ['OAuth 回调缺少 code', 'OAuth callback has no code'],
+  errOauthError: ['OAuth 错误: {0}', 'OAuth error: {0}'],
+  errNoRefreshToken: ['缺少 refreshToken', 'Missing refreshToken'],
+  errTokenRefreshFailed: ['刷新 accessToken 失败：{0}', 'Failed to refresh accessToken: {0}'],
+  errTokenRefreshCancelled: [
+    '刷新 accessToken 失败（网络或代理不可用）：已取消切号，避免写入权限不足的 token 导致 agent 后端崩溃',
+    'Failed to refresh accessToken (network or proxy unavailable): switch cancelled to avoid writing an under-scoped token that crashes the agent backend',
+  ],
+  errTokenExpiryInvalid: [
+    '目标账号缺少有效 expiresAt，无法确认 token 有效期，请重新授权该账号',
+    'Target account has no valid expiresAt; re-authorize it to confirm token validity',
+  ],
+  errSwitchReadback: [
+    '无感切号写入后读回校验不一致，宿主未应用目标账号 accessToken',
+    'Readback mismatch after seamless switch; host did not apply the target account accessToken',
+  ],
+  switchSuccessMsg: ['无感切号成功', 'Seamless switch succeeded'],
+  errNoPushUpdate: ['宿主未暴露 antigravityUnifiedStateSync.pushUpdate', 'Host does not expose antigravityUnifiedStateSync.pushUpdate'],
+  errCredLength: ['nonce 或 ciphertext 长度非法', 'Invalid nonce or ciphertext length'],
+  errMainPid: ['未定位到 Antigravity IDE 主进程 PID', 'Could not locate the Antigravity IDE main process PID'],
+  errCloseIde: ['关闭 IDE 失败：', 'Failed to close IDE: '],
+  errCreditsFetch: ['AI 积分拉取失败: ', 'Failed to fetch AI credits: '],
+  errQuotaSummaryFallback: [
+    '周限摘要获取失败（当前为模型级推断，可能缺 Weekly）: ',
+    'Quota summary unavailable (falling back to model-level inference; weekly window may be missing): ',
+  ],
 
   // ── 配额刷新 ──
   refreshingQuota: ['正在刷新配额...', 'Refreshing quotas...'],
@@ -113,10 +140,6 @@ const S: Record<string, [string, string]> = {
   detectFailed: ['检测失败: {0}', 'Detection failed: {0}'],
   accountImported: ['已导入账号: {0}', 'Account imported: {0}'],
   importFailed: ['导入失败: {0}', 'Import failed: {0}'],
-  preflightBlocked: [
-    '切号预检未通过：目标账号额度检测失败（Token 可能已失效），已取消切换',
-    'Pre-switch check failed: quota check on the target account failed (token may be expired); switch cancelled',
-  ],
   tagsUpdated: ['已为 {0} 个账号更新标签', 'Updated tags for {0} accounts'],
   accountsDeleted: ['已删除 {0} 个账号', 'Deleted {0} accounts'],
   accountsEnabled: ['已启用 {0} 个账号', 'Enabled {0} accounts'],
@@ -197,7 +220,6 @@ const S: Record<string, [string, string]> = {
   sbAccountDisabled: ['账号 {0} 已被禁用，无法切换。', 'Account {0} is disabled and cannot be switched to.'],
   sbAlreadyCurrent: ['当前已处于账号 {0} 登录状态', 'Already signed in as {0}'],
   sbSwitching: ['正在无感切换账号至: {0}...', 'Seamlessly switching to {0}...'],
-  sbSwitchOk: ['[Kite] 无感切号成功: {0}', '[Kite] Seamless switch succeeded: {0}'],
   sbSwitchFail: ['无感切号失败: {0}', 'Seamless switch failed: {0}'],
   sbNotSignedInTip: ['未登录账号', 'Not signed in'],
   sbOpenPoolTip: ['点击打开号池面板', 'Click to open the account pool panel'],
@@ -216,7 +238,6 @@ const S: Record<string, [string, string]> = {
   updInstallNow: ['立即更新', 'Update now'],
   updLater: ['稍后', 'Later'],
   updDownload: ['下载', 'Download'],
-  updOpenRelease: ['打开发布页', 'Open release page'],
   updDownloading: ['正在下载更新...', 'Downloading update...'],
   updInstalling: ['正在安装更新...', 'Installing update...'],
   updReloadPrompt: ['更新安装完成，需要重新加载窗口才能生效', 'Update installed. Reload the window to apply it.'],
@@ -346,11 +367,13 @@ const S: Record<string, [string, string]> = {
   'ui.resetDefaults': ['恢复默认', 'Reset defaults'],
   'ui.saveSettings': ['保存设置', 'Save'],
   'ui.askCancelBtn': ['取消', 'Cancel'],
+  'ui.untagged': ['未分类', 'Untagged'],
   'ui.cdpStatusChecking': ['正在检测调试端口…', 'Checking debug port…'],
   'ui.cdpStatusConnected': ['已连接 · 端口 {0}', 'Connected · port {0}'],
   'ui.cdpStatusDisconnected': ['未连接（期望端口 {0}）', 'Not connected (expected port {0})'],
   'ui.cdpRecheck': ['重新检测', 'Check again'],
   'ui.cdpEnableRestart': ['开启并重启', 'Enable and restart'],
+  'ui.cdpConfirmRestart': ['再点一次确认重启', 'Click again to restart'],
   'ui.cdpRestarting': ['正在重启 IDE…', 'Restarting the IDE…'],
   'ui.cdpEnableHint': [
     '开启后会修好桌面 / 开始菜单 / 任务栏快捷方式，并自动重启一次 IDE（约 10 秒），之后切号不再弹安全声明。失败可以在这里重新开启。',
@@ -361,7 +384,6 @@ const S: Record<string, [string, string]> = {
     '确定删除选中的 {0} 个账号？此操作不可撤销。',
     'Delete the {0} selected accounts? This cannot be undone.',
   ],
-  'ui.untagged': ['未分类', 'Untagged'],
   'ui.filteredCount': ['已筛选 {0}', 'Filtered: {0}'],
   'ui.tagColorTitle': ['「{0}」颜色', 'Color for "{0}"'],
   'ui.colorResetTitle': ['重置为默认色', 'Reset to default color'],
@@ -393,7 +415,6 @@ const S: Record<string, [string, string]> = {
   'ui.resetHours': ['{0}时{1}分后重置', 'Resets in {0}h {1}m'],
   'ui.resetMinutes': ['{0}分钟后重置', 'Resets in {0}m'],
   'ui.resetSoon': ['即将重置', 'Resetting soon'],
-  'ui.unknownModel': ['未知模型', 'Unknown model'],
   'ui.current': ['当前', 'Current'],
   'ui.disabled': ['禁用', 'Disabled'],
   'ui.disabledTag': ['已禁用', 'Disabled'],
@@ -409,8 +430,6 @@ const S: Record<string, [string, string]> = {
   'ui.enabledOnT': ['账号启用中，点击禁用', 'Account enabled; click to disable'],
   'ui.ariaEnable': ['启用账号', 'Enable account'],
   'ui.ariaDisable': ['禁用账号', 'Disable account'],
-  'ui.pillSwitches': ['+{0} 切', '+{0} switches'],
-  'ui.pillRefreshes': ['{0} 检', '{0} checks'],
   'ui.active': ['活跃', 'Active'],
 
   // ── 统计面板（lp.*，注入 Webview）──

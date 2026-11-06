@@ -18,6 +18,8 @@ export interface UiAskOptions {
   cancelText?: string;
   /** 主按钮同时打开外部链接（GitHub Release / 反馈 Issue） */
   linkUrl?: string;
+  /** true = 不主动把侧栏拉到前台（启动时的非紧急说明）；侧栏没开就等下次打开再补发 */
+  silent?: boolean;
 }
 
 export interface UiPresenter {
