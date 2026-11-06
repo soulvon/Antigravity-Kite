@@ -91,12 +91,15 @@ function getCloudCodeUA(): string {
 
 /**
  * retrieveUserQuotaSummary 用的 User-Agent。
- * 服务端按 UA 版本区分返回内容：实测 1.20.5 只返回 3p 组（缺 Gemini 组），
- * >= 2.25.0 才返回完整的 5h + Weekly 双窗 bucket（2026-10-31 实测，与 Cockpit Tools 一致）。
+ * 服务端按 UA 识别客户端身份，两者返回的分组不同（2026-11-06 实测，同一账号同一时刻）：
+ * - IDE 格式 `antigravity/x.y.z win/amd64`          → 4 桶，缺 Gemini 4 Argon 组
+ * - 客户端格式 `antigravity/x.y.z (aidev_client; …)` → 5 桶，多出 gemini-argon-wtu-weekly
+ * 版本号影响 3p 组是否返回（1.20.5 缺 Gemini 组），故仍固定 2.25.0。
  */
 const SUMMARY_IDE_VERSION = '2.25.0';
+const SUMMARY_CLIENT_ID = '1003475615';
 function getSummaryUA(): string {
-  return `antigravity/${SUMMARY_IDE_VERSION} ${getOsName()}/${getArchName()}`;
+  return `antigravity/${SUMMARY_IDE_VERSION} (aidev_client; os_type=${getOsName()}; arch=${getArchName()}; cl=${SUMMARY_CLIENT_ID})`;
 }
 
 /** 刷新 accessToken（Google 刷新响应可能携带 id_token，一并取回） */
@@ -412,10 +415,15 @@ function mapSummaryBucket(bucketId: string): { family: 'claude' | 'gemini' | 'ar
 /** 从官方摘要构建窗口级配额（全中文标签：5h / 周额度；没有的数据不生成条目） */
 export function extractQuotaFromSummary(response: QuotaSummaryResponse): import('./types').ModelQuota[] {
   const modelQuotas: import('./types').ModelQuota[] = [];
+  const unmapped: string[] = [];
   for (const group of response?.groups || []) {
     for (const bucket of group.buckets || []) {
       const mapped = bucket.bucketId ? mapSummaryBucket(bucket.bucketId) : undefined;
-      if (!mapped) continue;
+      if (!mapped) {
+        // 官方新增分组时必须暴露而不是静默少显示（历史上 Gemini 4 Argon 组就是这样丢失的）
+        unmapped.push(`${group.displayName || '?'}/${bucket.bucketId || '(no id)'}`);
+        continue;
+      }
       const fraction = bucket.remainingFraction;
       const percent = typeof fraction === 'number' && fraction >= 0 && fraction <= 1
         ? Math.round(fraction * 100)
@@ -428,6 +436,9 @@ export function extractQuotaFromSummary(response: QuotaSummaryResponse): import(
         resetTime: bucket.resetTime,
       });
     }
+  }
+  if (unmapped.length > 0) {
+    console.warn('[UsageService] 未识别的配额分组（已忽略）:', unmapped.join(', '));
   }
   return modelQuotas;
 }

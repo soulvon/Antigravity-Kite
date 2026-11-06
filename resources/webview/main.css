@@ -1701,11 +1701,14 @@ details > summary::marker { display: none; content: ''; }
 .tag-color-reset:hover { color: var(--accent, #10b981); }
 
 /* Quotas */
+/* 同一行卡片被 grid 拉成等高：配额区吸收剩余高度并均分，避免条目少时底部留大片空白 */
 .grid-card-quotas {
     display: flex;
     flex-direction: column;
     gap: 6px;
     margin-top: 2px;
+    flex: 1 1 auto;
+    justify-content: space-between;
 }
 .grid-quota-item { display: flex; flex-direction: column; gap: 2px; }
 .grid-quota-head {
@@ -2442,6 +2445,28 @@ details > summary::marker { display: none; content: ''; }
 }
 .modal-cancel-btn:hover { background: var(--hover-bg); }
 
+/* ═══════ 通用询问弹窗（替代 VS Code 原生 modal） ═══════ */
+/* 层级高于全屏设置面板，避免提示被盖住 */
+#askOverlay { z-index: 1002; }
+#askOverlay .modal-box { width: min(440px, 92vw); }
+/* 动作区右对齐收拢，避免次要按钮被甩到弹窗最左侧 */
+#askOverlay .modal-footer { justify-content: flex-end; }
+.ask-meta {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+.ask-message {
+    font-size: 12px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 42vh;
+    overflow-y: auto;
+    color: var(--vscode-foreground);
+}
+
 /* Primary button (used in modals) */
 button.primary {
     padding: 7px 16px;
@@ -2458,6 +2483,7 @@ button.primary {
 }
 button.primary:hover { background: #059669; }
 button.primary:active { transform: scale(0.98); }
+button.primary:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 
 /* Secondary button (used in modals) */
 button.secondary {
@@ -3865,8 +3891,68 @@ body.vscode-light .grid-health-overlay-text { color: rgba(146, 64, 14, 0.9); }
 }
 .enhance-option-label { color: var(--muted); font-size: 10px; white-space: nowrap; }
 
+/* ═══════ CDP 状态行（设置面板） ═══════ */
+.cdp-status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--card-border);
+}
+.cdp-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: var(--muted);
+}
+.cdp-dot.is-ok { background: var(--gh-green, #3fb950); }
+.cdp-dot.is-bad { background: var(--gh-red, #f85149); }
+.cdp-dot.is-unknown { background: var(--muted); opacity: 0.6; }
+.cdp-status-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--vscode-foreground);
+}
+.cdp-actions-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+}
+.cdp-actions-row .modal-cancel-btn,
+.cdp-actions-row .primary {
+    min-height: 32px;
+    padding: 5px 14px;
+    font-size: 12px;
+}
+
+/* ═══════ Toast ═══════ */
+/* 实底 + 阴影：深色主题下曾只有浅色覆写、无主背景，导致提示透出底下的卡片 */
+.toast {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: min(560px, 92vw);
+    padding: 9px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--card-border);
+    background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, #202020));
+    color: var(--vscode-foreground);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.38);
+    font-size: 12px;
+    line-height: 1.5;
+    pointer-events: auto;
+}
+
 /* ═══════ Toast Additional ═══════ */
 .toast-msg { flex: 1; min-width: 0; word-break: break-word; }
+
+/* 刷新中的按钮：图标旋转，直到宿主回报 refreshDone */
+.is-spinning svg { animation: spin 0.9s linear infinite; }
+.is-spinning { pointer-events: none; opacity: 0.85; }
 
 /* ═══════ Theme-Adaptive Overrides ═══════ */
 /* All border/bg now use color-mix(foreground) — auto-adapts to any theme.

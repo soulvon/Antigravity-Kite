@@ -14,6 +14,7 @@ import * as cp from 'child_process';
 import { logInfo, logWarn } from './logger';
 import { probeCdpPort } from './declarationSuppressor';
 import { t } from './i18n';
+import { notifyUi, askUi } from './uiChannel';
 import * as ideRuntime from './ideRuntime';
 
 export type GateResult = 'ready' | 'manual' | 'relaunching';
@@ -98,6 +99,39 @@ function relaunchWithPort(launch: { exePath: string; args: string[]; pid: number
 }
 
 /**
+ * 打补丁 + 带调试端口重启 IDE（幂等，可在设置面板反复调用）。
+ * 失败必须把原因抛回调用方：第一次失败若不暴露，用户后面没有任何补救入口。
+ */
+export async function enableCdp(context: vscode.ExtensionContext): Promise<{ ok: boolean; error?: string }> {
+  const p = cdpPort();
+  if (process.platform === 'win32') {
+    const patched = await patchShortcuts(p);
+    logInfo('cdpGate.shortcuts', { patched: patched.patched, details: patched.details.slice(0, 3) });
+    if (patched.patched === 0) {
+      logWarn('cdpGate.shortcuts.none', {});
+    }
+  } else {
+    // POSIX 无 .lnk 快捷方式可 patch：本次 relaunch 直接带端口；用户日后手动启动需自行附加参数
+    logWarn('cdpGate.shortcuts.unsupported', { platform: process.platform });
+  }
+  try {
+    const launch = await ideRuntime.getCurrentLaunchInfo();
+    const exePath = launch.exePath || (await ideRuntime.detectExePath());
+    if (!exePath) throw new Error(t('gateNoExe'));
+    // 关掉 IDE 之前必须先确认 exe 真的在：否则重启失败就等于把用户窗口关了打不开
+    if (!fs.existsSync(exePath)) throw new Error(t('gateNoExe') + ' ' + exePath);
+    if (!launch.pid) throw new Error(t('gateNoPid'));
+    relaunchWithPort({ exePath, args: launch.args, pid: launch.pid }, p);
+    await context.globalState.update('cdpGate.asked', true);
+    await context.globalState.update('cdpGate.declineToastShown', true);
+    return { ok: true };
+  } catch (e) {
+    logWarn('cdpGate.relaunch.fail', e);
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
  * 门控：'ready'（CDP 可用）| 'manual'（无 CDP，弹窗手点，不再打扰）| 'relaunching'（正在重启 IDE，中止本次切号）
  */
 export async function ensureCdpGate(context: vscode.ExtensionContext): Promise<GateResult> {
@@ -115,7 +149,7 @@ export async function ensureCdpGate(context: vscode.ExtensionContext): Promise<G
     const toastShown = context.globalState.get<boolean>('cdpGate.declineToastShown', false);
     if (!toastShown) {
       await context.globalState.update('cdpGate.declineToastShown', true);
-      void vscode.window.showInformationMessage(t('gateManualToast'));
+      notifyUi('info', t('gateManualToast'));
     }
     logInfo('cdpGate.manual', { asked: true });
     return 'manual';
@@ -124,41 +158,24 @@ export async function ensureCdpGate(context: vscode.ExtensionContext): Promise<G
   await context.globalState.update('cdpGate.asked', true);
   logInfo('cdpGate.firstAsk', {});
 
-  const pick = await vscode.window.showWarningMessage(
-    t('gateModalTitle'),
-    { modal: true },
-    t('gateEnable'),
-    t('gateLater'),
-  );
+  const pick = await askUi({
+    title: t('gateModalHeading'),
+    message: t('gateModalTitle'),
+    okText: t('gateEnable'),
+    cancelText: t('gateLater'),
+  });
 
-  if (pick === t('gateEnable')) {
-    const p = cdpPort();
-    if (process.platform === 'win32') {
-      const patched = await patchShortcuts(p);
-      logInfo('cdpGate.shortcuts', { patched: patched.patched, details: patched.details.slice(0, 3) });
-      if (patched.patched === 0) {
-        logWarn('cdpGate.shortcuts.none', {});
-      }
-    } else {
-      // POSIX 无 .lnk 快捷方式可 patch：本次 relaunch 直接带端口；用户日后手动启动需自行附加参数
-      logWarn('cdpGate.shortcuts.unsupported', { platform: process.platform });
-    }
-    try {
-      const launch = await ideRuntime.getCurrentLaunchInfo();
-      const exePath = launch.exePath || (await ideRuntime.detectExePath());
-      if (!exePath) throw new Error(t('gateNoExe'));
-      if (!launch.pid) throw new Error(t('gateNoPid'));
-      void vscode.window.showInformationMessage(t('gateRelaunching'));
-      relaunchWithPort({ exePath, args: launch.args, pid: launch.pid }, p);
-      return 'relaunching';
-    } catch (e) {
-      logWarn('cdpGate.relaunch.fail', e);
-      void vscode.window.showErrorMessage(t('gateEnableFailed') + (e instanceof Error ? e.message : String(e)));
+  if (pick) {
+    notifyUi('info', t('gateRelaunching'));
+    const r = await enableCdp(context);
+    if (!r.ok) {
+      notifyUi('error', t('gateEnableFailed') + (r.error || ''));
       return 'manual';
     }
+    return 'relaunching';
   }
 
   // 拒绝：永久安静，本次切号照常
-  void vscode.window.showInformationMessage(t('gateDeclineInfo'));
+  notifyUi('info', t('gateDeclineInfo'));
   return 'manual';
 }

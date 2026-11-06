@@ -107,6 +107,30 @@ const PS_TEMPLATE = [
   '  $bytes = [Convert]::FromBase64String($BlobBase64)',
   '  Write-KiteCred $Target $User $bytes',
   '  [Console]::Out.Write((ConvertTo-Json @{ ok = $true } -Compress))',
+  "} elseif ($Mode -eq 'Swap') {",
+  '  # 读旧 + 写新一次完成：省掉一次 powershell 启动与 Add-Type 编译（切号链路最大固定开销）',
+  '  $oldB64 = ""',
+  '  $oldUser = $User',
+  '  $oldJson = ""',
+  '  try {',
+  '    $r = Read-KiteCred $Target',
+  '    $oldB64 = $r.blob',
+  '    $oldUser = $r.user',
+  '    $oldJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($oldB64))',
+  '  } catch { }',
+  '  $newText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($BlobBase64))',
+  '  if ($oldJson -ne "") {',
+  '    try {',
+  '      $oldObj = $oldJson | ConvertFrom-Json',
+  '      $newObj = $newText | ConvertFrom-Json',
+  '      if ($oldObj.writer_id) { $newObj.writer_id = $oldObj.writer_id }',
+  '      if ($oldObj.auth_method) { $newObj.auth_method = $oldObj.auth_method }',
+  '      $newText = $newObj | ConvertTo-Json -Depth 8 -Compress',
+  '    } catch { }',
+  '  }',
+  '  $newBytes = [Text.Encoding]::UTF8.GetBytes($newText)',
+  '  Write-KiteCred $Target $oldUser $newBytes',
+  '  [Console]::Out.Write((ConvertTo-Json @{ ok = $true; oldBlobBase64 = $oldB64; oldUser = $oldUser } -Compress))',
   "} elseif ($Mode -eq 'Delete') {",
   '  $ptr = [IntPtr]::Zero',
   '  if ([KiteWinCred]::CredReadW($Target, 1, 0, [ref]$ptr)) {',
@@ -190,6 +214,45 @@ export async function writeIdeCredentialBlob(blobBase64: string, user: string, t
     const out = await runPs(script);
     JSON.parse(out.trim());
     return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export interface IdeCredentialSwapResult {
+  ok: boolean;
+  error?: string;
+  /** 被覆盖的旧凭据（PowerShell 内部读出，用于回滚备份） */
+  previous?: IdeCredential;
+  previousUser?: string;
+}
+
+/**
+ * 一次 PowerShell 完成「读旧凭据 + 写新凭据」。
+ * 旧 blob 的 writer_id / auth_method 由脚本内部继承（IDE 认这两个字段），
+ * 相比 readIdeCredential + writeIdeCredentialBlob 两次调用，省掉一次进程启动 + Add-Type 编译。
+ */
+export async function swapIdeCredential(
+  blobBase64: string,
+  user: string,
+  targetOverride?: string,
+): Promise<IdeCredentialSwapResult> {
+  try {
+    assertWindowsCredAvailable();
+    const script = PS_TEMPLATE
+      .replace('<MODE>', 'Swap')
+      .replace('<TARGET>', (targetOverride || IDE_CRED_TARGET).replace(/'/g, "''"))
+      .replace('<USER>', user.replace(/'/g, "''"))
+      .replace('<BLOB>', blobBase64);
+    const out = await runPs(script);
+    const json = JSON.parse(out.trim()) as { ok?: boolean; oldBlobBase64?: string; oldUser?: string };
+    let previous: IdeCredential | undefined;
+    if (json.oldBlobBase64) {
+      try {
+        previous = JSON.parse(Buffer.from(json.oldBlobBase64, 'base64').toString('utf8')) as IdeCredential;
+      } catch { /* 旧 blob 非 JSON：只影响备份，不影响切换 */ }
+    }
+    return { ok: json.ok === true, previous, previousUser: json.oldUser };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

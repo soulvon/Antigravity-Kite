@@ -20,6 +20,7 @@ scripts/test_*
 *.md
 !README.md
 !README_en.md
+docs/
 spec/
 
 # Local preview harness (offline webview renderer)
@@ -33,4 +34,6 @@ x.identifier
 # >>> experience-ignore >>>
 docs/experience/
 docs/tasks/
+docs/RELEASE_GUIDE.md
+*.vsix
 # <<< experience-ignore <<<

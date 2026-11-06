@@ -15,6 +15,7 @@ import * as accountStore from './accountStore';
 import { fetchUsage } from './usageService';
 import { UsageSnapshot } from './types';
 import { t } from './i18n';
+import { notifyUi } from './uiChannel';
 
 function formatModelLabel(m: { modelId?: string; label?: string }): string {
   const isWeekly = m.modelId?.endsWith(':weekly') || /week/i.test(m.label || '');
@@ -79,7 +80,7 @@ export class StatusBarManager implements vscode.Disposable {
       vscode.commands.registerCommand('antigravityKite.quickSwitchAccount', async () => {
         const accounts = accountStore.getAll();
         if (accounts.length === 0) {
-          vscode.window.showWarningMessage(t('sbPoolEmpty'));
+          notifyUi('warning', t('sbPoolEmpty'));
           return;
         }
 
@@ -117,13 +118,13 @@ export class StatusBarManager implements vscode.Disposable {
 
         if (selected) {
           if (selected.account.disabled) {
-            vscode.window.showWarningMessage(t('sbAccountDisabled', selected.account.email));
+            notifyUi('warning', t('sbAccountDisabled', selected.account.email));
             return;
           }
 
           const email = selected.account.email;
           if (email.toLowerCase() === curEmail.toLowerCase()) {
-            vscode.window.showInformationMessage(t('sbAlreadyCurrent', email));
+            notifyUi('info', t('sbAlreadyCurrent', email));
             return;
           }
 
@@ -140,7 +141,7 @@ export class StatusBarManager implements vscode.Disposable {
               this.update();
               await this._refreshCurrentUsage();
             } catch (err) {
-              vscode.window.showErrorMessage(t('sbSwitchFail', err instanceof Error ? err.message : String(err)));
+              notifyUi('error', t('sbSwitchFail', err instanceof Error ? err.message : String(err)));
             }
           });
         }

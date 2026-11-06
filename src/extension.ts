@@ -11,9 +11,10 @@ import { switchIdeStateIdentity, resolveIdeStateDbPathFromUserData } from './ide
 import { readSwitchRestartResult, clearSwitchRestartResult, writeAgyActiveAccount } from './switchRestart';
 import { logInfo, logWarn, logError } from './logger';
 import { startDeclarationSuppressor } from './declarationSuppressor';
-import { ensureCdpGate } from './cdpGate';
+import { ensureCdpGate, enableCdp } from './cdpGate';
+import { probeCdpPort } from './declarationSuppressor';
 import { t, localeBundle, getLang } from './i18n';
-import { readIdeCredential, buildIdeCredentialBlob, writeIdeCredentialBlob, syncGeminiAccountFiles } from './winCredential';
+import { swapIdeCredential, buildIdeCredentialBlob, syncGeminiAccountFiles } from './winCredential';
 import { syncGeminiLocalCreds } from './geminiFiles';
 import { getSharedStorageDir } from './storage';
 import { StatusBarManager } from './statusBar';
@@ -21,6 +22,7 @@ import { fetchUsage } from './usageService';
 import * as ideRuntime from './ideRuntime';
 import { UsageTracker } from './usageTracker';
 import { showUpdateNotesOnStartup, autoCheckOnStartup, checkForUpdates } from './updater';
+import { registerUiPresenter, notifyUi, askUi, UiPresenter, UiAskOptions, UiStatus } from './uiChannel';
 import * as logPanel from './logPanelProvider';
 
 let sidebarProvider: SidebarProvider;
@@ -62,6 +64,13 @@ export function activate(context: vscode.ExtensionContext) {
   accountStore.init(context);
   logInfo('activate.init-done', { accounts: accountStore.count(), storageDir: accountStore.getStorageDirPath() });
 
+  // 初始化侧栏，并把 UI 通道接到它上面：此后所有提示/询问都走 webview，不再弹原生对话框
+  sidebarProvider = new SidebarProvider(context.extensionUri, context);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, sidebarProvider)
+  );
+  registerUiPresenter(sidebarProvider);
+
   // 安全声明弹窗自动关闭器：CDP 可用时给 hub 页面注入自动接受（切换账号必弹的那一个）
   startDeclarationSuppressor();
 
@@ -70,11 +79,9 @@ export function activate(context: vscode.ExtensionContext) {
   if (lastRestart) {
     clearSwitchRestartResult();
     if (!lastRestart.ok) {
-      void vscode.window.showErrorMessage(
-        t('restartIncomplete', lastRestart.error || t('ui.unknown'))
-      );
+      notifyUi('error', t('restartIncomplete', lastRestart.error || t('ui.unknown')));
     } else if (lastRestart.warning) {
-      void vscode.window.showWarningMessage(t('restartWarning', lastRestart.warning));
+      notifyUi('warning', t('restartWarning', lastRestart.warning));
     }
   }
 
@@ -88,12 +95,6 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // 初始化侧栏
-  sidebarProvider = new SidebarProvider(context.extensionUri, context);
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, sidebarProvider)
-  );
-
   // 初始化状态栏（快速切号复用侧栏完整链路；recordSwitch 已在链路内，不在此重复计数）
   statusBarManager = new StatusBarManager(
     context,
@@ -104,8 +105,8 @@ export function activate(context: vscode.ExtensionContext) {
   );
   context.subscriptions.push(statusBarManager);
 
-  // 弹出版本更新提示的模态框
-  showUpdateNotesOnStartup(context);
+  // 版本更新说明：走侧栏 webview 模态框（不用 VS Code 原生模态）
+  void showUpdateNotesOnStartup(context);
 
   // 自动检查更新
   autoCheckOnStartup();
@@ -167,9 +168,13 @@ async function backgroundRefreshAllUsage(context: vscode.ExtensionContext) {
 /** 切号防连点：调度成功后 IDE 会关闭，无需重置；调度失败时重置 */
 let switchInFlight = false;
 
-class SidebarProvider implements vscode.WebviewViewProvider {
+class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
   public static readonly viewType = 'antigravityKite.sidebar';
   private _view?: vscode.WebviewView;
+  private _webviewReady = false;
+  /** webview 未就绪时暂存的提示/询问，ready 后按序补发（绝不回退原生弹窗） */
+  private _outbox: any[] = [];
+  private _askResolvers = new Map<string, (ok: boolean, reason?: string) => void>();
   private _context: vscode.ExtensionContext;
 
   constructor(private readonly _extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
@@ -188,12 +193,80 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** 单条提示：走侧栏 toast */
+  public notify(status: UiStatus, message: string) {
+    this._post({ type: 'toast', status, message });
+  }
+
+  /** 需要确认的询问：走侧栏模态框，返回是否点了主按钮 */
+  public ask(options: UiAskOptions): Promise<boolean> {
+    const id = 'ask_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      let timeout: NodeJS.Timeout | undefined;
+      const settle = (ok: boolean, reason?: string) => {
+        if (settled) return;
+        settled = true;
+        this._askResolvers.delete(id);
+        if (timeout) clearTimeout(timeout);
+        if (reason) logWarn('ui.ask.' + reason, { id, title: options.title });
+        if (ok && options.linkUrl) {
+          void vscode.env.openExternal(vscode.Uri.parse(options.linkUrl));
+        }
+        resolve(ok);
+      };
+      // 用户长时间不响应：不让调用方永久挂起，弹窗一并收起（否则点了也没反应）
+      timeout = setTimeout(() => {
+        const wasOpen = this._askResolvers.has(id);
+        settle(false, 'timeout');
+        if (wasOpen) this._view?.webview.postMessage({ type: 'askDismiss', id });
+      }, 120000);
+      this._askResolvers.set(id, settle);
+      this._post({ type: 'ask', id, ...options });
+      // 侧栏拉不起来（容器被隐藏等）按取消收口，避免切号等流程被挂住
+      setTimeout(() => {
+        if (!settled && !this._webviewReady) settle(false, 'sidebar-unavailable');
+      }, 5000);
+    });
+  }
+
+  /** 投递一条消息：webview 就绪立即发，否则入队并拉出侧栏 */
+  private _post(msg: any) {
+    if (this._webviewReady && this._view) {
+      const res = this._view.webview.postMessage(msg);
+      if (res && typeof (res as unknown as PromiseLike<boolean>).then === 'function') {
+        (res as unknown as Promise<boolean>).then(
+          (ok) => { if (!ok) logWarn('ui.post', { type: msg.type, delivered: false }); },
+          (e) => logWarn('ui.post', e),
+        );
+      }
+      return;
+    }
+    if (this._outbox.length > 20) this._outbox.shift();
+    this._outbox.push(msg);
+    void vscode.commands.executeCommand('antigravityKite.sidebar.focus').then(
+      () => logInfo('ui.focus', { ok: true }),
+      (e) => logWarn('ui.focus', e),
+    );
+  }
+
+  private _flushOutbox() {
+    if (!this._view || !this._webviewReady) return;
+    const queued = this._outbox;
+    this._outbox = [];
+    for (const msg of queued) {
+      this._view.webview.postMessage(msg);
+    }
+  }
+
   public resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ) {
     this._view = webviewView;
+    // 新 html 等于新脚本：监听器尚未注册，等 webviewReady 再投递
+    this._webviewReady = false;
     logInfo('webview.resolve', { viewType: SidebarProvider.viewType });
 
     webviewView.webview.options = {
@@ -301,6 +374,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     // 语言切换：重建 webview 使界面文案立即生效，并补推全部状态
     if (nextLocale !== prevLocale && this._view) {
       statusBarManager?.update();
+      this._webviewReady = false;
       this._view.webview.html = this._getHtmlForWebview(this._view.webview);
       this._pushAccounts();
       this._pushSettings();
@@ -311,6 +385,14 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('settingsSaved') });
     }
     this._pushSettings();
+  }
+
+  /** 探测调试端口并把状态推给设置面板 */
+  private async _pushCdpStatus() {
+    const expected = vscode.workspace.getConfiguration('antigravityKite').get<number>('cdpPort', 9333);
+    const port = await probeCdpPort();
+    logInfo('cdp.status', { connected: !!port, port: port || expected });
+    this._view?.webview.postMessage({ type: 'cdpStatus', connected: !!port, port: port || expected, expected });
   }
 
   /** 重建 webview 后补推状态（对应 resolveWebviewView 的推送序列） */
@@ -375,6 +457,8 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     } catch (err) {
       this._view?.webview.postMessage({ type: 'usage', email, error: String(err) });
     }
+    // 无论成败都要收口旋转态，否则按钮会一直转
+    this._view?.webview.postMessage({ type: 'refreshDone', scope: 'one', email });
   }
 
   /** 批量刷新所有账号配额 */
@@ -408,6 +492,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     } else {
       this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: t('refreshPartial', successCount, errorCount) });
     }
+    this._view?.webview.postMessage({ type: 'refreshDone', scope: 'all' });
   }
 
   private async _handleMessage(msg: WebviewMessage) {
@@ -419,10 +504,10 @@ class SidebarProvider implements vscode.WebviewViewProvider {
           accountStore.add(account);
           this._context.globalState.update('currentEmail', account.email);
           this._pushAccounts();
-          vscode.window.showInformationMessage(t('accountAdded', account.email));
+          notifyUi('success', t('accountAdded', account.email));
           this._refreshUsage(account.email);
         } catch (err) {
-          vscode.window.showErrorMessage(t('loginFailed', err instanceof Error ? err.message : String(err)));
+          notifyUi('error', t('loginFailed', err instanceof Error ? err.message : String(err)));
         }
         break;
 
@@ -438,7 +523,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             tokenExpired: preview.tokenExpired
           });
         } catch (err) {
-          vscode.window.showErrorMessage(t('detectFailed', err instanceof Error ? err.message : String(err)));
+          notifyUi('error', t('detectFailed', err instanceof Error ? err.message : String(err)));
         }
         break;
 
@@ -449,11 +534,11 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             accountStore.add(account);
             this._context.globalState.update('currentEmail', account.email);
             this._pushAccounts();
-            vscode.window.showInformationMessage(t('accountImported', account.email));
+            notifyUi('success', t('accountImported', account.email));
             this._refreshUsage(account.email);
           }
         } catch (err) {
-          vscode.window.showErrorMessage(t('importFailed', err instanceof Error ? err.message : String(err)));
+          notifyUi('error', t('importFailed', err instanceof Error ? err.message : String(err)));
         }
         break;
 
@@ -594,26 +679,6 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             };
             logInfo('switch.token', { source: 'refreshed', prepareOk: true });
 
-            // 备份当前凭据（可回滚），并取出 writer_id / auth_method / userName 保持一致
-            const credBackup = await readIdeCredential();
-            let writerId = '';
-            let authMethod = 'consumer';
-            let credUser = 'antigravity';
-            if (credBackup.ok && credBackup.blobBase64 && credBackup.parsed) {
-              const backupPath = path.join(getSharedStorageDir(), 'credential-backup.json');
-              fs.writeFileSync(backupPath, JSON.stringify({
-                savedAt: Date.now(),
-                user: credBackup.user,
-                blob: credBackup.parsed,
-              }, null, 2), 'utf8');
-              writerId = credBackup.parsed.writer_id || '';
-              authMethod = credBackup.parsed.auth_method || 'consumer';
-              credUser = credBackup.user || 'antigravity';
-              logInfo('switch.cred.backup', { path: backupPath, prevEmail: credBackup.parsed.id_token_email });
-            } else {
-              logWarn('switch.cred.backup.unavailable', { error: credBackup.error });
-            }
-
             // 构造目标凭据（AT 过期无妨：IDE 启动后用 RT 自刷新）
             const expiryMs = switchToken.expiryDateSeconds > Math.floor(Date.now() / 1000)
               ? switchToken.expiryDateSeconds * 1000
@@ -623,20 +688,34 @@ class SidebarProvider implements vscode.WebviewViewProvider {
               accessToken: switchToken.accessToken,
               refreshToken: switchToken.refreshToken,
               expiryMs,
-              authMethod,
-              writerId,
             });
-            logInfo('switch.cred.build', { email: account.email, expiryMs, writerId: blob.parsed.writer_id.slice(0, 10) });
+            logInfo('switch.cred.build', { email: account.email, expiryMs });
 
             // ── 热切（不重启 IDE）——机制经真机实验证实 ──
-            // 1) 运行中写凭据管理器（IDE 不覆盖；下次 agy 拉起即用新身份）
-            const cw = await writeIdeCredentialBlob(blob.blobBase64, credUser);
+            // 1) 一次 PowerShell 完成「读旧 + 写新」：旧 blob 的 writer_id/auth_method 由脚本内部继承，
+            //    旧凭据回传后落盘成可回滚备份（省掉独立读凭据那一趟进程启动 + Add-Type 编译）
+            const cw = await swapIdeCredential(blob.blobBase64, 'antigravity');
             logInfo('switch.hot.cred', { ok: cw.ok, error: cw.error });
             if (!cw.ok) {
               switchInFlight = false;
               this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('switchCredFail', cw.error || '') });
               this._view?.webview.postMessage({ type: 'switchResult', ok: false });
               break;
+            }
+            if (cw.previous) {
+              try {
+                const backupPath = path.join(getSharedStorageDir(), 'credential-backup.json');
+                fs.writeFileSync(backupPath, JSON.stringify({
+                  savedAt: Date.now(),
+                  user: cw.previousUser,
+                  blob: cw.previous,
+                }, null, 2), 'utf8');
+                logInfo('switch.cred.backup', { path: backupPath, prevEmail: cw.previous.id_token_email });
+              } catch (e) {
+                logWarn('switch.cred.backup.write', e);
+              }
+            } else {
+              logWarn('switch.cred.backup.unavailable', { reason: 'previous blob missing' });
             }
 
             // 2) 状态库（agent/模型一致性）
@@ -674,15 +753,17 @@ class SidebarProvider implements vscode.WebviewViewProvider {
             }
             logInfo('switch.hot.gemini', { ok: geminiLocal.ok, error: geminiLocal.error });
 
-            // 4) 会话层 token 热切 + 总线身份推送（尽力而为，失败不阻塞）
-            const hot = await seamlessSwitch(account);
+            // 4) 会话层 token 热切与 agent 引擎重启互不依赖：并行执行，省一段串行等待
+            const [hot, agyReload] = await Promise.all([
+              seamlessSwitch(account),
+              ideRuntime.killAgyEngine(),
+            ]);
             logInfo('switch.hot.session', { success: hot.success, message: hot.message });
+            logInfo('switch.hot.agyReload', { killed: agyReload.killed, agyWasRunning: agyReload.agyWasRunning, error: agyReload.error });
+
+            // 5) 总线身份推送（依赖会话层已写入）
             const identity = await pushLiveIdentityUpdate(account.email);
             logInfo('switch.hot.identity', { ok: identity.ok, error: identity.error });
-
-            // 5) 热重载 agent 引擎（agy 重建时读凭据管理器，即时切到新号）
-            const agyReload = await ideRuntime.killAgyEngine();
-            logInfo('switch.hot.agyReload', { killed: agyReload.killed, agyWasRunning: agyReload.agyWasRunning, error: agyReload.error });
 
             await this._context.globalState.update('currentEmail', msg.email);
             usageTracker.recordSwitch(msg.email);
@@ -713,6 +794,20 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       case 'getSettings':
         this._pushSettings();
         break;
+
+      case 'getCdpStatus':
+        await this._pushCdpStatus();
+        break;
+
+      case 'enableCdp': {
+        const r = await enableCdp(this._context);
+        if (!r.ok) {
+          notifyUi('error', t('gateEnableFailed') + (r.error || ''));
+          await this._pushCdpStatus();
+        }
+        // 成功时会重启 IDE（约 10 秒），此处不必再回推
+        break;
+      }
 
       case 'saveSettings':
         await this._saveSettings(msg.settings || {}, msg.silent === true);
@@ -807,13 +902,21 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       case 'webviewReady':
         // webview script 执行完毕后主动报到：此刻 message 监听器已注册，
         // 推送才不会因 CSS 等资源加载慢于消息投递而丢失（空账号竞态的根因）
+        this._webviewReady = true;
         this._pushAccounts();
         this._pushSettings();
         this._syncWebviewState();
+        this._flushOutbox();
         break;
 
+      case 'askResult': {
+        const settle = this._askResolvers.get(String(msg.id));
+        if (settle) settle(msg.ok === true);
+        break;
+      }
+
       case 'webviewError':
-        vscode.window.showErrorMessage(`Webview Error: ${msg.message} (Line ${msg.line}, Col ${msg.col})\n${msg.stack || ''}`);
+        notifyUi('error', `Webview Error: ${msg.message} (Line ${msg.line}, Col ${msg.col})\n${msg.stack || ''}`);
         break;
     }
   }
@@ -1026,6 +1129,24 @@ class SidebarProvider implements vscode.WebviewViewProvider {
   </div>
 </div>
 
+<!-- 通用询问弹窗（宿主 askUi 驱动，替代 VS Code 原生 showXxxMessage） -->
+<div id="askOverlay" class="modal-overlay" hidden>
+  <div class="modal-box" style="width:min(440px,92vw)">
+    <div class="modal-header">
+      <h3 id="askTitle"></h3>
+      <button class="modal-close" id="askClose" data-i18n-title="close" title="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="ask-meta" id="askMeta"></div>
+      <div class="ask-message" id="askMessage"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="modal-cancel-btn" id="askCancel" data-i18n="askCancelBtn">取消</button>
+      <button class="primary" id="askOk" style="min-width:96px"></button>
+    </div>
+  </div>
+</div>
+
 <!-- 设置弹窗（工具栏齿轮入口） -->
 <div id="settingsOverlay" class="modal-overlay" hidden>
   <div class="modal-box">
@@ -1065,6 +1186,15 @@ class SidebarProvider implements vscode.WebviewViewProvider {
           <input type="number" class="v2-sel sb-port-input" id="setCdpPort" min="1024" max="65535" placeholder="9333">
         </div>
         <div class="settings-hint" data-i18n="cdpPortHint">切号时通过该端口与 IDE 通信，9222 会作为兜底自动尝试。</div>
+        <div class="cdp-status-row">
+          <span class="cdp-dot is-unknown" id="cdpStatusDot"></span>
+          <span class="cdp-status-text" id="cdpStatusText" data-i18n="cdpStatusChecking">检测中…</span>
+        </div>
+        <div class="cdp-actions-row">
+          <button class="modal-cancel-btn" id="cdpRecheckBtn" data-i18n="cdpRecheck">重新检测</button>
+          <button class="primary cdp-enable-btn" id="cdpEnableBtn" data-i18n="cdpEnableRestart">开启并重启</button>
+        </div>
+        <div class="settings-hint" data-i18n="cdpEnableHint">开启后会修好桌面 / 开始菜单 / 任务栏快捷方式，并自动重启一次 IDE（约 10 秒），之后切号不再弹安全声明。失败可以在这里重新开启。</div>
       </div>
 
       <div class="settings-group">
@@ -1262,7 +1392,28 @@ function planTierClass(tierId) {
   return 'tier-unknown';
 }
 
-function refreshUsage(email) {
+// ── 刷新按钮旋转态：点击即转，收到宿主 refreshDone 才停（60s 兜底并在控制台留痕） ──
+const REFRESH_SPIN_SELECTOR = '#refreshAllBtn, .icon-btn.is-refresh';
+function startRefreshSpin(el) {
+  if (!el) return;
+  el.classList.add('is-spinning');
+  if (el.__kiteRefreshTimer) clearTimeout(el.__kiteRefreshTimer);
+  el.__kiteRefreshTimer = setTimeout(() => {
+    el.classList.remove('is-spinning');
+    el.__kiteRefreshTimer = null;
+    console.warn('[kite] 60s 未收到 refreshDone，已停止旋转');
+  }, 60000);
+}
+function stopRefreshSpin(el) {
+  if (!el) return;
+  el.classList.remove('is-spinning');
+  if (el.__kiteRefreshTimer) { clearTimeout(el.__kiteRefreshTimer); el.__kiteRefreshTimer = null; }
+}
+function setRefreshSpinning(selector, on) {
+  document.querySelectorAll(selector).forEach(el => { if (on) startRefreshSpin(el); else stopRefreshSpin(el); });
+}
+function refreshUsage(btn, email) {
+  startRefreshSpin(btn);
   vscode.postMessage({ type: 'refreshUsage', email: email });
 }
 
@@ -1312,11 +1463,9 @@ document.getElementById('pageSizeSelect').onchange = (e) => {
   renderAccounts();
 };
 
-// 刷新按钮
+// 刷新全部：按钮与各卡刷新图标一起转，直到宿主回报完成
 document.getElementById('refreshAllBtn').onclick = () => {
-  const btn = document.getElementById('refreshAllBtn');
-  btn.classList.add('is-spinning');
-  setTimeout(() => btn.classList.remove('is-spinning'), 1000);
+  setRefreshSpinning(REFRESH_SPIN_SELECTOR, true);
   vscode.postMessage({ type: 'refreshAll' });
 };
 
@@ -1700,7 +1849,75 @@ window.addEventListener('message', e => {
     switchingEmail = null;
     renderAccounts();
   }
+  if (msg.type === 'cdpStatus') {
+    renderCdpStatus(msg);
+  }
+  if (msg.type === 'refreshDone') {
+    if (msg.scope === 'all') {
+      setRefreshSpinning(REFRESH_SPIN_SELECTOR, false);
+    } else {
+      stopRefreshSpin(document.getElementById('refreshAllBtn'));
+      const sel = '.icon-btn.is-refresh[data-refresh-email="' + String(msg.email || '').replace(/"/g, '\\\\"') + '"]';
+      document.querySelectorAll(sel).forEach(stopRefreshSpin);
+    }
+  }
+  if (msg.type === 'ask') {
+    showAsk(msg);
+  }
+  if (msg.type === 'askDismiss' && msg.id === askId) {
+    closeAskOverlay();
+    showNextAsk();
+  }
 });
+
+// 通用询问弹窗（宿主 askUi 下发；不使用 VS Code 原生模态）
+let askId = null;
+const askQueue = [];
+function showAsk(data) {
+  // 同一时刻只显示一个，后来的排队，关掉当前再弹（避免互相覆盖导致前一个永远等不到结果）
+  if (askId) { askQueue.push(data); return; }
+  renderAsk(data);
+}
+function renderAsk(data) {
+  const ov = document.getElementById('askOverlay');
+  if (!ov) return;
+  askId = data.id || null;
+  document.getElementById('askTitle').textContent = data.title || '';
+  const meta = document.getElementById('askMeta');
+  meta.textContent = data.meta || '';
+  meta.hidden = !data.meta;
+  const message = document.getElementById('askMessage');
+  message.textContent = data.message || '';
+  message.hidden = !data.message;
+  const ok = document.getElementById('askOk');
+  ok.textContent = data.okText || tl('ok');
+  document.getElementById('askCancel').textContent = data.cancelText || tl('askCancelBtn');
+  ov.hidden = false;
+  ok.focus();
+}
+function closeAskOverlay() {
+  const ov = document.getElementById('askOverlay');
+  if (ov) ov.hidden = true;
+  askId = null;
+}
+function showNextAsk() {
+  const next = askQueue.shift();
+  if (next) renderAsk(next);
+}
+function answerAsk(ok) {
+  const id = askId;
+  closeAskOverlay();
+  if (id) vscode.postMessage({ type: 'askResult', id: id, ok: ok });
+  showNextAsk();
+}
+(function bindAsk() {
+  const ok = document.getElementById('askOk');
+  const cancel = document.getElementById('askCancel');
+  const close = document.getElementById('askClose');
+  if (ok) ok.onclick = () => answerAsk(true);
+  if (cancel) cancel.onclick = () => answerAsk(false);
+  if (close) close.onclick = () => answerAsk(false);
+})();
 
 // Toast 通知（BuddyRelay 同款：图标 + 消息，底部容器统一管理）
 const TOAST_ICONS = {
@@ -1802,12 +2019,49 @@ function openSettingsModal() {
   if (!ov) return;
   ov.hidden = false;
   vscode.postMessage({ type: 'getSettings' });
+  // 每次打开都重新探测一次调试端口，避免显示过期状态
+  renderCdpStatus(null);
+  vscode.postMessage({ type: 'getCdpStatus' });
 }
 
 function closeSettingsModal() {
   const ov = document.getElementById('settingsOverlay');
   if (ov) ov.hidden = true;
 }
+
+// CDP 状态：实时显示调试端口是否连上，并提供「重新检测 / 开启并重启」
+function renderCdpStatus(s) {
+  const dot = document.getElementById('cdpStatusDot');
+  const text = document.getElementById('cdpStatusText');
+  const enableBtn = document.getElementById('cdpEnableBtn');
+  if (!dot || !text) return;
+  if (!s) {
+    dot.className = 'cdp-dot is-unknown';
+    text.textContent = tl('cdpStatusChecking');
+    if (enableBtn) enableBtn.disabled = true;
+    return;
+  }
+  dot.className = 'cdp-dot ' + (s.connected ? 'is-ok' : 'is-bad');
+  text.textContent = s.connected
+    ? tl('cdpStatusConnected', s.port)
+    : tl('cdpStatusDisconnected', s.expected);
+  if (enableBtn) enableBtn.disabled = !!s.connected;
+}
+(function bindCdpActions() {
+  const recheck = document.getElementById('cdpRecheckBtn');
+  const enable = document.getElementById('cdpEnableBtn');
+  if (recheck) recheck.onclick = () => {
+    renderCdpStatus(null);
+    vscode.postMessage({ type: 'getCdpStatus' });
+  };
+  if (enable) enable.onclick = () => {
+    const text = document.getElementById('cdpStatusText');
+    const dot = document.getElementById('cdpStatusDot');
+    if (text) text.textContent = tl('cdpRestarting');
+    if (dot) dot.className = 'cdp-dot is-unknown';
+    vscode.postMessage({ type: 'enableCdp' });
+  };
+})();
 
 (function() {
   const ov = document.getElementById('settingsOverlay');
@@ -2083,7 +2337,7 @@ function renderAccounts() {
   }
   empty.style.display = 'none';
 
-  grid.innerHTML = paged.map(a => {
+  const cards = paged.map(a => {
     const isCurrent = a.email === currentEmail;
     const rawEmail = a.email;
     // 邮箱 local-part 可合法含引号，内联 onclick 里必须一并转义，否则可破坏内联 JS
@@ -2165,7 +2419,8 @@ function renderAccounts() {
       quotasHtml = phHtml + loadErrorHtml;
     }
 
-    return '<div class="grid-card ' + (isCurrent ? 'is-active' : '') + ' ' + (isDisabled ? 'is-disabled' : '') + (selectMode ? ' is-select-mode' : '') + '" data-email="' + safeEmail + '">'
+    const sig = cardSig(a);
+    const html = '<div class="grid-card ' + (isCurrent ? 'is-active' : '') + ' ' + (isDisabled ? 'is-disabled' : '') + (selectMode ? ' is-select-mode' : '') + '" data-email="' + safeEmail + '" data-sig="' + sig + '">'
       + (selectMode ? '<div class="grid-check-col"><input type="checkbox" class="grid-check-input" data-email="' + safeEmail + '" ' + (selectedEmails.has(rawEmail) ? 'checked' : '') + '></div>' : '')
       + '<div class="grid-card-head">'
         + '<div class="grid-card-email" title="' + safeEmail + '">' + showEmail + '</div>'
@@ -2184,15 +2439,59 @@ function renderAccounts() {
             : '<button class="grid-switch-btn" onclick="setCurrent(\\x27' + safeEmail + '\\x27)">' + tl('switch') + '</button>'))
         + '<div class="grid-actions-right">'
           + '<button class="icon-btn" onclick="openTagEditModal(\\x27' + safeEmail + '\\x27)" title="' + tl('editTagsT') + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>'
-          + '<button class="icon-btn" onclick="refreshUsage(\\x27' + safeEmail + '\\x27)" title="' + tl('refreshQuotaT') + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>'
+          + '<button class="icon-btn is-refresh" data-refresh-email="' + safeEmail + '" onclick="refreshUsage(this, \\x27' + safeEmail + '\\x27)" title="' + tl('refreshQuotaT') + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>'
           + '<button class="icon-btn danger" onclick="removeAccount(\\x27' + safeEmail + '\\x27)" title="' + tl('removeT') + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>'
           + '<button class="status-switch ' + (isDisabled ? 'is-off' : 'is-on') + '" onclick="toggleDisabled(\\x27' + safeEmail + '\\x27)" title="' + (isDisabled ? tl('disabledOnT') : tl('enabledOnT')) + '" aria-label="' + (isDisabled ? tl('ariaEnable') : tl('ariaDisable')) + '"><span class="status-switch-thumb"></span></button>'
         + '</div>'
       + '</div>'
     + '</div>';
-  }).join('');
-  
+    return { email: safeEmail, sig: sig, html: html };
+  });
+  applyCards(cards);
+
   renderPagination(totalFiltered, totalPages);
+}
+
+/** 卡片内容签名：只有签变化的卡片才重绘，刷新时不会整屏闪 */
+function cardSig(a) {
+  const u = a.usage || {};
+  const models = (u.models || []).map(m => (m.modelId || '') + ':' + m.remainingPercent + ':' + (m.resetTime || '')).join(',');
+  return [
+    a.email,
+    a.disabled ? '1' : '0',
+    a.email === currentEmail ? '1' : '0',
+    switchingEmail === a.email ? '1' : '0',
+    selectedEmails.has(a.email) ? '1' : '0',
+    selectMode ? '1' : '0',
+    u.tierId || '',
+    u.loadError || '',
+    a._usageError || '',
+    models,
+    getAccTags(a).join('|'),
+    JSON.stringify(tagColors || {}),
+    a.name || '',
+    (a.importMeta && a.importMeta.importedAt) || '',
+  ].join('#');
+}
+
+/** 增量应用卡片：顺序不变时逐卡替换（只动变了的），否则全量重建并跳过入场动画 */
+function applyCards(cards) {
+  const grid = document.getElementById('accountGrid');
+  if (!grid) return;
+  const sameOrder = grid.children.length === cards.length
+    && cards.every((c, i) => grid.children[i].getAttribute('data-email') === c.email);
+
+  grid.classList.add('no-card-anim');
+  if (sameOrder) {
+    for (let i = 0; i < cards.length; i++) {
+      const el = grid.children[i];
+      if (el.getAttribute('data-sig') === cards[i].sig) continue;
+      el.outerHTML = cards[i].html;
+    }
+  } else {
+    grid.innerHTML = cards.map(c => c.html).join('');
+  }
+  requestAnimationFrame(() => requestAnimationFrame(() => grid.classList.remove('no-card-anim')));
 }
 
 function renderPagination(total, totalPages) {

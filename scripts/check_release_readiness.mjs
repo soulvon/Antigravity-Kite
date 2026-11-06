@@ -20,6 +20,53 @@ const en = fs.readFileSync(path.join(ROOT, 'README_en.md'), 'utf8');
 
 console.log(`\n═══ 发版就绪门控 — antigravity-kite v${V} ═══\n`);
 
+// ── R0 敏感资产与防泄漏强制门控 (Git Leakage Barrier) ──
+// 铁律：内部指南 docs/、账号信息、本地临时文件与真实凭证严禁进入 GitHub 仓库
+try {
+  const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
+  let staged = [];
+  try {
+    staged = execSync('git diff --cached --name-only', { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
+  } catch (_) {}
+  const allAuditedFiles = Array.from(new Set([...tracked, ...staged]));
+
+  const forbiddenPatterns = [
+    /^docs\//i,                          // 内部指南/复盘/草稿等纯本地私有文档
+    /^tmp\//i,                           // 本地临时产物
+    /^(AGENTS|CLAUDE)\.md$/i,            // 本地私有指令与心智模型规范
+    /\.env(\..+)?$/i,                    // 环境变量文件
+    /(\.pem|\.key|\.pfx|\.p12)$/i,       // 证书与私钥文件
+    /(token|secret|credential|password)[^/]*\.(json|md|txt|ya?ml)$/i // 敏感凭据配置文件
+  ];
+  const leakedPaths = allAuditedFiles.filter(f => forbiddenPatterns.some(p => p.test(f)));
+  gate('R0.1 敏感路径防线: 内部指南 docs/ 与私密文件严禁进入 Git 跟踪' + (leakedPaths.length ? ` — 违规文件: ${leakedPaths.join(', ')}` : ''), leakedPaths.length === 0);
+
+  // 内容特征扫描: 严禁在已跟踪代码或文档中硬编码真实高熵 Token / 私钥
+  const secretPatterns = [
+    { name: 'Open VSX 访问令牌 (ovsx_...)', regex: /ovsx_[A-Za-z0-9_-]{20,}/ },
+    { name: 'GitHub 经典令牌 (ghp_...)', regex: /ghp_[A-Za-z0-9]{36}/ },
+    { name: 'GitHub 精细令牌 (github_pat_...)', regex: /github_pat_[A-Za-z0-9_]{50,}/ },
+    { name: 'RSA/EC 私钥明文', regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ }
+  ];
+  const textFiles = tracked.filter(f => !/\.(png|webp|svg|ico|vsix|wasm)$/i.test(f));
+  const leakedSecrets = [];
+  for (const f of textFiles) {
+    const fullPath = path.join(ROOT, f);
+    if (!fs.existsSync(fullPath)) continue;
+    try {
+      const content = fs.readFileSync(fullPath, 'utf8');
+      for (const sp of secretPatterns) {
+        if (sp.regex.test(content)) {
+          leakedSecrets.push(`${f} (命中: ${sp.name})`);
+        }
+      }
+    } catch (_) {}
+  }
+  gate('R0.2 凭证特征防线: 源码与文档严禁硬编码真实 Token/私钥' + (leakedSecrets.length ? ` — 违规命中: ${leakedSecrets.join(', ')}` : ''), leakedSecrets.length === 0);
+} catch (e) {
+  gate('R0 敏感资产检查异常中断', false);
+}
+
 // ── R1 版本一致性 ──
 gate('R1.1 package.json == README.md 徽章', zh.includes(`version-${V}-blue`));
 gate('R1.2 package.json == README_en.md 徽章', en.includes(`version-${V}-blue`));

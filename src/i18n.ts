@@ -35,12 +35,13 @@ export function getLang(): Lang {
 /** [zh, en] */
 const S: Record<string, [string, string]> = {
   // ── CDP 门控 ──
+  gateModalHeading: ['自动确认安全声明', 'Auto-accept security notice'],
   gateModalTitle: [
-    '切换账号时自动确认安全声明，需要以调试端口启动 IDE（将修改快捷方式并重启一次，仅此一次）。',
-    'To auto-confirm the security notice when switching accounts, the IDE must run with a debug port (shortcuts will be patched and the IDE restarted once).',
+    '开启后我会把调试端口写进桌面 / 开始菜单 / 任务栏快捷方式，并自动帮你重启一次 IDE（约 10 秒，窗口会先关闭再自己打开）。之后切换账号不再弹安全声明，由插件直接替你确认。',
+    'This writes the debug port into your Desktop / Start Menu / Taskbar shortcuts and restarts the IDE for you once (about 10 seconds; the window closes and reopens by itself). After that the security notice is confirmed automatically.',
   ],
-  gateEnable: ['开启（推荐）', 'Enable (recommended)'],
-  gateLater: ['暂不', 'Not now'],
+  gateEnable: ['现在开启并重启', 'Enable and restart now'],
+  gateLater: ['以后再说', 'Not now'],
   gateRelaunching: [
     '正在以调试端口重启 IDE，之后切号不再弹窗…',
     'Restarting the IDE with the debug port; switching will no longer show the notice…',
@@ -49,8 +50,8 @@ const S: Record<string, [string, string]> = {
   gateNoPid: ['未定位到 IDE 主进程 PID', 'Could not locate the IDE main process PID'],
   gateEnableFailed: ['开启失败：', 'Failed to enable: '],
   gateDeclineInfo: [
-    '已暂不开启：每次切换会弹一次安全声明（手动点击即可）。可在设置「自动确认安全声明」中开启。',
-    'Auto-confirm is off: the security notice will appear on each switch (click manually). Enable "Auto-confirm security notice" in settings to turn it on.',
+    '已跳过：这次切换会弹一次安全声明，手动点一下即可。想自动确认，随时到设置 → 切号与调试 → 点「开启并重启」重试。',
+    'Skipped: the security notice will appear once for this switch — click it manually. To auto-confirm later, open Settings → Switch & debug → "Enable and restart".',
   ],
   gateManualToast: [
     '切换账号将弹一次安全声明（需手动点击）。可在设置「自动确认安全声明」中开启自动确认。',
@@ -229,13 +230,10 @@ const S: Record<string, [string, string]> = {
     'New version v{0} found. Run "Check for Updates" from the Command Palette',
   ],
   updOpenPalette: ['打开命令面板', 'Open Command Palette'],
-  updNotesIncomplete: [
-    '检测到您已成功升级至新版本 v{0}（从 v{1}）。\n由于当前版本的更新日志信息尚不完整或未能从 GitHub 加载成功，您可以点击下方按钮前往 GitHub 查看或反馈信息！',
-    'You have upgraded to v{0} (from v{1}).\nThe release notes for this version are incomplete or failed to load from GitHub. Use the button below to view them or give feedback on GitHub.',
-  ],
   updNotesBody: ['核心更新内容：\n\n{0}', "What's new:\n\n{0}"],
   updUpdatedTitle: ['Antigravity Kite 已更新至 v{0}', 'Antigravity Kite updated to v{0}'],
-  updFeedbackAction: ['前往 GitHub 反馈/完善信息', 'Give feedback on GitHub'],
+  updFoundTitle: ['发现新版本 v{0}', 'New version v{0} available'],
+  updDownloadedTitle: ['安装包已下载', 'Installer downloaded'],
   updKnown: ['知道了', 'Got it'],
   updViewRelease: ['查看 GitHub 发布页', 'View GitHub release'],
 
@@ -347,6 +345,17 @@ const S: Record<string, [string, string]> = {
   'ui.quota5h': ['5h', '5h'],
   'ui.resetDefaults': ['恢复默认', 'Reset defaults'],
   'ui.saveSettings': ['保存设置', 'Save'],
+  'ui.askCancelBtn': ['取消', 'Cancel'],
+  'ui.cdpStatusChecking': ['正在检测调试端口…', 'Checking debug port…'],
+  'ui.cdpStatusConnected': ['已连接 · 端口 {0}', 'Connected · port {0}'],
+  'ui.cdpStatusDisconnected': ['未连接（期望端口 {0}）', 'Not connected (expected port {0})'],
+  'ui.cdpRecheck': ['重新检测', 'Check again'],
+  'ui.cdpEnableRestart': ['开启并重启', 'Enable and restart'],
+  'ui.cdpRestarting': ['正在重启 IDE…', 'Restarting the IDE…'],
+  'ui.cdpEnableHint': [
+    '开启后会修好桌面 / 开始菜单 / 任务栏快捷方式，并自动重启一次 IDE（约 10 秒），之后切号不再弹安全声明。失败可以在这里重新开启。',
+    'This fixes your Desktop / Start Menu / Taskbar shortcuts and restarts the IDE once (about 10 seconds); switching accounts will no longer show the security notice. If it fails, retry here.',
+  ],
   'ui.pickFirst': ['请先选择账号', 'Select accounts first'],
   'ui.confirmBatchDelete': [
     '确定删除选中的 {0} 个账号？此操作不可撤销。',
