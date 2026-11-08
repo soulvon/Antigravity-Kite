@@ -479,6 +479,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         statusBarModels: cfg.get<boolean>('statusBar.showModels', true),
         statusBarCredits: cfg.get<boolean>('statusBar.showCredits', true),
         statusBarPool: cfg.get<boolean>('statusBar.showPool', true),
+        statusBarTier: cfg.get<boolean>('statusBar.showTier', true),
         statusBarFamilies: cfg.get<string[]>('statusBar.families', ['claude', 'gemini', 'argon']),
         statusBarRefresh: cfg.get<number>('statusBar.refreshSeconds', 30),
       },
@@ -514,6 +515,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     await cfg.update('statusBar.showModels', s.statusBarModels !== false, target);
     await cfg.update('statusBar.showCredits', s.statusBarCredits !== false, target);
     await cfg.update('statusBar.showPool', s.statusBarPool !== false, target);
+    await cfg.update('statusBar.showTier', s.statusBarTier !== false, target);
     const famsIn = Array.isArray(s.statusBarFamilies) ? s.statusBarFamilies.filter((x: unknown): x is string => typeof x === 'string' && ['claude', 'gemini', 'argon'].includes(x)) : ['claude', 'gemini', 'argon'];
     await cfg.update('statusBar.families', famsIn.length > 0 ? famsIn : ['claude', 'gemini', 'argon'], target);
     logInfo('settings.saved', { ...s });
@@ -1435,6 +1437,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
             <span class="v2-tag is-on" id="setStatusModels" data-sb="showModels" data-i18n="sbTagModels">模型额度</span>
             <span class="v2-tag is-on" id="setStatusCredits" data-sb="showCredits" data-i18n="sbTagCredits">AI 积分</span>
             <span class="v2-tag is-on" id="setStatusPool" data-sb="showPool" data-i18n="sbTagPool">号池</span>
+            <span class="v2-tag is-on" id="setStatusTier" data-sb="showTier" data-i18n="sbTagTier">会员级别</span>
           </div>
         </div>
         <div class="v2-opt-row">
@@ -2285,6 +2288,7 @@ function fillSettingsForm(s) {
   chk('setStatusModels', s.statusBarModels !== false);
   chk('setStatusCredits', s.statusBarCredits !== false);
   chk('setStatusPool', s.statusBarPool !== false);
+  chk('setStatusTier', s.statusBarTier !== false);
   const fams = Array.isArray(s.statusBarFamilies) ? s.statusBarFamilies : ['claude', 'gemini', 'argon'];
   chk('setStatusFamClaude', fams.indexOf('claude') >= 0);
   chk('setStatusFamGemini', fams.indexOf('gemini') >= 0);
@@ -2398,6 +2402,7 @@ function renderCdpStatus(s) {
       statusBarModels: on('setStatusModels'),
       statusBarCredits: on('setStatusCredits'),
       statusBarPool: on('setStatusPool'),
+      statusBarTier: on('setStatusTier'),
       statusBarFamilies: ['setStatusFamClaude', 'setStatusFamGemini', 'setStatusFamArgon']
         .filter(function (id) { return on(id); })
         .map(function (id) { return document.getElementById(id).getAttribute('data-family'); })
@@ -2418,6 +2423,7 @@ function renderCdpStatus(s) {
       account: on('setStatusAccount'),
       models: on('setStatusModels'),
       credits: on('setStatusCredits'),
+      tier: on('setStatusTier'),
       claude: on('setStatusFamClaude'),
       gemini: on('setStatusFamGemini'),
       argon: on('setStatusFamArgon')
@@ -2433,7 +2439,7 @@ function renderCdpStatus(s) {
     if (o.gemini) fams.push(DOT + ' Gemini 98%');
     if (o.argon) fams.push(DOT + ' Gemini 4 91%');
     const FAM = fams.join(' · ');
-    const acc = o.account ? '<span class="sbd-seg">' + SB_USER_SVG + 'soulvon2501</span>' : '';
+    const acc = o.account ? '<span class="sbd-seg">' + SB_USER_SVG + 'soulvon2501' + (o.tier ? ' ·PRO' : '') + '</span>' : '';
     const pct = o.models ? '<span class="sbd-seg">' + DOT + ' 96%</span>' : '';
     const cred = o.credits ? '<span class="sbd-seg">🪙 87.5</span>' : '';
     const minPct = o.claude && o.gemini ? (o.argon ? 91 : 96) : (o.gemini ? 98 : (o.argon ? 91 : 96));
@@ -2521,6 +2527,7 @@ function renderCdpStatus(s) {
       statusBarModels: true,
       statusBarCredits: true,
       statusBarPool: true,
+      statusBarTier: true,
       statusBarFamilies: ['claude', 'gemini', 'argon']
     });
     // 恢复默认后立即落盘生效

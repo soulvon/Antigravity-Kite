@@ -355,6 +355,7 @@ export class StatusBarManager implements vscode.Disposable {
     const showAccount = this._sbCfg('showAccount', true);
     const showModels = this._sbCfg('showModels', true);
     const showCredits = this._sbCfg('showCredits', true);
+    const showTier = this._sbCfg('showTier', true);
 
     const privacy = this._deps.getPrivacy?.() ?? false;
     const short = curEmail ? displayName(curEmail, privacy) : t('sbNotLoggedIn');
@@ -370,6 +371,9 @@ export class StatusBarManager implements vscode.Disposable {
     const min = hasQuota && pcts.length > 0 ? Math.min(...pcts) : 100;
     const quotaIcon = this._getStatusIcon(min);
     const creditsStr = showCredits && rawUsage ? formatCredits(rawUsage.availableAICredits) : '';
+    // 会员级别：跟账号段走（账号关则无依托）；FREE 是默认态不亮牌，PRO/ULTRA 才值得标
+    const tier = rawUsage?.tierId ? String(rawUsage.tierId).toUpperCase() : '';
+    const tierStr = showTier && tier && tier !== 'FREE' ? ` ·${tier}` : '';
     const statusBg = health.bg
       ?? (hasQuota && min < 10 ? 'error' : hasQuota && min < 30 ? 'warning' : undefined);
     this._main.backgroundColor = statusBg === 'error'
@@ -382,7 +386,7 @@ export class StatusBarManager implements vscode.Disposable {
     const smartText = (): string | null => {
       if (health.icon) return `${health.icon} ${short} ${this._healthShortLabel(account?.health)}`.trim();
       const parts: string[] = [];
-      if (showAccount) parts.push(`$(account) ${short}`);
+      if (showAccount) parts.push(`$(account) ${short}${tierStr}`);
       if (hasQuota) parts.push(`${quotaIcon} ${min}%`);
       if (creditsStr) parts.push(creditsStr);
       return parts.length > 0 ? parts.join(' ').trim() : null;
@@ -411,7 +415,7 @@ export class StatusBarManager implements vscode.Disposable {
           break;
         case 'labeled':
         case 'full':
-          text = this._flatText(style, models, rawUsage, short, showAccount, showModels, showCredits, health.icon, quotaIcon);
+          text = this._flatText(style, models, rawUsage, short, showAccount, showModels, showCredits, health.icon, quotaIcon, tierStr);
           break;
       }
     }
@@ -453,13 +457,14 @@ export class StatusBarManager implements vscode.Disposable {
     showModels: boolean,
     showCredits: boolean,
     healthIcon: string,
-    quotaIcon: string
+    quotaIcon: string,
+    tierStr: string
   ): string | null {
     const segments: string[] = [];
     if (healthIcon) {
       segments.push(`${healthIcon} ${short} ${this._healthShortLabel(accountStore.getByEmail(this._ctx.globalState.get<string>('currentEmail') || '')?.health)}`.trim());
     } else {
-      if (showAccount) segments.push(`$(account) ${short}`);
+      if (showAccount) segments.push(`$(account) ${short}${tierStr}`);
       if (showModels) {
         const famSegs = formatFamilySegments(models);
         if (famSegs) segments.push(famSegs);
@@ -606,9 +611,11 @@ export class StatusBarManager implements vscode.Disposable {
           details.push(formatCredits(usage.availableAICredits));
         }
       }
+      const qpTierRaw = getUsage(a.email)?.tierId;
+      const qpTier = qpTierRaw ? String(qpTierRaw).toUpperCase() : '';
       return {
         label: `${healthIconOf(a)} ${displayName(a.email, privacy)}`,
-        description: (isCurrent ? t('sbCurrent') : (a.name || '')) || undefined,
+        description: [isCurrent ? t('sbCurrent') : (a.name || ''), qpTier && qpTier !== 'FREE' ? qpTier : ''].filter(Boolean).join(' · ') || undefined,
         detail: details.length > 0 ? details.join(' | ') : (a.disabled ? t('sbDisabled') : t('sbAvailable')),
         type: 'account' as const,
         email: a.email

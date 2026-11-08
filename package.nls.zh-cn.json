@@ -30,6 +30,7 @@
 	"config.statusBar.style.labeled": "账号 + 各模型额度 — 标签式（不含积分）",
 	"config.statusBar.style.smart": "账号 + 最紧额度 — 聚合（默认，推荐）",
 	"config.statusBar.style.full": "账号 + 各模型额度 + AI 积分 — 完整",
+	"config.statusBar.showTier": "账号名旁显示订阅级别（PRO/ULTRA）。FREE 免费版不亮牌，保持底栏安静。",
 	"config.statusBar.families": "底栏显示哪些配额池（claude / gemini / argon=Gemini 4）。被关掉的池不参与族分格与最紧额度聚合。",
 	"config.statusBar.refreshSeconds": "状态栏当前账号额度的自动刷新间隔（秒），改动即时生效。",
 	"config.syncGeminiFiles": "切号时同步 ~/.gemini 的 oauth_creds.json 与 google_accounts.json。仅当 AgyHop / Cockpit 等其它工具也在管理这些文件时才关闭。",
