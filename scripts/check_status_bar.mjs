@@ -176,6 +176,20 @@ if (typeof mod.maskEmailStr !== 'function') {
   assert('短名/无 @ 兜底不炸', mod.maskEmailStr('ab@x.com') === 'a***@***' && mod.maskEmailStr('plain') === 'pl***' && mod.maskEmailStr('') === '');
 }
 
+// ── 9. formatResetHint（重置倒计时：最近未来窗口，无数据不占位）──
+if (typeof mod.formatResetHint !== 'function') {
+  fail('formatResetHint 存在', '旧产物无此导出——底栏尚未接入重置倒计时');
+} else {
+  const future = new Date(Date.now() + 4 * 3600e3 + 55 * 60e3).toISOString();
+  const past = new Date(Date.now() - 3600e3).toISOString();
+  const mq2 = (id, p2, rt) => ({ modelId: id, label: id, remainingPercent: p2, resetTime: rt });
+  const hint = mod.formatResetHint([mq2('claude:5h', 96, future)]);
+  assert('未来重置 → 🕐 时长', /^🕐 \d/.test(hint), hint);
+  const hint2 = mod.formatResetHint([mq2('a:5h', 96, past), mq2('b:5h', 90, future)]);
+  assert('过期窗口剔除，取最近未来', /^🕐 \d/.test(hint2), hint2);
+  assert('无/过期数据 → 空串不占位', mod.formatResetHint([]) === '' && mod.formatResetHint([mq2('a:5h', 96, past)]) === '');
+}
+
 console.log(failures === 0
   ? '[check_status_bar] 全部通过 ✔'
   : `[check_status_bar] ${failures} 项失败 ✘`);

@@ -480,6 +480,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         statusBarCredits: cfg.get<boolean>('statusBar.showCredits', true),
         statusBarPool: cfg.get<boolean>('statusBar.showPool', true),
         statusBarTier: cfg.get<boolean>('statusBar.showTier', true),
+        statusBarResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
         statusBarFamilies: cfg.get<string[]>('statusBar.families', ['claude', 'gemini', 'argon']),
         statusBarRefresh: cfg.get<number>('statusBar.refreshSeconds', 30),
       },
@@ -516,6 +517,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     await cfg.update('statusBar.showCredits', s.statusBarCredits !== false, target);
     await cfg.update('statusBar.showPool', s.statusBarPool !== false, target);
     await cfg.update('statusBar.showTier', s.statusBarTier !== false, target);
+    await cfg.update('statusBar.showResetCountdown', s.statusBarResetCountdown !== false, target);
     const famsIn = Array.isArray(s.statusBarFamilies) ? s.statusBarFamilies.filter((x: unknown): x is string => typeof x === 'string' && ['claude', 'gemini', 'argon'].includes(x)) : ['claude', 'gemini', 'argon'];
     await cfg.update('statusBar.families', famsIn.length > 0 ? famsIn : ['claude', 'gemini', 'argon'], target);
     logInfo('settings.saved', { ...s });
@@ -1438,6 +1440,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
             <span class="v2-tag is-on" id="setStatusCredits" data-sb="showCredits" data-i18n="sbTagCredits">AI 积分</span>
             <span class="v2-tag is-on" id="setStatusPool" data-sb="showPool" data-i18n="sbTagPool">号池</span>
             <span class="v2-tag is-on" id="setStatusTier" data-sb="showTier" data-i18n="sbTagTier">会员级别</span>
+            <span class="v2-tag is-on" id="setStatusReset" data-sb="showResetCountdown" data-i18n="sbTagReset">重置倒计时</span>
           </div>
         </div>
         <div class="v2-opt-row">
@@ -2289,6 +2292,7 @@ function fillSettingsForm(s) {
   chk('setStatusCredits', s.statusBarCredits !== false);
   chk('setStatusPool', s.statusBarPool !== false);
   chk('setStatusTier', s.statusBarTier !== false);
+  chk('setStatusReset', s.statusBarResetCountdown !== false);
   const fams = Array.isArray(s.statusBarFamilies) ? s.statusBarFamilies : ['claude', 'gemini', 'argon'];
   chk('setStatusFamClaude', fams.indexOf('claude') >= 0);
   chk('setStatusFamGemini', fams.indexOf('gemini') >= 0);
@@ -2403,6 +2407,7 @@ function renderCdpStatus(s) {
       statusBarCredits: on('setStatusCredits'),
       statusBarPool: on('setStatusPool'),
       statusBarTier: on('setStatusTier'),
+      statusBarResetCountdown: on('setStatusReset'),
       statusBarFamilies: ['setStatusFamClaude', 'setStatusFamGemini', 'setStatusFamArgon']
         .filter(function (id) { return on(id); })
         .map(function (id) { return document.getElementById(id).getAttribute('data-family'); })
@@ -2424,6 +2429,7 @@ function renderCdpStatus(s) {
       models: on('setStatusModels'),
       credits: on('setStatusCredits'),
       tier: on('setStatusTier'),
+      reset: on('setStatusReset'),
       claude: on('setStatusFamClaude'),
       gemini: on('setStatusFamGemini'),
       argon: on('setStatusFamArgon')
@@ -2441,15 +2447,16 @@ function renderCdpStatus(s) {
     const FAM = fams.join(' · ');
     const acc = o.account ? '<span class="sbd-seg">' + SB_USER_SVG + 'soulvon2501' + (o.tier ? ' ·PRO' : '') + '</span>' : '';
     const pct = o.models ? '<span class="sbd-seg">' + DOT + ' 96%</span>' : '';
+    const rst = o.models && o.reset ? '<span class="sbd-seg">🕐 4h 55m</span>' : '';
     const cred = o.credits ? '<span class="sbd-seg">🪙 87.5</span>' : '';
     const minPct = o.claude && o.gemini ? (o.argon ? 91 : 96) : (o.gemini ? 98 : (o.argon ? 91 : 96));
     const pctStr = o.models ? minPct + '%' : '';
     switch (style) {
-      case 'smart':   return [acc, pct, cred].filter(Boolean).join('') || '<span class="sbd-dim">—</span>';
+      case 'smart':   return [acc, pct, rst, cred].filter(Boolean).join('') || '<span class="sbd-dim">—</span>';
       case 'dot':     return o.models ? '<span class="sbd-seg">' + DOT + '</span>' : (cred || '<span class="sbd-dim">—</span>');
       case 'percent': return o.models ? '<span class="sbd-seg">' + pctStr + '</span>' : '<span class="sbd-dim">—</span>';
-      case 'compact': return o.models ? '<span class="sbd-seg">' + DOT + ' ' + pctStr + '</span>' : '<span class="sbd-dim">—</span>';
-      case 'dual':    return (o.models ? '<span class="sbd-seg">' + DOT + ' ' + pctStr + '</span>' : '') + (cred ? (o.models ? sep : '') + cred : '') || '<span class="sbd-dim">—</span>';
+      case 'compact': return o.models ? '<span class="sbd-seg">' + DOT + ' ' + pctStr + (rst ? ' 🕐 4h 55m' : '') + '</span>' : '<span class="sbd-dim">—</span>';
+      case 'dual':    return ((o.models ? '<span class="sbd-seg">' + DOT + ' ' + pctStr + '</span>' : '') + (rst ? '<span class="sbd-seg">' + rst + '</span>' : '') + (cred ? sep + cred : '')) || '<span class="sbd-dim">—</span>';
       case 'labeled': return [acc, o.models && FAM ? '<span class="sbd-seg">' + FAM + '</span>' : ''].filter(Boolean).join(sep) || '<span class="sbd-dim">—</span>';
       case 'full':    return [acc, o.models && FAM ? '<span class="sbd-seg">' + FAM + '</span>' : '', cred].filter(Boolean).join(sep) || '<span class="sbd-dim">—</span>';
     }
@@ -2528,6 +2535,7 @@ function renderCdpStatus(s) {
       statusBarCredits: true,
       statusBarPool: true,
       statusBarTier: true,
+      statusBarResetCountdown: true,
       statusBarFamilies: ['claude', 'gemini', 'argon']
     });
     // 恢复默认后立即落盘生效

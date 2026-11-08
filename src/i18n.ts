@@ -385,6 +385,7 @@ const S: Record<string, [string, string]> = {
   'ui.sbTagCredits': ['AI 积分', 'Credits'],
   'ui.sbTagPool': ['号池', 'Pool'],
   'ui.sbTagTier': ['会员级别', 'Tier'],
+  'ui.sbTagReset': ['重置倒计时', 'Reset countdown'],
   'ui.sbFamilyRow': ['配额池', 'Quota families'],
   'ui.unitSec': ['秒', 'sec'],
   'ui.unitMin': ['分钟', 'min'],

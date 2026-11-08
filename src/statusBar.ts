@@ -65,6 +65,19 @@ export function colorDot(pct: number): string {
 }
 
 /**
+ * 重置倒计时（对标 Manager 的 🕐 窗口回血提示）：取过滤后窗口中"最近即将重置"的一个。
+ * 无未来重置时间（数据缺失/全部过期）返回空串——没信息不占位。
+ */
+export function formatResetHint(models: ModelQuota[]): string {
+  const now = Date.now();
+  const times = models
+    .map(m => (m.resetTime ? new Date(m.resetTime).getTime() : NaN))
+    .filter(t => Number.isFinite(t) && t > now);
+  if (times.length === 0) return '';
+  return '🕐 ' + fmtDuration(Math.min(...times) - now);
+}
+
+/**
  * 额度族分格（多池多窗口的紧凑表达，Wanow 斜杠范式）：
  * Claude / Gemini / Gemini 4 是三个独立配额池，各一格；
  * 族内 5h 与周额度斜杠并排（96%/100%），缺失窗口只显已有的——不对称账号天然兼容；
@@ -201,6 +214,7 @@ export class StatusBarManager implements vscode.Disposable {
   private _currentAlignment: vscode.StatusBarAlignment = vscode.StatusBarAlignment.Right;
 
   private _refreshTimer: NodeJS.Timeout | null = null;
+  private _redrawTimer: NodeJS.Timeout | null = null;
 
   constructor(
     ctx: vscode.ExtensionContext,
@@ -247,6 +261,10 @@ export class StatusBarManager implements vscode.Disposable {
 
     // 订阅账号变化（健康/禁用/增删都在 store 里，重绘即可；额度刷新由统一管线推送）
     accountStore.onChange(() => this.update());
+
+    // 倒计时跳动：每分钟纯重绘一次（不碰网络；渲染层读的都是缓存与时间差）
+    this._redrawTimer = setInterval(() => this.update(), 60 * 1000);
+    this._disposables.push({ dispose: () => { if (this._redrawTimer) { clearInterval(this._redrawTimer); this._redrawTimer = null; } } });
 
     this.update();
     this._startRefreshTimer();
@@ -356,6 +374,7 @@ export class StatusBarManager implements vscode.Disposable {
     const showModels = this._sbCfg('showModels', true);
     const showCredits = this._sbCfg('showCredits', true);
     const showTier = this._sbCfg('showTier', true);
+    const showReset = this._sbCfg('showResetCountdown', true);
 
     const privacy = this._deps.getPrivacy?.() ?? false;
     const short = curEmail ? displayName(curEmail, privacy) : t('sbNotLoggedIn');
@@ -374,6 +393,8 @@ export class StatusBarManager implements vscode.Disposable {
     // 会员级别：跟账号段走（账号关则无依托）；FREE 是默认态不亮牌，PRO/ULTRA 才值得标
     const tier = rawUsage?.tierId ? String(rawUsage.tierId).toUpperCase() : '';
     const tierStr = showTier && tier && tier !== 'FREE' ? ` ·${tier}` : '';
+    // 重置倒计时：显示"最近回血"的那个窗口（快回血了），跟在额度块后面
+    const resetStr = showReset && hasQuota ? formatResetHint(models) : '';
     const statusBg = health.bg
       ?? (hasQuota && min < 10 ? 'error' : hasQuota && min < 30 ? 'warning' : undefined);
     this._main.backgroundColor = statusBg === 'error'
@@ -387,7 +408,7 @@ export class StatusBarManager implements vscode.Disposable {
       if (health.icon) return `${health.icon} ${short} ${this._healthShortLabel(account?.health)}`.trim();
       const parts: string[] = [];
       if (showAccount) parts.push(`$(account) ${short}${tierStr}`);
-      if (hasQuota) parts.push(`${quotaIcon} ${min}%`);
+      if (hasQuota) parts.push(`${quotaIcon} ${min}%${resetStr ? ' ' + resetStr : ''}`);
       if (creditsStr) parts.push(creditsStr);
       return parts.length > 0 ? parts.join(' ').trim() : null;
     };
@@ -403,11 +424,11 @@ export class StatusBarManager implements vscode.Disposable {
           text = hasQuota ? `${min}%` : null;
           break;
         case 'compact':
-          text = hasQuota ? `${health.icon || quotaIcon} ${min}%` : null;
+          text = hasQuota ? `${health.icon || quotaIcon} ${min}%${resetStr ? ' ' + resetStr : ''}` : null;
           break;
         case 'dual':
           text = hasQuota
-            ? `${health.icon || quotaIcon} ${min}%${creditsStr ? ' | ' + creditsStr : ''}`
+            ? `${health.icon || quotaIcon} ${min}%${resetStr ? ' ' + resetStr : ''}${creditsStr ? ' | ' + creditsStr : ''}`
             : (creditsStr || null);
           break;
         case 'smart':
@@ -415,7 +436,7 @@ export class StatusBarManager implements vscode.Disposable {
           break;
         case 'labeled':
         case 'full':
-          text = this._flatText(style, models, rawUsage, short, showAccount, showModels, showCredits, health.icon, quotaIcon, tierStr);
+          text = this._flatText(style, models, rawUsage, short, showAccount, showModels, showCredits, health.icon, quotaIcon, tierStr, resetStr);
           break;
       }
     }
@@ -458,7 +479,8 @@ export class StatusBarManager implements vscode.Disposable {
     showCredits: boolean,
     healthIcon: string,
     quotaIcon: string,
-    tierStr: string
+    tierStr: string,
+    resetStr: string
   ): string | null {
     const segments: string[] = [];
     if (healthIcon) {
@@ -467,7 +489,9 @@ export class StatusBarManager implements vscode.Disposable {
       if (showAccount) segments.push(`$(account) ${short}${tierStr}`);
       if (showModels) {
         const famSegs = formatFamilySegments(models);
-        if (famSegs) segments.push(famSegs);
+        if (famSegs) {
+          segments.push(resetStr ? `${famSegs} ${resetStr}` : famSegs);
+        }
       }
       if (style === 'full' && showCredits) {
         const c = formatCredits(usage.availableAICredits);

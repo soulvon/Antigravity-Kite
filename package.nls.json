@@ -30,6 +30,7 @@
 	"config.statusBar.style.labeled": "Account + per-model quotas — labeled (no credits)",
 	"config.statusBar.style.smart": "Account + tightest quota — aggregate (default, recommended)",
 	"config.statusBar.style.full": "Account + per-model quotas + AI credits — full",
+	"config.statusBar.showResetCountdown": "Show a countdown to the nearest quota window reset (clock emoji) next to the quota figures.",
 	"config.statusBar.showTier": "Show subscription tier (PRO/ULTRA) next to the account name. FREE stays unlabeled to keep the bar quiet.",
 	"config.statusBar.families": "Which quota families show in the status bar (claude / gemini / argon=Gemini 4). Disabled pools are excluded from family segments and the tightest-quota aggregate.",
 	"config.statusBar.refreshSeconds": "Auto-refresh interval (seconds) for the current account quota shown in the status bar. Applies instantly.",
