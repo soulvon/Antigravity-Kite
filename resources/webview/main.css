@@ -7407,3 +7407,19 @@ body.vscode-light .grid-plan-chip {
     color: var(--chip-tone);
 }
 
+
+/* ─── 状态栏样式卡片选择器（v1.1.17：卡内嵌迷你状态栏预览，demo 用真实状态栏主题变量渲染）─── */
+.v2-opt-col { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.v2-opt-col .v2-opt-label { color: var(--muted); font-size: 11.5px; }
+.sb-style-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-sm); }
+.sb-style-card { border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 6px; cursor: pointer; background: var(--surface-bg); transition: all 0.15s; user-select: none; }
+.sb-style-card:hover { background: var(--elevated-bg); }
+.sb-style-card.is-on { border-color: #10b981; background: rgba(16, 185, 129, 0.10); box-shadow: inset 0 0 0 1px #10b981; }
+.sb-style-demo { display: flex; align-items: center; gap: 5px; background: var(--vscode-statusBar-background, #2b2b2b); color: var(--vscode-statusBar-foreground, #cccccc); border-radius: var(--radius-sm); padding: 4px 8px; font-size: 10.5px; white-space: nowrap; overflow: hidden; min-height: 22px; }
+.sb-style-card.is-on .sb-style-demo { outline: 1px solid rgba(16, 185, 129, 0.45); outline-offset: -1px; }
+.sbd-seg { display: inline-flex; align-items: center; gap: 3px; }
+.sbd-ok svg { color: #10b981; }
+.sbd-dim { color: var(--vscode-statusBar-foreground, #cccccc); opacity: 0.45; margin: 0 1px; }
+.sb-style-name { font-size: 10.5px; color: var(--muted); margin-top: 4px; text-align: center; }
+.sb-style-card.is-on .sb-style-name { color: #10b981; font-weight: 600; }
+.sb-style-card:last-child:nth-child(odd) { grid-column: 1 / -1; }

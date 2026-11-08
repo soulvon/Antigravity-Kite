@@ -2,13 +2,13 @@
  * 底部状态栏管理器（v1.1.16 重构：对标 12 家同类 + BuddyRelay 范式）
  *
  * 设计：
- *   [右·主]  $(account) 账号前缀 ✓ 98%   —— smart 聚合段（默认）：账号 + 最紧额度，异常才升级
- *   [右·副]  $(pulse) 池 3/5             —— 号池统计，点击开侧栏
+ *   [右·主]  👤 账号前缀 🟢 98%   —— smart 聚合段（默认）：账号 + 最紧额度，异常才升级
+ *   [右·副]  👥 池 3/5             —— 号池统计，点击开侧栏
  *
  * 模式收敛（对标结论）：
  * - 默认单段聚合，详情下沉 tooltip / QuickPick（Copilot 官方、Gravity Orchestrator、BuddyRelay 同款）
  * - 变色取"最吃紧"一档：min(各窗口) 决定，<30 警告底 / <10 错误底（社区阈值收敛区）
- * - 健康态上栏：封禁=$(error) 红底、登录失效=$(key) 橙底、检测异常=$(circle-slash) 不亮底
+ * - 健康态上栏：封禁=🚫 红底、登录失效=🔑 橙底、检测异常=❓ 不亮底（额度色点 🟢🟡🟠🔴）
  *   （元数据端点对封禁隐身，额度满格 ≠ 健康——v1.1.14 实测定案）
  * - 点击弹混合菜单：账号按最紧额度降序（最优号在顶，BoyGR 模式）+ 快捷操作区（BuddyRelay 模式）
  * - 数据管线合一：不再自建定时抓取，走 extension.ts 的共享 usageCache + 统一刷新管线（deps 注入）
@@ -46,14 +46,47 @@ export function validateStyle(v: string): StatusBarStyle {
 export function pickHealthMark(health?: AccountHealth): { icon: string; bg: 'error' | 'warning' | undefined } {
   switch (health?.status) {
     case 'banned':
-      return { icon: '$(error)', bg: 'error' };
+      return { icon: '🚫', bg: 'error' };
     case 'auth_invalid':
-      return { icon: '$(key)', bg: 'warning' };
+      return { icon: '🔑', bg: 'warning' };
     case 'unknown':
-      return { icon: '$(circle-slash)', bg: undefined };
+      return { icon: '❓', bg: undefined };
     default:
       return { icon: '', bg: undefined };
   }
+}
+
+/** 额度四档 emoji 色点：绿 ≥50 / 黄 30-50 / 橙 10-30 / 红 <10（参考项目收敛阈值） */
+export function colorDot(pct: number): string {
+  if (pct >= 50) return '🟢';
+  if (pct >= 30) return '🟡';
+  if (pct >= 10) return '🟠';
+  return '🔴';
+}
+
+/**
+ * 额度族分格（多池多窗口的紧凑表达，Wanow 斜杠范式）：
+ * Claude / Gemini / Gemini 4 是三个独立配额池，各一格；
+ * 族内 5h 与周额度斜杠并排（96%/100%），缺失窗口只显已有的——不对称账号天然兼容；
+ * 色点取族内最紧窗口（变色取"最吃紧"一档的收敛共识）。
+ */
+export function formatFamilySegments(models: ModelQuota[]): string {
+  const FAMILIES: { key: string; label: string }[] = [
+    { key: 'claude', label: 'Claude' },
+    { key: 'gemini', label: 'Gemini' },
+    { key: 'argon', label: 'Gemini 4' },
+  ];
+  const segments: string[] = [];
+  for (const fam of FAMILIES) {
+    const five = models.find(m => m.modelId === fam.key + ':5h');
+    const week = models.find(m => m.modelId === fam.key + ':weekly');
+    if (!five && !week) continue; // 该池无数据就不渲染（没有数据就没有发言权）
+    const pcts = [five?.remainingPercent, week?.remainingPercent].filter((v): v is number => typeof v === 'number');
+    const dot = colorDot(Math.min(...pcts));
+    const pair = pcts.map(v => v + '%').join('/');
+    segments.push(dot + ' ' + fam.label + ' ' + pair);
+  }
+  return segments.join(' · ');
 }
 
 /**
@@ -265,11 +298,9 @@ export class StatusBarManager implements vscode.Disposable {
     this._renderPool();
   }
 
-  /** 额度状态图标（额度维度；健康维度见 pickHealthMark） */
+  /** 额度状态色点（额度维度；健康维度见 pickHealthMark）。四档 emoji 对齐 Anti Quota/Cockpit 参考系 */
   private _getStatusIcon(pct: number): string {
-    if (pct < 10) return '$(error)';
-    if (pct < 30) return '$(warning)';
-    return '$(check)';
+    return colorDot(pct);
   }
 
   private _renderMain(): void {
@@ -301,9 +332,9 @@ export class StatusBarManager implements vscode.Disposable {
     const smartText = (): string | null => {
       if (health.icon) return `${health.icon} ${short} ${this._healthShortLabel(account?.health)}`.trim();
       if (usage && usage.models.length > 0) {
-        return `${showAccount ? `$(account) ${short} ` : ''}${quotaIcon} ${min}%`.trim();
+        return `${showAccount ? `👤 ${short} ` : ''}${quotaIcon} ${min}%`.trim();
       }
-      return showAccount ? `$(account) ${short}` : null;
+      return showAccount ? `👤 ${short}` : null;
     };
 
     let text: string | null = null;
@@ -375,12 +406,10 @@ export class StatusBarManager implements vscode.Disposable {
     if (healthIcon) {
       segments.push(`${healthIcon} ${short} ${this._healthShortLabel(accountStore.getByEmail(this._ctx.globalState.get<string>('currentEmail') || '')?.health)}`.trim());
     } else {
-      if (showAccount) segments.push(`$(account) ${short}`);
+      if (showAccount) segments.push(`👤 ${short}`);
       if (this._sbCfg('showModels', true)) {
-        for (const m of usage.models) {
-          const icon = m.remainingPercent < 30 ? this._getStatusIcon(m.remainingPercent) : '';
-          segments.push(`${icon ? icon + ' ' : ''}${formatWindowShort(m)}: ${m.remainingPercent}%`);
-        }
+        const famSegs = formatFamilySegments(usage.models);
+        if (famSegs) segments.push(famSegs);
       }
       if (style === 'full' && showCredits && usage.availableAICredits !== undefined && usage.availableAICredits !== null) {
         segments.push(`$(credit-card) ${usage.availableAICredits}`);
@@ -388,8 +417,9 @@ export class StatusBarManager implements vscode.Disposable {
     }
     if (segments.length === 0) return null;
     const text = segments.join(' | ');
-    // 溢出降级：超过 110 字符（约状态栏可用宽度上限）回退聚合段
-    return text.length > 110 ? `${quotaIcon} ${usage.minRemainingPercent}% | $(account) ${short}` : text;
+    // 溢出降级：按渲染有效宽度估——$(codicon) 标记源码 8~10 字符，渲染只占约 1 字宽，按 1 计
+    const effLen = text.replace(/\$\([a-z0-9-]+\)/gi, '@').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '@@').length;
+    return effLen > 110 ? `${quotaIcon} ${usage.minRemainingPercent}% | 👤 ${short}` : text;
   }
 
   /** tooltip 内联 CSS 配额条（Wanow 踩坑定案：█░ Unicode 在 Windows 字体度量错位，必须 CSS） */
@@ -411,7 +441,7 @@ export class StatusBarManager implements vscode.Disposable {
     }
 
     const account = accountStore.getByEmail(email);
-    md.appendMarkdown(`**$(account) ${email}**${account?.name ? ` · ${account.name}` : ''}${usage?.tierId ? ` · ${usage.tierId.toUpperCase()}` : ''}\n\n`);
+    md.appendMarkdown(`**👤 ${email}**${account?.name ? ` · ${account.name}` : ''}${usage?.tierId ? ` · ${usage.tierId.toUpperCase()}` : ''}\n\n`);
 
     // 健康块：异常才亮牌（ok 与未检测不出现在 tooltip）
     const health = account?.health;
@@ -442,10 +472,10 @@ export class StatusBarManager implements vscode.Disposable {
     return md;
   }
 
-  /** 单窗口行：`$(pulse) **label** — 98% [CSS bar] · 3h 12m 后重置` */
+  /** 单窗口行：`🟢 **label** — 98% [CSS bar] · 3h 12m 后重置` */
   private _windowLine(model: ModelQuota): string {
     const label = formatWindowShort(model);
-    let line = `$(pulse) **${label}**：${model.remainingPercent}% ${this._bar(model.remainingPercent)}`;
+    let line = `**${colorDot(model.remainingPercent)} ${label}**：${model.remainingPercent}% ${this._bar(model.remainingPercent)}`;
     if (model.resetTime) {
       const left = fmtDuration(new Date(model.resetTime).getTime() - Date.now());
       if (left) line += ` · _${t('sbResetIn', left)}_`;
@@ -470,7 +500,7 @@ export class StatusBarManager implements vscode.Disposable {
       return;
     }
 
-    this._pool.text = `$(pulse) ${t('sbPool')} ${available}/${total}`;
+    this._pool.text = `👥 ${t('sbPool')} ${available}/${total}`;
     this._pool.tooltip = `${t('sbPoolTooltip', available, total)}\n\n_${t('sbOpenPoolTip')}_`;
     this._pool.show();
   }

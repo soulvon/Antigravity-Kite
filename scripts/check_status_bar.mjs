@@ -98,17 +98,17 @@ if (typeof mod.sortPoolForQuickPick !== 'function') {
 if (typeof mod.pickHealthMark !== 'function') {
   fail('pickHealthMark 存在', '旧产物无此导出——健康态未接入底栏（封禁号照样 ✓ 100% 的化装问题）');
 } else {
-  assert('封禁 → error 红底', (() => {
+  assert('封禁 → 🚫 + error 红底', (() => {
     const m = mod.pickHealthMark({ status: 'banned', checkedAt: '' });
-    return m.icon === '$(error)' && m.bg === 'error';
+    return m.icon === '🚫' && m.bg === 'error';
   })(), JSON.stringify(mod.pickHealthMark({ status: 'banned', checkedAt: '' })));
-  assert('登录失效 → warning 橙底', (() => {
+  assert('登录失效 → 🔑 + warning 橙底', (() => {
     const m = mod.pickHealthMark({ status: 'auth_invalid', checkedAt: '' });
-    return m.bg === 'warning' && m.icon === '$(key)';
+    return m.bg === 'warning' && m.icon === '🔑';
   })(), JSON.stringify(mod.pickHealthMark({ status: 'auth_invalid', checkedAt: '' })));
-  assert('检测异常 → 圆斜杠不亮底', (() => {
+  assert('检测异常 → ❓ 不亮底', (() => {
     const m = mod.pickHealthMark({ status: 'unknown', checkedAt: '' });
-    return m.bg === undefined && !!m.icon;
+    return m.bg === undefined && m.icon === '❓';
   })(), JSON.stringify(mod.pickHealthMark({ status: 'unknown', checkedAt: '' })));
   assert('ok / 未检测 → 不亮牌（异常才亮牌原则）', (() => {
     const a = mod.pickHealthMark({ status: 'ok', checkedAt: '' });
@@ -127,6 +127,33 @@ if (typeof mod.formatWindowShort !== 'function') {
   assert('无 label 时按 modelId 推导兜底',
     /Gemini/.test(mod.formatWindowShort({ modelId: 'gemini:weekly', remainingPercent: 50 })),
     mod.formatWindowShort({ modelId: 'gemini:weekly', remainingPercent: 50 }));
+}
+
+// ── 5. colorDot（四档 emoji 色点）──────────────────────────────
+if (typeof mod.colorDot !== 'function') {
+  fail('colorDot 存在', '旧产物无此导出——状态点尚未 emoji 四档化');
+} else {
+  assert('色点四档：96🟢 44🟡 28🟠 8🔴',
+    mod.colorDot(96) === '🟢' && mod.colorDot(44) === '🟡' && mod.colorDot(28) === '🟠' && mod.colorDot(8) === '🔴',
+    [mod.colorDot(96), mod.colorDot(44), mod.colorDot(28), mod.colorDot(8)].join(''));
+}
+
+// ── 6. formatFamilySegments（多池多窗口族分格）─────────────────
+if (typeof mod.formatFamilySegments !== 'function') {
+  fail('formatFamilySegments 存在', '旧产物无此导出——多池多窗口未按族分格（Wanow 斜杠范式）');
+} else {
+  const mq = (id, p) => ({ modelId: id, label: id, remainingPercent: p });
+  const segs = mod.formatFamilySegments([
+    mq('claude:5h', 96), mq('claude:weekly', 100),
+    mq('gemini:5h', 44),            // Gemini 只有 5h（无周）
+    mq('argon:weekly', 8),          // Gemini 4 只有周（无 5h）
+  ]);
+  assert('族分格：三池三格，5h/周斜杠并排，缺窗跳过，色点取族内最紧',
+    segs === '🟢 Claude 96%/100% · 🟡 Gemini 44% · 🔴 Gemini 4 8%', segs);
+  const onlyClaude = mod.formatFamilySegments([mq('claude:weekly', 100)]);
+  assert('单池单窗：无斜杠直接显示', onlyClaude === '🟢 Claude 100%', onlyClaude);
+  const empty = mod.formatFamilySegments([]);
+  assert('无数据：空串不渲染', empty === '', empty);
 }
 
 console.log(failures === 0

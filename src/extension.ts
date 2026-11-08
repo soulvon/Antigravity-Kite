@@ -1403,9 +1403,10 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
             <option value="right" data-i18n="sbPositionRight">→ 右侧（默认）</option>
           </select>
         </div>
-        <div class="v2-opt-row">
+        <div class="v2-opt-col">
           <span class="v2-opt-label" data-i18n="sbStyleRow">样式</span>
-          <select class="v2-sel" id="setStatusStyle" data-sb="style">
+          <div class="sb-style-grid" id="sbStyleGrid"></div>
+          <select class="v2-sel" id="setStatusStyle" data-sb="style" hidden>
             <option value="smart" data-i18n="sbStyleSmart">账号 + 最紧额度 — 聚合（推荐）</option>
             <option value="dot" data-i18n="sbStyleDot">状态灯 — 仅图标</option>
             <option value="percent" data-i18n="sbStylePercent">75% — 仅最低百分比</option>
@@ -2239,6 +2240,7 @@ function fillSettingsForm(s) {
   chk('setStatusCredits', s.statusBarCredits !== false);
   chk('setStatusPool', s.statusBarPool !== false);
   set('setStatusRefresh', s.statusBarRefresh || 30);
+  if (typeof syncStyleCards === 'function') syncStyleCards();
 }
 
 function openSettingsModal() {
@@ -2350,6 +2352,59 @@ function renderCdpStatus(s) {
   const pushSettings = (silent) => {
     vscode.postMessage({ type: 'saveSettings', silent: !!silent, settings: readSettings() });
   };
+
+  // ── 状态栏样式卡片选择器：每张卡内嵌该档真实形态的迷你状态栏预览（对标 Cockpit 选项内嵌样例 + Devin-Kite 预览区）──
+  // 图标体系对齐参考项目：emoji 色点四档（🟢≥50/🟡30-50/🟠10-30/🔴<10），族分格多池多窗口
+  function sbDemoHTML(style) {
+    const ACC = 'soulvon2501', PCT = '96%', CRED = '积分 87.5';
+    const DOT = '🟢';
+    const FAM = DOT + ' Claude 96%/100%' + ' · ' + DOT + ' Gemini 98%';
+    const acc = '<span class="sbd-seg">👤 ' + ACC + '</span>';
+    const sep = '<span class="sbd-dim">|</span>';
+    switch (style) {
+      case 'smart':   return acc + '<span class="sbd-seg">' + DOT + ' ' + PCT + '</span>';
+      case 'dot':     return '<span class="sbd-seg">' + DOT + '</span>';
+      case 'percent': return '<span class="sbd-seg">' + PCT + '</span>';
+      case 'compact': return '<span class="sbd-seg">' + DOT + ' ' + PCT + '</span>';
+      case 'dual':    return '<span class="sbd-seg">' + DOT + ' ' + PCT + '</span>' + sep + '<span class="sbd-seg">' + CRED + '</span>';
+      case 'labeled': return acc + sep + '<span class="sbd-seg">' + FAM + '</span>';
+      case 'full':    return acc + sep + '<span class="sbd-seg">' + FAM + '</span>' + sep + '<span class="sbd-seg">' + CRED + '</span>';
+    }
+    return '';
+  }
+  window.syncStyleCards = function() {
+    const sel = document.getElementById('setStatusStyle');
+    const grid = document.getElementById('sbStyleGrid');
+    if (!sel || !grid) return;
+    grid.querySelectorAll('.sb-style-card').forEach(c => c.classList.toggle('is-on', c.getAttribute('data-style') === sel.value));
+  };
+  (function buildStyleCards() {
+    const grid = document.getElementById('sbStyleGrid');
+    const sel = document.getElementById('setStatusStyle');
+    if (!grid || !sel || grid.dataset.built) return;
+    grid.dataset.built = '1';
+    const NAMES = {
+      smart: tl('sbStyleSmartName'),
+      dot: tl('sbStyleDotName'),
+      percent: tl('sbStylePercentName'),
+      compact: tl('sbStyleCompactName'),
+      dual: tl('sbStyleDualName'),
+      labeled: tl('sbStyleLabeledName'),
+      full: tl('sbStyleFullName')
+    };
+    Object.keys(NAMES).forEach(st => {
+      const card = document.createElement('div');
+      card.className = 'sb-style-card' + (sel.value === st ? ' is-on' : '');
+      card.setAttribute('data-style', st);
+      card.innerHTML = '<div class="sb-style-demo">' + sbDemoHTML(st) + '</div><div class="sb-style-name">' + NAMES[st] + '</div>';
+      card.onclick = () => {
+        sel.value = st;
+        window.syncStyleCards();
+        pushSettings(true);
+      };
+      grid.appendChild(card);
+    });
+  })();
   ov.querySelectorAll('input, select').forEach(el => {
     if (el.type === 'hidden') return;
     el.addEventListener('change', () => pushSettings(true));
