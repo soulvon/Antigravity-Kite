@@ -414,11 +414,10 @@ export class StatusBarManager implements vscode.Disposable {
     const tierStr = showTier && tier && tier !== 'Free' ? ` ·${tier}` : '';
     // 重置倒计时：显示"最近回血"的那个窗口（快回血了），跟在额度块后面
     const resetStr = showReset && hasQuota ? formatResetHint(models) : '';
-    const statusBg = health.bg
-      ?? (hasQuota && min < 10 ? 'error' : hasQuota && min < 30 ? 'warning' : undefined);
-    this._main.backgroundColor = statusBg === 'error'
+    // 背景色只留给健康异常（封禁/失效）；额度低用色点表达即可，整段红底太刺眼（兄弟指令）
+    this._main.backgroundColor = health.bg === 'error'
       ? new vscode.ThemeColor('statusBarItem.errorBackground')
-      : statusBg === 'warning'
+      : health.bg === 'warning'
         ? new vscode.ThemeColor('statusBarItem.warningBackground')
         : undefined;
 
