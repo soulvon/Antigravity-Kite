@@ -2505,8 +2505,7 @@ function renderCdpStatus(s) {
       case 'percent': return o.models ? '<span class="sbd-seg">' + pctStr + '</span>' : '<span class="sbd-dim">—</span>';
       case 'compact': return o.models ? '<span class="sbd-seg">' + DOT + ' ' + pctStr + (rst ? ' 🕐 Claude 5h 4h 55m' : '') + '</span>' : '<span class="sbd-dim">—</span>';
       case 'dual':    return ((o.models ? '<span class="sbd-seg">' + DOT + ' ' + pctStr + '</span>' : '') + (rst ? '<span class="sbd-seg">' + rst + '</span>' : '') + (cred ? sep + cred : '')) || '<span class="sbd-dim">—</span>';
-      const famRst = o.models && o.reset ? ' 🕐 5h 4h 55m' : '';
-      case 'labeled': return [acc, o.models && FAM ? '<span class="sbd-seg">' + FAM + famRst + '</span>' : ''].filter(Boolean).join(sep) || '<span class="sbd-dim">—</span>';
+      case 'labeled': return [acc, o.models && FAM ? '<span class="sbd-seg">' + FAM + (o.reset ? ' 🕐 5h 4h 55m' : '') + '</span>' : ''].filter(Boolean).join(sep) || '<span class="sbd-dim">—</span>';
       case 'full':    return [acc, o.models && FAM ? '<span class="sbd-seg">' + FAM + '</span>' : '', cred].filter(Boolean).join(sep) || '<span class="sbd-dim">—</span>';
     }
     return '';
