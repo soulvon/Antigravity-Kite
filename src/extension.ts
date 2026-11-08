@@ -100,6 +100,18 @@ export function activate(context: vscode.ExtensionContext) {
 
   usageTracker = new UsageTracker(context);
   loadUsageCache(context);
+
+  // v1.1.28 样式迁移：smart 曾是默认档（v1.1.16~1.1.25），存量用户被钉在极简形态；
+  // 一次性迁到 full（信息全开，兄弟指令"默认显示要全"）。用户主动选的其他档不动。
+  const STYLE_MIGRATION_KEY = 'styleMigratedFull.v1';
+  if (!context.globalState.get<boolean>(STYLE_MIGRATION_KEY)) {
+    const styleCfg = vscode.workspace.getConfiguration('antigravityKite');
+    if (styleCfg.get<string>('statusBar.style') === 'smart') {
+      void styleCfg.update('statusBar.style', 'full', vscode.ConfigurationTarget.Global);
+      logInfo('migrate.statusBarStyle', { from: 'smart', to: 'full' });
+    }
+    context.globalState.update(STYLE_MIGRATION_KEY, true);
+  }
   context.subscriptions.push(
     accountStore.onChange(() => {
       sidebarProvider?.refresh();
