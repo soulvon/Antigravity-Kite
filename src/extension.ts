@@ -122,6 +122,7 @@ export function activate(context: vscode.ExtensionContext) {
       refreshAll: () => refreshAllUsageInteractive(context).then(() => undefined),
       recheckHealth: () => backgroundProbeAllHealth(),
       openSettings: () => sidebarProvider?.openSettingsUi(),
+      getPrivacy: () => context.globalState.get<boolean>('privacyMode', false),
     }
   );
   context.subscriptions.push(statusBarManager);
@@ -433,7 +434,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
       ...a,
       usage: usageCache.get(a.email),
     }));
-    const payload = { type: 'accounts', accounts: accountsWithUsage, currentEmail };
+    const payload = { type: 'accounts', accounts: accountsWithUsage, currentEmail, privacyMode: this._context.globalState.get<boolean>('privacyMode', false) };
     const res = this._view?.webview.postMessage(payload);
     // postMessage 返回 Thenable<boolean>：false/拒绝 表示 webview 未接收（桥接断开），必须留痕
     if (res && typeof (res as unknown as PromiseLike<boolean>).then === 'function') {
@@ -925,6 +926,14 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
 
       case 'getSettings':
         this._pushSettings();
+        break;
+
+      case 'privacyChanged':
+        // G22：隐私模式权威源提升到 globalState——底栏/tooltip/QuickPick 同步脱敏，
+        // 并广播给所有 webview（多窗口同步），不再局限在单个 webview 闭包里
+        this._context.globalState.update('privacyMode', msg.enabled === true);
+        statusBarManager?.update();
+        this._view?.webview.postMessage({ type: 'privacyMode', enabled: msg.enabled === true });
         break;
 
       case 'openSettings':
@@ -1660,10 +1669,12 @@ document.getElementById('privacyModeBtn').onclick = () => {
   btn.classList.toggle('is-active', privacyMode);
   btn.innerHTML = privacyMode ? PRIVACY_EYE_OFF_SVG : PRIVACY_EYE_SVG;
   btn.title = privacyMode ? tl('privacyOn') : tl('privacyOff');
-  try { const st = vscode.getState() || {}; st._privacy = privacyMode; vscode.setState(st); } catch (e) {}
+  // 权威源在宿主 globalState（G22）：上报后由宿主广播回推，底栏/tooltip/QuickPick 同步脱敏
+  vscode.postMessage({ type: 'privacyChanged', enabled: privacyMode });
   renderAccounts();
 };
-// 恢复上次的隐私开关：窗口重载后不该自动把邮箱亮出来
+// 隐私开关初值：以宿主 accounts payload 的 privacyMode 为权威（多窗口一致）；
+// 本地 getState 仅作 webview 先于首刷渲染时的兜底，宿主 payload 到达后覆盖
 (function initPrivacyMode() {
   let saved = false;
   try { saved = !!(vscode.getState() && vscode.getState()._privacy); } catch (e) {}
@@ -2007,9 +2018,32 @@ function saveTagEdit() {
 
 window.addEventListener('message', e => {
   const msg = e.data;
+  if (msg.type === 'privacyMode') {
+    // 宿主广播（本窗切换回推 / 其他窗口同步）：统一按钮态与渲染
+    privacyMode = !!msg.enabled;
+    const btn = document.getElementById('privacyModeBtn');
+    if (btn) {
+      btn.classList.toggle('is-active', privacyMode);
+      btn.innerHTML = privacyMode ? PRIVACY_EYE_OFF_SVG : PRIVACY_EYE_SVG;
+      btn.title = privacyMode ? tl('privacyOn') : tl('privacyOff');
+    }
+    try { const st = vscode.getState() || {}; st._privacy = privacyMode; vscode.setState(st); } catch (e) {}
+    renderAccounts();
+  }
   if (msg.type === 'accounts') {
     accounts = msg.accounts || [];
     currentEmail = msg.currentEmail || '';
+    // 隐私态以宿主为权威（G22）：payload 带来的值覆盖本地，多窗口一致
+    if (typeof msg.privacyMode === 'boolean' && msg.privacyMode !== privacyMode) {
+      privacyMode = msg.privacyMode;
+      const btn = document.getElementById('privacyModeBtn');
+      if (btn) {
+        btn.classList.toggle('is-active', privacyMode);
+        btn.innerHTML = privacyMode ? PRIVACY_EYE_OFF_SVG : PRIVACY_EYE_SVG;
+        btn.title = privacyMode ? tl('privacyOn') : tl('privacyOff');
+      }
+      try { const st = vscode.getState() || {}; st._privacy = privacyMode; vscode.setState(st); } catch (e) {}
+    }
     renderAccounts();
     updateSummary();
   }
@@ -2355,11 +2389,13 @@ function renderCdpStatus(s) {
 
   // ── 状态栏样式卡片选择器：每张卡内嵌该档真实形态的迷你状态栏预览（对标 Cockpit 选项内嵌样例 + Devin-Kite 预览区）──
   // 图标体系对齐参考项目：emoji 色点四档（🟢≥50/🟡30-50/🟠10-30/🔴<10），族分格多池多窗口
+  // demo 人形图标逐字复制本文件 list-icon 已验证 user 路径（devloop svg-icon-untested-asset 纪律）
+  const SB_USER_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
   function sbDemoHTML(style) {
-    const ACC = 'soulvon2501', PCT = '96%', CRED = '💎 87.5';
+    const ACC = 'soulvon2501', PCT = '96%', CRED = '🪙 87.5';
     const DOT = '🟢';
     const FAM = DOT + ' Claude 96%/100%' + ' · ' + DOT + ' Gemini 98%';
-    const acc = '<span class="sbd-seg">👤 ' + ACC + '</span>';
+    const acc = '<span class="sbd-seg">' + SB_USER_SVG + ACC + '</span>';
     const sep = '<span class="sbd-dim">|</span>';
     switch (style) {
       case 'smart':   return acc + '<span class="sbd-seg">' + DOT + ' ' + PCT + ' ' + CRED + '</span>';

@@ -2,8 +2,8 @@
  * 底部状态栏管理器（v1.1.16 重构：对标 12 家同类 + BuddyRelay 范式）
  *
  * 设计：
- *   [右·主]  👤 账号前缀 🟢 98% 💎 87.5 —— smart 聚合段（默认）：账号+最紧额度+点数，异常才升级
- *   [右·副]  👥 池 3/5             —— 号池统计，点击开侧栏
+ *   [右·主]  $(account) 账号前缀 🟢 98% 🪙 87.5 —— smart 聚合段（默认）：账号+最紧额度+点数，异常才升级
+ *   [右·副]  池 3/5（无图标）       —— 号池统计，点击开侧栏
  *
  * 模式收敛（对标结论）：
  * - 默认单段聚合，详情下沉 tooltip / QuickPick（Copilot 官方、Gravity Orchestrator、BuddyRelay 同款）
@@ -89,14 +89,30 @@ export function formatFamilySegments(models: ModelQuota[]): string {
   return segments.join(' · ');
 }
 
+/** 邮箱脱敏（与 webview 端 maskEmail 同一逻辑的宿主侧实现）：soulvon2501@gmail.com → so***1@*** */
+export function maskEmailStr(email: string): string {
+  if (!email) return '';
+  const at = email.indexOf('@');
+  if (at <= 0) return email.slice(0, 2) + '***';
+  const name = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  const maskedName = name.length <= 2 ? name[0] + '***' : name.slice(0, 2) + '***' + name.slice(-1);
+  return maskedName + '@***';
+}
+
+/** 隐私模式显示名：开着就脱敏，闭着用原文 */
+function displayName(email: string, privacy: boolean): string {
+  return privacy ? maskEmailStr(email) : email;
+}
+
 /**
- * AI 点数显示（💎 图标 + 数值）。账号没有点数（undefined/null）返回空串——没点数就不显示，
- * 有点数的账号在 smart/dual/full/tooltip/QuickPick 全部带 💎 图标露出。
+ * AI 点数显示（🪙 金币图标 + 数值）。账号没有点数（undefined/null）返回空串——没点数就不显示，
+ * 有点数的账号在 smart/dual/full/tooltip/QuickPick 全部带 🪙 图标露出。
  */
 export function formatCredits(v: number | null | undefined): string {
   if (v === undefined || v === null || !Number.isFinite(v)) return '';
   const n = Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
-  return '💎 ' + n;
+  return '🪙 ' + n;
 }
 
 /**
@@ -153,6 +169,8 @@ export interface StatusBarDeps {
   recheckHealth?: () => Promise<void>;
   /** 打开设置弹窗（侧栏 webview 模态） */
   openSettings?: () => void;
+  /** 隐私模式开关（globalState 权威源，G22：隐私不得局限在 webview 闭包） */
+  getPrivacy?: () => boolean;
 }
 
 /** 配额条分档色（BuddyRelay 药丸同源：ok 翡翠/warn 橙黄/danger 红） */
@@ -321,7 +339,8 @@ export class StatusBarManager implements vscode.Disposable {
     const showAccount = this._sbCfg('showAccount', true);
     const showCredits = this._sbCfg('showCredits', true);
 
-    const short = curEmail ? curEmail.split('@')[0] : t('sbNotLoggedIn');
+    const privacy = this._deps.getPrivacy?.() ?? false;
+    const short = curEmail ? displayName(curEmail, privacy) : t('sbNotLoggedIn');
 
     // 健康优先于额度：封禁号额度照样满格（元数据端点对封禁隐身），必须由健康定调
     const health = pickHealthMark(account?.health);
@@ -340,9 +359,9 @@ export class StatusBarManager implements vscode.Disposable {
       if (health.icon) return `${health.icon} ${short} ${this._healthShortLabel(account?.health)}`.trim();
       if (usage && usage.models.length > 0) {
         const c = showCredits ? formatCredits(usage.availableAICredits) : '';
-        return `${showAccount ? `👤 ${short} ` : ''}${quotaIcon} ${min}%${c ? ' ' + c : ''}`.trim();
+        return `${showAccount ? `$(account) ${short} ` : ''}${quotaIcon} ${min}%${c ? ' ' + c : ''}`.trim();
       }
-      return showAccount ? `👤 ${short}` : null;
+      return showAccount ? `$(account) ${short}` : null;
     };
 
     let text: string | null = null;
@@ -414,7 +433,7 @@ export class StatusBarManager implements vscode.Disposable {
     if (healthIcon) {
       segments.push(`${healthIcon} ${short} ${this._healthShortLabel(accountStore.getByEmail(this._ctx.globalState.get<string>('currentEmail') || '')?.health)}`.trim());
     } else {
-      if (showAccount) segments.push(`👤 ${short}`);
+      if (showAccount) segments.push(`$(account) ${short}`);
       if (this._sbCfg('showModels', true)) {
         const famSegs = formatFamilySegments(usage.models);
         if (famSegs) segments.push(famSegs);
@@ -428,7 +447,7 @@ export class StatusBarManager implements vscode.Disposable {
     const text = segments.join(' | ');
     // 溢出降级：按渲染有效宽度估——$(codicon) 标记源码 8~10 字符，渲染只占约 1 字宽，按 1 计
     const effLen = text.replace(/\$\([a-z0-9-]+\)/gi, '@').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '@@').length;
-    return effLen > 110 ? `${quotaIcon} ${usage.minRemainingPercent}% | 👤 ${short}` : text;
+    return effLen > 110 ? `${quotaIcon} ${usage.minRemainingPercent}% | $(account) ${short}` : text;
   }
 
   /** tooltip 内联 CSS 配额条（Wanow 踩坑定案：█░ Unicode 在 Windows 字体度量错位，必须 CSS） */
@@ -450,7 +469,8 @@ export class StatusBarManager implements vscode.Disposable {
     }
 
     const account = accountStore.getByEmail(email);
-    md.appendMarkdown(`**👤 ${email}**${account?.name ? ` · ${account.name}` : ''}${usage?.tierId ? ` · ${usage.tierId.toUpperCase()}` : ''}\n\n`);
+    const privacy = this._deps.getPrivacy?.() ?? false;
+    md.appendMarkdown(`**$(account) ${displayName(email, privacy)}**${account?.name ? ` · ${account.name}` : ''}${usage?.tierId ? ` · ${usage.tierId.toUpperCase()}` : ''}\n\n`);
 
     // 健康块：异常才亮牌（ok 与未检测不出现在 tooltip）
     const health = account?.health;
@@ -468,7 +488,7 @@ export class StatusBarManager implements vscode.Disposable {
         md.appendMarkdown(`${this._windowLine(model)}\n\n`);
       }
       if (usage.availableAICredits !== undefined) {
-        md.appendMarkdown(`---\n\n**💎 ${t('sbAiCredits')}**：${usage.availableAICredits}\n\n`);
+        md.appendMarkdown(`---\n\n**🪙 ${t('sbAiCredits')}**：${usage.availableAICredits}\n\n`);
       }
       if (usage.updatedAt) {
         md.appendMarkdown(`_${t('sbUpdated')} ${new Date(usage.updatedAt).toLocaleTimeString()}_\n\n`);
@@ -509,7 +529,7 @@ export class StatusBarManager implements vscode.Disposable {
       return;
     }
 
-    this._pool.text = `👥 ${t('sbPool')} ${available}/${total}`;
+    this._pool.text = `${t('sbPool')} ${available}/${total}`;
     this._pool.tooltip = `${t('sbPoolTooltip', available, total)}\n\n_${t('sbOpenPoolTip')}_`;
     this._pool.show();
   }
@@ -528,6 +548,7 @@ export class StatusBarManager implements vscode.Disposable {
     }
 
     const curEmail = this._ctx.globalState.get<string>('currentEmail') || '';
+    const privacy = this._deps.getPrivacy?.() ?? false;
     const getUsage = (email: string) => this._deps.getUsage?.(email);
     const sorted = sortPoolForQuickPick(accounts, getUsage, curEmail);
 
@@ -559,7 +580,7 @@ export class StatusBarManager implements vscode.Disposable {
         }
       }
       return {
-        label: `${healthIconOf(a)} ${a.email}`,
+        label: `${healthIconOf(a)} ${displayName(a.email, privacy)}`,
         description: (isCurrent ? t('sbCurrent') : (a.name || '')) || undefined,
         detail: details.length > 0 ? details.join(' | ') : (a.disabled ? t('sbDisabled') : t('sbAvailable')),
         type: 'account' as const,

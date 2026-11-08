@@ -160,9 +160,17 @@ if (typeof mod.formatFamilySegments !== 'function') {
 if (typeof mod.formatCredits !== 'function') {
   fail('formatCredits 存在', '旧产物无此导出——AI 点数尚未接入聚合段');
 } else {
-  assert('有点数 → 💎 数字（整数直显）', mod.formatCredits(120) === '💎 120', mod.formatCredits(120));
-  assert('小数保留两位内', mod.formatCredits(87.5) === '💎 87.5', mod.formatCredits(87.5));
+  assert('有点数 → 🪙 金币（整数直显）', mod.formatCredits(120) === '🪙 120', mod.formatCredits(120));
+  assert('小数保留两位内', mod.formatCredits(87.5) === '🪙 87.5', mod.formatCredits(87.5));
   assert('无点数 → 空串不显示', mod.formatCredits(undefined) === '' && mod.formatCredits(null) === '');
+}
+
+// ── 8. maskEmailStr（隐私脱敏：G22 底栏/tooltip/QuickPick 同源）──
+if (typeof mod.maskEmailStr !== 'function') {
+  fail('maskEmailStr 存在', '旧产物无此导出——隐私态尚未接入底栏（G22 违规）');
+} else {
+  assert('邮箱脱敏形态 so***1@***', mod.maskEmailStr('soulvon2501@gmail.com') === 'so***1@***', mod.maskEmailStr('soulvon2501@gmail.com'));
+  assert('短名/无 @ 兜底不炸', mod.maskEmailStr('ab@x.com') === 'a***@***' && mod.maskEmailStr('plain') === 'pl***' && mod.maskEmailStr('') === '');
 }
 
 console.log(failures === 0
