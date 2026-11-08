@@ -1591,14 +1591,56 @@ function pctClass(pct) {
   return 'is-ok';
 }
 
+// 档位分类：与 Manager normalize_subscription_tier 关键词表对齐（quota.rs 实测：
+// loadCodeAssist UserTier.id ∈ free-tier / standard-tier / g1-pro-tier / g1-ultra-tier，
+// helium 是 Ultra 内部代号 GDP_HELIUM；Plus 为 2026 新档 $4.99，Manager v5.0.3 尚未收录）
 function planTierClass(tierId) {
   if (!tierId) return 'tier-unknown';
-  const t = tierId.toLowerCase();
-  if (t.includes('ultra')) return 'tier-ultra';
-  if (t.includes('pro')) return 'tier-pro';
-  if (t.includes('free')) return 'tier-free';
+  const t = String(tierId).toLowerCase();
+  if (t.includes('ultra') || t.includes('helium')) return 'tier-ultra';
+  if (t.includes('plus')) return 'tier-plus';
+  if (t.includes('free') || t.includes('starter')) return 'tier-free';
+  if (t.includes('pro') || t.includes('premium') || t.includes('advanced')) return 'tier-pro';
   if (t.includes('trial')) return 'tier-trial';
+  if (t.includes('enterprise') || t.includes('standard') || t.includes('business') || t.startsWith('gcp_') || t.includes('vertex')) return 'tier-enterprise';
   return 'tier-unknown';
+}
+
+// 会员级别徽章图标：逐字复制 lucide diamond/gem/circle 路径（对齐 Antigravity Manager
+// AccountRow.tsx 的 Diamond/Gem/Circle + fill-current；svg-icon-untested-asset 禁手写）
+function planChipIcon(tierClass) {
+  if (tierClass === 'tier-pro') {
+    return '<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41l-7.59-7.59a2.41 2.41 0 0 0-3.41 0Z"/></svg>';
+  }
+  if (tierClass === 'tier-ultra') {
+    return '<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 3 8 9l4 13 4-13-2.5-6"/><path d="M17 3a2 2 0 0 1 1.6.8l3 4a2 2 0 0 1 .013 2.382l-7.99 10.986a2 2 0 0 1-3.247 0l-7.99-10.986A2 2 0 0 1 2.4 7.8l2.998-3.997A2 2 0 0 1 7 3z"/><path d="M2 9h20"/></svg>';
+  }
+  if (tierClass === 'tier-plus') {
+    // Plus 档：lucide circle-dot（Free 空心圆 → Plus 圆点 → Pro 菱形 → Ultra 宝石 的阶梯递进）
+    return '<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="12" r="10"/></svg>';
+  }
+  if (tierClass === 'tier-free' || tierClass === 'tier-unknown') {
+    return '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg>';
+  }
+  return '';
+}
+
+// 会员级别文案：大驼峰，Ultra 保留官方倍数后缀（Ultra 5x / Ultra 20x，小写 x）。
+// 与 statusBar.ts displayTierLabel 同 spec 双载（宿主/webview 各一份，maskEmailStr 同款套路）
+function planTierLabel(tierId) {
+  if (!tierId) return '...';
+  const s = String(tierId);
+  const t = s.toLowerCase();
+  // 模板字面量内必须 \\d 双转义——单写 \d 会被 cook 成 'd'，倍数提取静默失灵
+  const mult = /(\\d+x)/i.exec(s);
+  if (t.includes('ultra') || t.includes('helium')) return 'Ultra' + (mult ? ' ' + mult[1] : '');
+  if (t.includes('plus')) return 'Plus';
+  if (t.includes('free') || t.includes('starter')) return 'Free';
+  if (t.includes('pro') || t.includes('premium') || t.includes('advanced')) return 'Pro';
+  if (t.includes('trial')) return 'Trial';
+  if (t.includes('enterprise') || t.includes('standard') || t.includes('business') || t.startsWith('gcp_') || t.includes('vertex')) return 'Enterprise';
+  if (t.includes('team')) return 'Team';
+  return s;
 }
 
 // ── 刷新按钮旋转态：点击即转，收到宿主 refreshDone 才停（60s 兜底并在控制台留痕） ──
@@ -1747,7 +1789,7 @@ function renderFilterDropdown() {
   });
   const planKeys = Object.keys(plans).sort();
   if (planSec) planSec.style.display = planKeys.length ? '' : 'none';
-  planList.innerHTML = planKeys.map(p => filterCheckRow('plan', p, plans[p], filterPlans.has(p))).join('');
+  planList.innerHTML = planKeys.map(p => filterCheckRow('plan', p, plans[p], filterPlans.has(p), planTierLabel(p))).join('');
   const tags = getTagList();
   if (tagSec) tagSec.style.display = tags.length ? '' : 'none';
   tagList.innerHTML = tags.map(t => filterCheckRow('tag', t, accounts.filter(a => getAccTags(a).includes(t)).length, filterTags.has(t))).join('');
@@ -2445,7 +2487,7 @@ function renderCdpStatus(s) {
     if (o.gemini) fams.push(DOT + ' Gemini 98%');
     if (o.argon) fams.push(DOT + ' Gemini 4 91%');
     const FAM = fams.join(' · ');
-    const acc = o.account ? '<span class="sbd-seg">' + SB_USER_SVG + 'soulvon2501' + (o.tier ? ' ·PRO' : '') + '</span>' : '';
+    const acc = o.account ? '<span class="sbd-seg">' + SB_USER_SVG + 'soulvon2501' + (o.tier ? ' ·Pro' : '') + '</span>' : '';
     const pct = o.models ? '<span class="sbd-seg">' + DOT + ' 96%</span>' : '';
     const rst = o.models && o.reset ? '<span class="sbd-seg">🕐 4h 55m</span>' : '';
     const cred = o.credits ? '<span class="sbd-seg">🪙 87.5</span>' : '';
@@ -2756,7 +2798,7 @@ function renderAccounts() {
     const usage = a.usage;
     const tierId = usage?.tierId || '';
     const tierClass = planTierClass(tierId);
-    const tierLabel = tierId ? tierId.toUpperCase() : '...';
+    const tierLabel = planTierLabel(tierId);
     
     // 模型配额：单列竖排（Claude 5h / Claude 周额度 / Gemini 5h / Gemini 周额度 / Gemini 4 周额度[有则出现]）
     const models = usage?.models || [];
@@ -2834,7 +2876,7 @@ function renderAccounts() {
         + (isDisabled ? '<span class="grid-disabled-tag">' + tl('disabledTag') + '</span>' : '')
       + '</div>'
       + '<div class="grid-card-meta">'
-        + '<span class="grid-plan-chip ' + tierClass + '">' + tierLabel + '</span>'
+        + '<span class="grid-plan-chip ' + tierClass + '">' + planChipIcon(tierClass) + tierLabel + '</span>'
       + '</div>'
       + '<div class="grid-card-quotas">' + quotasHtml + '</div>'
       + '<div class="grid-card-actions">'

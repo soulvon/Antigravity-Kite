@@ -130,6 +130,25 @@ export function formatCredits(v: number | null | undefined): string {
 }
 
 /**
+ * 会员级别文案：大驼峰，Ultra 保留官方倍数后缀（Ultra 5x / Ultra 20x）。
+ * 关键词表与 Manager normalize_subscription_tier 对齐（helium/starter/standard/gcp_ 全覆盖）。
+ * 与 webview 模板内 planTierLabel 同 spec 双载（maskEmailStr/maskEmail 同款套路）。
+ */
+export function displayTierLabel(tierId: string): string {
+  const s = String(tierId);
+  const t = s.toLowerCase();
+  const mult = /(\d+x)/i.exec(s);
+  if (t.includes('ultra') || t.includes('helium')) return 'Ultra' + (mult ? ' ' + mult[1] : '');
+  if (t.includes('plus')) return 'Plus';
+  if (t.includes('free') || t.includes('starter')) return 'Free';
+  if (t.includes('pro') || t.includes('premium') || t.includes('advanced')) return 'Pro';
+  if (t.includes('trial')) return 'Trial';
+  if (t.includes('enterprise') || t.includes('standard') || t.includes('business') || t.startsWith('gcp_') || t.includes('vertex')) return 'Enterprise';
+  if (t.includes('team')) return 'Team';
+  return s;
+}
+
+/**
  * QuickPick 账号排序（切号场景最顺手：想切的号永远在上面）：
  * 当前号 → 可用（按最紧额度降序）→ 检测异常 → 封禁/登录失效 → 禁用垫底
  */
@@ -390,9 +409,9 @@ export class StatusBarManager implements vscode.Disposable {
     const min = hasQuota && pcts.length > 0 ? Math.min(...pcts) : 100;
     const quotaIcon = this._getStatusIcon(min);
     const creditsStr = showCredits && rawUsage ? formatCredits(rawUsage.availableAICredits) : '';
-    // 会员级别：跟账号段走（账号关则无依托）；FREE 是默认态不亮牌，PRO/ULTRA 才值得标
-    const tier = rawUsage?.tierId ? String(rawUsage.tierId).toUpperCase() : '';
-    const tierStr = showTier && tier && tier !== 'FREE' ? ` ·${tier}` : '';
+    // 会员级别：跟账号段走（账号关则无依托）；Free 是默认态不亮牌，Pro/Ultra 才值得标
+    const tier = rawUsage?.tierId ? displayTierLabel(String(rawUsage.tierId)) : '';
+    const tierStr = showTier && tier && tier !== 'Free' ? ` ·${tier}` : '';
     // 重置倒计时：显示"最近回血"的那个窗口（快回血了），跟在额度块后面
     const resetStr = showReset && hasQuota ? formatResetHint(models) : '';
     const statusBg = health.bg
@@ -636,10 +655,10 @@ export class StatusBarManager implements vscode.Disposable {
         }
       }
       const qpTierRaw = getUsage(a.email)?.tierId;
-      const qpTier = qpTierRaw ? String(qpTierRaw).toUpperCase() : '';
+      const qpTier = qpTierRaw ? displayTierLabel(String(qpTierRaw)) : '';
       return {
         label: `${healthIconOf(a)} ${displayName(a.email, privacy)}`,
-        description: [isCurrent ? t('sbCurrent') : (a.name || ''), qpTier && qpTier !== 'FREE' ? qpTier : ''].filter(Boolean).join(' · ') || undefined,
+        description: [isCurrent ? t('sbCurrent') : (a.name || ''), qpTier && qpTier !== 'Free' ? qpTier : ''].filter(Boolean).join(' · ') || undefined,
         detail: details.length > 0 ? details.join(' | ') : (a.disabled ? t('sbDisabled') : t('sbAvailable')),
         type: 'account' as const,
         email: a.email

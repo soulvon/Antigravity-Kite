@@ -301,17 +301,13 @@ async function loadProjectInfo(accessToken: string): Promise<ProjectInfo> {
     projectId = (proj as { id?: string }).id;
   }
 
-  // 提取订阅级别
+  // 提取订阅级别：一律透传上游原始值（name 优先——"Google AI Ultra 5x" 的倍数信息只在 name 里；
+  // id 兜底），分类统一交给展示层（planTierClass/planTierLabel/displayTierLabel，与 Manager
+  // normalize_subscription_tier 同款关键词表：helium/5x/20x/plus/starter/standard/gcp_ 全覆盖）。
+  // 旧版在此归一 ULTRA/PRO 会压丢倍数与 Plus 档——v1.1.23 起废弃。
   let tierId: string;
   if (data1.paidTier?.id) {
-    const paidId = data1.paidTier.id.toLowerCase();
-    if (paidId.includes('ultra')) {
-      tierId = 'ULTRA';
-    } else if (paidId.includes('pro')) {
-      tierId = 'PRO';
-    } else {
-      tierId = data1.paidTier.name || data1.paidTier.id;
-    }
+    tierId = data1.paidTier.name || data1.paidTier.id;
   } else {
     tierId = 'FREE';
   }

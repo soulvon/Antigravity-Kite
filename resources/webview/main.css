@@ -7483,3 +7483,49 @@ body.vscode-light .grid-plan-chip {
 .settings-hint { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 2px 0 6px; opacity: 0.85; }
 /* 卡片墙：自适应列宽，宽屏不无限拉伸 */
 .sb-style-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)) !important; }
+
+/* ═══ 1.1.22 Manager Tier Badge Pass — 会员级别徽章逐值对齐 Antigravity Manager ═══
+   源：AccountRow.tsx 订阅徽章（Tailwind）：
+     PRO   = from-blue-600 to-indigo-600 + Diamond(fill) + text-white/10px/bold + rounded-md
+     ULTRA = from-purple-600 to-pink-600 + Gem(fill)     + 同上
+     FREE  = white/10 底 + Circle(描边) + gray-400        + rounded-md
+   蓝紫渐变为例外：兄弟指定复刻 Manager 参照物，非装饰性默认配色。 */
+.grid-plan-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    font-weight: 700;
+}
+.grid-plan-chip svg { width: 10px; height: 10px; flex-shrink: 0; }
+.grid-plan-chip.tier-pro {
+    background: linear-gradient(90deg, #2563eb, #4f46e5);
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+}
+.grid-plan-chip.tier-ultra {
+    background: linear-gradient(90deg, #9333ea, #db2777);
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+}
+.grid-plan-chip.tier-free,
+.grid-plan-chip.tier-unknown {
+    /* Manager dark:bg-white/10；中性灰双主题自适应取 rgba(127,127,127,*) 等值 */
+    background: rgba(127, 127, 127, 0.18);
+    color: var(--muted, #9ca3af);
+    border: 1px solid rgba(127, 127, 127, 0.35);
+    border-radius: 6px;
+}
+/* Plus 档（2026 新档 $4.99，Manager v5.0.3 尚未收录）：cyan→teal 渐变 + circle-dot 图标，
+   阶梯语义 Free(空心圆)→Plus(圆点)→Pro(菱形)→Ultra(宝石)；色低于 Pro 不撞配额条绿/警示橙 */
+.grid-plan-chip.tier-plus {
+    background: linear-gradient(90deg, #0891b2, #0d9488);
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+}

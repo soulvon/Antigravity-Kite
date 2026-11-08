@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.1.22",
+  "version": "1.1.23",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -195,9 +195,17 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["claude", "gemini", "argon"]
+            "enum": [
+              "claude",
+              "gemini",
+              "argon"
+            ]
           },
-          "default": ["claude", "gemini", "argon"],
+          "default": [
+            "claude",
+            "gemini",
+            "argon"
+          ],
           "description": "%config.statusBar.families%"
         },
         "antigravityKite.statusBar.refreshSeconds": {
