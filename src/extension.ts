@@ -2356,13 +2356,13 @@ function renderCdpStatus(s) {
   // ── 状态栏样式卡片选择器：每张卡内嵌该档真实形态的迷你状态栏预览（对标 Cockpit 选项内嵌样例 + Devin-Kite 预览区）──
   // 图标体系对齐参考项目：emoji 色点四档（🟢≥50/🟡30-50/🟠10-30/🔴<10），族分格多池多窗口
   function sbDemoHTML(style) {
-    const ACC = 'soulvon2501', PCT = '96%', CRED = '积分 87.5';
+    const ACC = 'soulvon2501', PCT = '96%', CRED = '💎 87.5';
     const DOT = '🟢';
     const FAM = DOT + ' Claude 96%/100%' + ' · ' + DOT + ' Gemini 98%';
     const acc = '<span class="sbd-seg">👤 ' + ACC + '</span>';
     const sep = '<span class="sbd-dim">|</span>';
     switch (style) {
-      case 'smart':   return acc + '<span class="sbd-seg">' + DOT + ' ' + PCT + '</span>';
+      case 'smart':   return acc + '<span class="sbd-seg">' + DOT + ' ' + PCT + ' ' + CRED + '</span>';
       case 'dot':     return '<span class="sbd-seg">' + DOT + '</span>';
       case 'percent': return '<span class="sbd-seg">' + PCT + '</span>';
       case 'compact': return '<span class="sbd-seg">' + DOT + ' ' + PCT + '</span>';

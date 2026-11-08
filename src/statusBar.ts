@@ -2,7 +2,7 @@
  * 底部状态栏管理器（v1.1.16 重构：对标 12 家同类 + BuddyRelay 范式）
  *
  * 设计：
- *   [右·主]  👤 账号前缀 🟢 98%   —— smart 聚合段（默认）：账号 + 最紧额度，异常才升级
+ *   [右·主]  👤 账号前缀 🟢 98% 💎 87.5 —— smart 聚合段（默认）：账号+最紧额度+点数，异常才升级
  *   [右·副]  👥 池 3/5             —— 号池统计，点击开侧栏
  *
  * 模式收敛（对标结论）：
@@ -87,6 +87,16 @@ export function formatFamilySegments(models: ModelQuota[]): string {
     segments.push(dot + ' ' + fam.label + ' ' + pair);
   }
   return segments.join(' · ');
+}
+
+/**
+ * AI 点数显示（💎 图标 + 数值）。账号没有点数（undefined/null）返回空串——没点数就不显示，
+ * 有点数的账号在 smart/dual/full/tooltip/QuickPick 全部带 💎 图标露出。
+ */
+export function formatCredits(v: number | null | undefined): string {
+  if (v === undefined || v === null || !Number.isFinite(v)) return '';
+  const n = Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
+  return '💎 ' + n;
 }
 
 /**
@@ -325,14 +335,12 @@ export class StatusBarManager implements vscode.Disposable {
         ? new vscode.ThemeColor('statusBarItem.warningBackground')
         : undefined;
 
-    const credits = usage && usage.availableAICredits !== undefined && usage.availableAICredits !== null
-      ? String(usage.availableAICredits) : '-';
-
     // 聚合段文本；无账号也无额度数据时整段隐藏
     const smartText = (): string | null => {
       if (health.icon) return `${health.icon} ${short} ${this._healthShortLabel(account?.health)}`.trim();
       if (usage && usage.models.length > 0) {
-        return `${showAccount ? `👤 ${short} ` : ''}${quotaIcon} ${min}%`.trim();
+        const c = showCredits ? formatCredits(usage.availableAICredits) : '';
+        return `${showAccount ? `👤 ${short} ` : ''}${quotaIcon} ${min}%${c ? ' ' + c : ''}`.trim();
       }
       return showAccount ? `👤 ${short}` : null;
     };
@@ -350,7 +358,7 @@ export class StatusBarManager implements vscode.Disposable {
           text = `${health.icon || quotaIcon} ${min}%`;
           break;
         case 'dual':
-          text = showCredits ? `${health.icon || quotaIcon} ${min}% | $(credit-card) ${credits}` : `${health.icon || quotaIcon} ${min}%`;
+          text = `${health.icon || quotaIcon} ${min}%${showCredits && formatCredits(usage.availableAICredits) ? ' | ' + formatCredits(usage.availableAICredits) : ''}`;
           break;
         case 'smart':
           text = smartText();
@@ -411,8 +419,9 @@ export class StatusBarManager implements vscode.Disposable {
         const famSegs = formatFamilySegments(usage.models);
         if (famSegs) segments.push(famSegs);
       }
-      if (style === 'full' && showCredits && usage.availableAICredits !== undefined && usage.availableAICredits !== null) {
-        segments.push(`$(credit-card) ${usage.availableAICredits}`);
+      if (style === 'full' && showCredits) {
+        const c = formatCredits(usage.availableAICredits);
+        if (c) segments.push(c);
       }
     }
     if (segments.length === 0) return null;
@@ -459,7 +468,7 @@ export class StatusBarManager implements vscode.Disposable {
         md.appendMarkdown(`${this._windowLine(model)}\n\n`);
       }
       if (usage.availableAICredits !== undefined) {
-        md.appendMarkdown(`---\n\n**$(credit-card) ${t('sbAiCredits')}**：${usage.availableAICredits}\n\n`);
+        md.appendMarkdown(`---\n\n**💎 ${t('sbAiCredits')}**：${usage.availableAICredits}\n\n`);
       }
       if (usage.updatedAt) {
         md.appendMarkdown(`_${t('sbUpdated')} ${new Date(usage.updatedAt).toLocaleTimeString()}_\n\n`);
@@ -546,7 +555,7 @@ export class StatusBarManager implements vscode.Disposable {
       if (usage && usage.models.length > 0) {
         details.push(usage.models.map(m => `${formatWindowShort(m)} ${m.remainingPercent}%`).join(' · '));
         if (usage.availableAICredits !== undefined && usage.availableAICredits !== null) {
-          details.push(`$(credit-card) ${usage.availableAICredits}`);
+          details.push(formatCredits(usage.availableAICredits));
         }
       }
       return {
