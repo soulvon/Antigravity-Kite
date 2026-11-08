@@ -16,6 +16,18 @@ export interface StoredAccount {
   };
   /** 配额快照（运行时缓存，不持久化） */
   usage?: UsageSnapshot;
+  /** 健康状态（封禁/登录失效检测，持久化到 accounts.json） */
+  health?: AccountHealth;
+}
+
+/** 账号健康状态：封禁检测结论（读失败 = unknown，绝不当 ok） */
+export interface AccountHealth {
+  /** ok=服务正常 / banned=违反服务条款被封 / auth_invalid=凭据失效需重登 / unknown=检测失败原因不明 */
+  status: 'ok' | 'banned' | 'auth_invalid' | 'unknown';
+  /** 最近一次检测时间（ISO） */
+  checkedAt: string;
+  /** 检测失败时的原始错误摘要（悬停可见） */
+  detail?: string;
 }
 
 export interface WebviewMessage {

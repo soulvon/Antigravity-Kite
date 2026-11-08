@@ -4,7 +4,7 @@
  */
 
 import * as https from 'https';
-import { StoredAccount, UsageSnapshot } from './types';
+import { StoredAccount, UsageSnapshot, AccountHealth } from './types';
 import * as accountStore from './accountStore';
 import { t } from './i18n';
 
@@ -612,4 +612,65 @@ export async function fetchUsageBatch(
   }
 
   return results;
+}
+
+// ── 账号健康检测（封号识别） ─────────────────────────────────────────────
+// 判定签名参照 Antigravity-Manager（lbjlaq）proxy/handlers/common.rs：
+// 违反服务条款（反代/高频滥用等）的封禁在 Cloud Code API 上表现为 HTTP 403，
+// 错误体含 "This service has been disabled in this account for violation of
+// Terms of Service"（变体开头可能是 "Gemini has been disabled..."）。
+
+const TOS_BAN_PATTERN = /tos_violation|violation of terms of service|disabled in this account/i;
+const AUTH_FAIL_PATTERN = /auth_expired|invalid_grant|invalid_credentials|unauthenticated|http 401\b|no access token/i;
+
+/** 从错误文本归类健康状态：读失败 = unknown，绝不当 ok */
+export function classifyAccountError(message: string): AccountHealth['status'] {
+  if (TOS_BAN_PATTERN.test(message)) return 'banned';
+  if (AUTH_FAIL_PATTERN.test(message)) return 'auth_invalid';
+  return 'unknown';
+}
+
+/**
+ * 单账号健康探针：一次 loadCodeAssist 即可定性（封禁 403 / 凭据 401 都会在这一步返回），
+ * 不拉模型与配额摘要，开销最小。网络失败等未知情况返回 unknown 并带原始错误。
+ */
+export async function checkAccountHealth(account: StoredAccount): Promise<AccountHealth> {
+  const checkedAt = new Date().toISOString();
+  try {
+    if (!account.accessToken && !account.refreshToken) {
+      return { status: 'auth_invalid', checkedAt, detail: 'No access token' };
+    }
+    const accessToken = await ensureFreshToken(account);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+    let httpStatus = 0;
+    let body = '';
+    try {
+      const response = await fetch(`${CLOUDCODE_DAILY_URL}/v1internal:loadCodeAssist`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'User-Agent': getLoadCodeAssistUA(),
+          'x-goog-api-client': `gl-node/${NODE_VERSION}`,
+          'Content-Type': 'application/json',
+          'Accept': '*/*',
+          'Accept-Encoding': 'gzip, deflate, br',
+        },
+        body: JSON.stringify({ metadata: getCloudCodeMetadata(), mode: 'FULL_ELIGIBILITY_CHECK' }),
+        signal: controller.signal,
+      });
+      httpStatus = response.status;
+      body = await response.text();
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (httpStatus >= 200 && httpStatus < 300) {
+      return { status: 'ok', checkedAt };
+    }
+    const combined = `HTTP ${httpStatus}: ${body}`;
+    return { status: classifyAccountError(combined), checkedAt, detail: combined.slice(0, 300) };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { status: classifyAccountError(msg), checkedAt, detail: msg.slice(0, 300) };
+  }
 }

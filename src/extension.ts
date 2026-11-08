@@ -18,7 +18,8 @@ import { swapIdeCredential, buildIdeCredentialBlob, syncGeminiAccountFiles } fro
 import { syncGeminiLocalCreds } from './geminiFiles';
 import { getSharedStorageDir } from './storage';
 import { StatusBarManager } from './statusBar';
-import { fetchUsage } from './usageService';
+import { fetchUsage, checkAccountHealth, classifyAccountError } from './usageService';
+import { AccountHealth } from './types';
 import * as ideRuntime from './ideRuntime';
 import { UsageTracker } from './usageTracker';
 import { showUpdateNotesOnStartup, autoCheckOnStartup, checkForUpdates } from './updater';
@@ -141,6 +142,12 @@ export function deactivate() {
 /**
  * 后台静默刷新所有账号的额度快照并分发
  */
+/** 检测失败时从错误文本归类健康状态（封禁/凭据失效签名见 usageService.classifyAccountError） */
+function healthFromError(err: unknown): AccountHealth {
+  const msg = err instanceof Error ? err.message : String(err);
+  return { status: classifyAccountError(msg), checkedAt: new Date().toISOString(), detail: msg.slice(0, 300) };
+}
+
 async function backgroundRefreshAllUsage(context: vscode.ExtensionContext) {
   console.log('[Kite-Background] 正在执行后台定时静默全局额度刷新...');
   const accounts = accountStore.getAll().filter(a => !a.disabled);
@@ -148,16 +155,21 @@ async function backgroundRefreshAllUsage(context: vscode.ExtensionContext) {
     try {
       const snapshot = await fetchUsage(account);
       usageCache.set(account.email, snapshot);
+      // 额度刷新第一步就是 loadCodeAssist，成功即服务正常——顺路沉淀健康状态
+      const health: AccountHealth = { status: 'ok', checkedAt: new Date().toISOString() };
+      accountStore.update(account.email, { health });
 
       // 实时同步给状态栏
       statusBarManager?.updateUsage(account.email, snapshot);
       // 实时推送给当前活动的侧栏
-      sidebarProvider?.postMessage({ type: 'usage', email: account.email, snapshot });
+      sidebarProvider?.postMessage({ type: 'usage', email: account.email, snapshot, health });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[Kite-Background] 刷新账号 ${account.email} 额度失败:`, msg);
-      // 失败同步给卡片，杜绝无反馈占位
-      sidebarProvider?.postMessage({ type: 'usage', email: account.email, error: msg });
+      // 失败同步给卡片，杜绝无反馈占位；顺路归类封禁/凭据失效
+      const health = healthFromError(e);
+      accountStore.update(account.email, { health });
+      sidebarProvider?.postMessage({ type: 'usage', email: account.email, error: msg, health });
     }
   }
   usageCacheLastRefresh = Date.now();
@@ -459,10 +471,14 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
       saveUsageCache(this._context);
       usageTracker.recordRefresh();
       usageTracker.recordUsage(email, snapshot.minRemainingPercent, snapshot.tierId);
-      this._view?.webview.postMessage({ type: 'usage', email, snapshot });
+      const health: AccountHealth = { status: 'ok', checkedAt: new Date().toISOString() };
+      accountStore.update(email, { health });
+      this._view?.webview.postMessage({ type: 'usage', email, snapshot, health });
       logPanel.pushLogPanelData(this._context, usageTracker);
     } catch (err) {
-      this._view?.webview.postMessage({ type: 'usage', email, error: String(err) });
+      const health = healthFromError(err);
+      accountStore.update(email, { health });
+      this._view?.webview.postMessage({ type: 'usage', email, error: String(err), health });
     }
     // 无论成败都要收口旋转态，否则按钮会一直转
     this._view?.webview.postMessage({ type: 'refreshDone', scope: 'one', email });
@@ -480,12 +496,16 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         usageCache.set(account.email, snapshot);
         usageTracker.recordRefresh();
         usageTracker.recordUsage(account.email, snapshot.minRemainingPercent, snapshot.tierId);
-        this._view?.webview.postMessage({ type: 'usage', email: account.email, snapshot });
+        const health: AccountHealth = { status: 'ok', checkedAt: new Date().toISOString() };
+        accountStore.update(account.email, { health });
+        this._view?.webview.postMessage({ type: 'usage', email: account.email, snapshot, health });
         successCount++;
       } catch (err) {
         errorCount++;
         lastError = err instanceof Error ? err.message : String(err);
-        this._view?.webview.postMessage({ type: 'usage', email: account.email, error: lastError });
+        const health = healthFromError(err);
+        accountStore.update(account.email, { health });
+        this._view?.webview.postMessage({ type: 'usage', email: account.email, error: lastError, health });
       }
     }
     usageCacheLastRefresh = Date.now();
@@ -500,6 +520,15 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
       this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: t('refreshPartial', successCount, errorCount) });
     }
     this._view?.webview.postMessage({ type: 'refreshDone', scope: 'all' });
+  }
+
+  /** 单账号健康检测（封禁/凭据探针，一次 loadCodeAssist 开销最小） */
+  private async _checkHealth(email: string) {
+    const account = accountStore.getAll().find(a => a.email === email);
+    if (!account) return;
+    const health = await checkAccountHealth(account);
+    accountStore.update(email, { health });
+    this._view?.webview.postMessage({ type: 'healthResult', email, health });
   }
 
   private async _handleMessage(msg: WebviewMessage) {
@@ -850,6 +879,12 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
       case 'refreshUsage':
         if (msg.email) {
           this._refreshUsage(msg.email);
+        }
+        break;
+
+      case 'checkHealth':
+        if (msg.email) {
+          this._checkHealth(msg.email);
         }
         break;
 
@@ -1860,8 +1895,22 @@ window.addEventListener('message', e => {
       } else if (msg.error) {
         accounts[idx]._usageError = msg.error;
       }
+      if (msg.health) accounts[idx].health = msg.health;
       renderAccounts();
       updateSummary();
+    }
+  }
+  if (msg.type === 'healthResult') {
+    healthCheckingEmail = null;
+    const idx = accounts.findIndex(a => a.email === msg.email);
+    if (idx >= 0 && msg.health) accounts[idx].health = msg.health;
+    renderAccounts();
+    updateSummary();
+    // 人工触发的检测要给结论反馈；封禁/失效才弹，正常不刷屏
+    if (msg.health && msg.health.status === 'banned') {
+      showToast(tl('healthBannedToast', msg.email), 'error');
+    } else if (msg.health && msg.health.status === 'auth_invalid') {
+      showToast(tl('healthAuthToast', msg.email), 'warning');
     }
   }
   if (msg.type === 'localImportPreview') {
@@ -2472,7 +2521,7 @@ function renderAccounts() {
     }
 
     const sig = cardSig(a);
-    const html = '<div class="grid-card ' + (isCurrent ? 'is-active' : '') + ' ' + (isDisabled ? 'is-disabled' : '') + (selectMode ? ' is-select-mode' : '') + '" data-email="' + safeEmail + '" data-sig="' + sig + '">'
+    const html = '<div class="grid-card ' + (isCurrent ? 'is-active' : '') + ' ' + (isDisabled ? 'is-disabled' : '') + (a.health && a.health.status === 'banned' ? ' is-banned' : '') + (selectMode ? ' is-select-mode' : '') + '" data-email="' + safeEmail + '" data-sig="' + sig + '">'
       + (selectMode ? '<div class="grid-check-col"><input type="checkbox" class="grid-check-input" data-email="' + safeEmail + '" ' + (selectedEmails.has(rawEmail) ? 'checked' : '') + '></div>' : '')
       + '<div class="grid-card-head">'
         + '<div class="grid-card-email" title="' + emailTitle + '">' + showEmail + '</div>'
@@ -2489,6 +2538,7 @@ function renderAccounts() {
           : (switchingEmail === rawEmail
             ? '<button class="grid-switch-btn is-loading" disabled><span class="btn-spinner"></span>' + tl('switching') + '</button>'
             : '<button class="grid-switch-btn" onclick="setCurrent(\\x27' + safeEmail + '\\x27)">' + tl('switch') + '</button>'))
+        + healthPillHtml(a, safeEmail)
         + '<div class="grid-actions-right">'
           + '<button class="icon-btn" onclick="openTagEditModal(\\x27' + safeEmail + '\\x27)" title="' + tl('editTagsT') + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>'
           + '<button class="icon-btn is-refresh" data-refresh-email="' + safeEmail + '" onclick="refreshUsage(this, \\x27' + safeEmail + '\\x27)" title="' + tl('refreshQuotaT') + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>'
@@ -2519,6 +2569,8 @@ function cardSig(a) {
     u.tierId || '',
     u.loadError || '',
     a._usageError || '',
+    a.health ? a.health.status + ':' + (a.health.checkedAt || '') : '',
+    healthCheckingEmail === a.email ? '1' : '0',
     models,
     getAccTags(a).join('|'),
     JSON.stringify(tagColors || {}),
@@ -2592,6 +2644,39 @@ function removeAccount(email) {
   });
 }
 function toggleDisabled(email) { vscode.postMessage({ type: 'toggleDisabled', email }); }
+
+// ── 健康药丸（封禁检测显示，位于切换钮与图标钮之间）──
+let healthCheckingEmail = null; // 正在单号检测的账号（按钮加载态）
+const HEALTH_LABEL_KEYS = { ok: 'healthOk', banned: 'healthBanned', auth_invalid: 'healthAuthInvalid', unknown: 'healthUnknown' };
+
+/** 属性值转义：escHtml 不转义引号，detail 里带引号的错误 JSON 会击穿 title 属性 */
+function attrEsc(text) {
+  return escHtml(String(text)).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/** 健康药丸：未检测=灰（点击可查），封禁/失效/未知带检测结果悬停明细 */
+function healthPillHtml(a, safeEmail) {
+  const recheckAttr = 'onclick="recheckHealth(\\x27' + safeEmail + '\\x27)"';
+  if (healthCheckingEmail === a.email) {
+    return '<button class="health-pill is-checking" disabled title="' + attrEsc(tl('healthChecking')) + '"><span class="health-dot"></span>' + escHtml(tl('healthChecking')) + '</button>';
+  }
+  if (!a.health) {
+    return '<button class="health-pill is-none" ' + recheckAttr + ' title="' + attrEsc(tl('healthRecheckT')) + '">' + escHtml(tl('healthNever')) + '</button>';
+  }
+  const h = a.health;
+  const label = tl(HEALTH_LABEL_KEYS[h.status] || 'healthUnknown');
+  const tipParts = [tl('healthRecheckT'), h.checkedAt ? new Date(h.checkedAt).toLocaleString() : ''];
+  if (h.detail) tipParts.push(h.detail);
+  return '<button class="health-pill is-' + h.status + '" ' + recheckAttr + ' title="' + attrEsc(tipParts.filter(Boolean).join(' · ')) + '">'
+    + '<span class="health-dot"></span>' + escHtml(label) + '</button>';
+}
+
+function recheckHealth(email) {
+  if (healthCheckingEmail) return;
+  healthCheckingEmail = email;
+  renderAccounts();
+  vscode.postMessage({ type: 'checkHealth', email });
+}
 
 // ── 就绪信号：至此 message 监听器已全部注册。宿主收到 webviewReady 后才推数据，
 // 防止推送早于监听器就绪（CSS 等资源加载慢于消息投递时，首屏账号会静默丢失） ──
