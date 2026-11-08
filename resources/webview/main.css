@@ -1871,16 +1871,12 @@ details > summary::marker { display: none; content: ''; }
     border-radius: 50%;
     flex: none;
 }
-.health-pill.is-ok { color: var(--gh-green); background: rgba(63, 185, 80, 0.12); border-color: rgba(63, 185, 80, 0.3); }
-.health-pill.is-ok .health-dot { background: var(--gh-green); }
 .health-pill.is-banned { color: var(--gh-red); background: rgba(248, 81, 73, 0.15); border-color: rgba(248, 81, 73, 0.4); }
 .health-pill.is-banned .health-dot { background: var(--gh-red); }
 .health-pill.is-auth_invalid { color: var(--gh-orange); background: rgba(209, 154, 102, 0.15); border-color: rgba(209, 154, 102, 0.4); }
 .health-pill.is-auth_invalid .health-dot { background: var(--gh-orange); }
 .health-pill.is-unknown { color: var(--muted); border-color: var(--card-border); }
 .health-pill.is-unknown .health-dot { background: var(--muted); }
-.health-pill.is-none { color: var(--muted); border-color: var(--card-border); opacity: 0.8; }
-.health-pill.is-none .health-dot { background: transparent; border: 1px solid var(--card-border); }
 .health-pill.is-checking { color: var(--muted); cursor: wait; }
 .health-pill.is-checking .health-dot {
     background: transparent;

@@ -2682,25 +2682,24 @@ function removeAccount(email) {
 }
 function toggleDisabled(email) { vscode.postMessage({ type: 'toggleDisabled', email }); }
 
-// ── 健康药丸（封禁检测显示，位于切换钮与图标钮之间）──
+// ── 健康药丸（异常才亮牌：封禁/登录失效/未知；正常与未检测不占底栏，默认零打扰）──
 let healthCheckingEmail = null; // 正在单号检测的账号（按钮加载态）
-const HEALTH_LABEL_KEYS = { ok: 'healthOk', banned: 'healthBanned', auth_invalid: 'healthAuthInvalid', unknown: 'healthUnknown' };
+const HEALTH_LABEL_KEYS = { banned: 'healthBanned', auth_invalid: 'healthAuthInvalid', unknown: 'healthUnknown' };
 
 /** 属性值转义：escHtml 不转义引号，detail 里带引号的错误 JSON 会击穿 title 属性 */
 function attrEsc(text) {
   return escHtml(String(text)).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-/** 健康药丸：未检测=灰（点击可查），封禁/失效/未知带检测结果悬停明细 */
+/** 健康药丸：正常/未检测返回空串；封禁/失效/未知带检测结果悬停明细，点击复检 */
 function healthPillHtml(a, safeEmail) {
   const recheckAttr = 'onclick="recheckHealth(\\x27' + safeEmail + '\\x27)"';
   if (healthCheckingEmail === a.email) {
     return '<button class="health-pill is-checking" disabled title="' + attrEsc(tl('healthChecking')) + '"><span class="health-dot"></span>' + escHtml(tl('healthChecking')) + '</button>';
   }
-  if (!a.health) {
-    return '<button class="health-pill is-none" ' + recheckAttr + ' title="' + attrEsc(tl('healthRecheckT')) + '">' + escHtml(tl('healthNever')) + '</button>';
-  }
   const h = a.health;
+  // 正常与未检测不显示：没消息就是好消息，复检靠每小时自动探针
+  if (!h || h.status === 'ok') return '';
   const label = tl(HEALTH_LABEL_KEYS[h.status] || 'healthUnknown');
   const tipParts = [tl('healthRecheckT'), h.checkedAt ? new Date(h.checkedAt).toLocaleString() : ''];
   if (h.detail) tipParts.push(h.detail);
