@@ -180,6 +180,25 @@ export function displayTierLabel(tierId: string): string {
 }
 
 /**
+ * 平铺样式分级降级（唯一权威实现）：
+ * 按渲染有效宽度（$(codicon)≈1 字宽、emoji≈2 字宽）依次尝试
+ *   全量(withReset+withCredits) → 丢倒计时 → 丢积分 → fallback 聚合段。
+ * 信息优先级：配额 > 账号 > 倒计时 > 积分；builder 返回 null（无内容）的档位跳过。
+ */
+export function degradeFlat(
+  build: (withReset: boolean, withCredits: boolean) => string | null,
+  fallback: string,
+  limit = 180
+): string {
+  const effLen = (t: string): number =>
+    t.replace(/\$\([a-z0-9-]+\)/gi, '@').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '@@').length;
+  for (const cand of [build(true, true), build(false, true), build(false, false)]) {
+    if (cand !== null && cand.length > 0 && effLen(cand) <= limit) return cand;
+  }
+  return fallback;
+}
+
+/**
  * QuickPick 账号排序（切号场景最顺手：想切的号永远在上面）：
  * 当前号 → 可用（按最紧额度降序）→ 检测异常 → 封禁/登录失效 → 禁用垫底
  */
@@ -546,11 +565,27 @@ export class StatusBarManager implements vscode.Disposable {
       }
     }
     if (segments.length === 0) return null;
-    const text = segments.join(' | ');
-    // 溢出降级：按渲染有效宽度估——$(codicon) 标记源码 8~10 字符，渲染只占约 1 字宽，按 1 计
-    const effLen = text.replace(/\$\([a-z0-9-]+\)/gi, '@').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '@@').length;
     const minPct = models.length > 0 ? Math.min(...models.map(m => m.remainingPercent)) : 100;
-    return effLen > 110 ? `${quotaIcon} ${minPct}% | $(account) ${short}` : text;
+    return degradeFlat(
+      (withReset, withCredits) => {
+        const segs: string[] = [];
+        if (healthIcon) {
+          segs.push(`${healthIcon} ${short} ${this._healthShortLabel(accountStore.getByEmail(this._ctx.globalState.get<string>('currentEmail') || '')?.health)}`.trim());
+        } else {
+          if (showAccount) segs.push(`$(account) ${short}${tierStr}`);
+          if (showModels) {
+            const famSegs = formatFamilySegments(models, undefined, withReset);
+            if (famSegs) segs.push(famSegs);
+          }
+          if (style === 'full' && showCredits && withCredits) {
+            const c = formatCredits(usage.availableAICredits);
+            if (c) segs.push(c);
+          }
+        }
+        return segs.length > 0 ? segs.join(' | ') : null;
+      },
+      `${quotaIcon} ${minPct}% | $(account) ${short}`
+    );
   }
 
   /** tooltip 内联 CSS 配额条（Wanow 踩坑定案：█░ Unicode 在 Windows 字体度量错位，必须 CSS） */

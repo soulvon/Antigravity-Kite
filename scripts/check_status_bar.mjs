@@ -197,6 +197,24 @@ if (typeof mod.formatResetHint !== 'function') {
   assert('族内无窗口 → 空串', mod.formatResetHintIn([mq2('gemini:5h', 50, future)], 'claude') === '');
 }
 
+// ── 10. degradeFlat（平铺分级降级：全量→丢倒计时→丢积分→聚合）──
+if (typeof mod.degradeFlat !== 'function') {
+  fail('degradeFlat 存在', '旧产物无此导出——溢出降级尚未分级');
+} else {
+  const longFam = '🟢 Claude 96%/100% 🕐 5h 4h 55m · 🟢 Gemini 98% 🕐 5h 1h 39m · 🟢 Gemini 4 91% 🕐 周 6d 6h'.padEnd(220, 'x');
+  const mk = (reset, credits) => {
+    const segs = ['$(account) mindfly2501 ·Pro', reset ? longFam : '🟢 Claude 96%/100% · 🟢 Gemini 98%'];
+    if (credits) segs.push('🪙 87.5');
+    return segs.join(' | ');
+  };
+  const r1 = mod.degradeFlat(mk, 'FALLBACK');
+  assert('全量超限 → 丢倒计时（保留族分格+积分）', !/🕐/.test(r1) && /🪙/.test(r1) && /Claude 96%\/100%/.test(r1), r1.slice(0, 80));
+  const r2 = mod.degradeFlat((reset, credits) => mk(true, true).length + 'x'.repeat(400), 'FALLBACK');
+  assert('全档超限 → fallback 聚合', r2 === 'FALLBACK', r2.slice(0, 60));
+  const r3 = mod.degradeFlat(() => null, 'FALLBACK');
+  assert('无内容档位跳过 → fallback', r3 === 'FALLBACK');
+}
+
 console.log(failures === 0
   ? '[check_status_bar] 全部通过 ✔'
   : `[check_status_bar] ${failures} 项失败 ✘`);
