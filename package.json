@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.1.25",
+  "version": "1.1.26",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -72,6 +72,11 @@
       {
         "command": "antigravityKite.healthRecheck",
         "title": "%cmd.healthRecheck%",
+        "category": "Antigravity Kite"
+      },
+      {
+        "command": "antigravityKite.openSettings",
+        "title": "%cmd.openSettings%",
         "category": "Antigravity Kite"
       }
     ],
@@ -178,7 +183,7 @@
             "%config.statusBar.style.labeled%",
             "%config.statusBar.style.full%"
           ],
-          "default": "smart",
+          "default": "full",
           "description": "%config.statusBar.style%"
         },
         "antigravityKite.statusBar.showResetCountdown": {

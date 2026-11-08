@@ -63,11 +63,11 @@ try {
 if (typeof mod.validateStyle !== 'function') {
   fail('validateStyle 存在', '旧产物无此导出——底栏尚未引入 smart 聚合样式（本次重构核心行为）');
 } else {
-  assert('validateStyle(smart) = smart（默认聚合段）', mod.validateStyle('smart') === 'smart');
+  assert('validateStyle(smart) 保留极简档', mod.validateStyle('smart') === 'smart');
   assert('validateStyle(full) 保留旧样式', mod.validateStyle('full') === 'full');
   assert('validateStyle(dot/percent/compact/dual/labeled) 全保留',
     ['dot', 'percent', 'compact', 'dual', 'labeled'].every(s => mod.validateStyle(s) === s));
-  assert('validateStyle(非法值) 回退 smart', mod.validateStyle('bogus') === 'smart');
+  assert('validateStyle(非法值) 回退 full（默认信息全开）', mod.validateStyle('bogus') === 'full');
 }
 
 // ── 2. sortPoolForQuickPick ───────────────────────────────────────

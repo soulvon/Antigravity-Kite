@@ -157,6 +157,12 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(healthRecheckCmd);
 
+  // 注册打开设置命令（底栏主段点击直达；侧栏聚焦 + 弹设置模态）
+  const openSettingsCmd = vscode.commands.registerCommand('antigravityKite.openSettings', () => {
+    sidebarProvider?.openSettingsUi();
+  });
+  context.subscriptions.push(openSettingsCmd);
+
   // 延迟 2 秒执行首次后台静默全局额度刷新
   setTimeout(() => backgroundRefreshAllUsage(context), 2000);
 

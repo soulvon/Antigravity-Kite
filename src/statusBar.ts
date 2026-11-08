@@ -24,7 +24,7 @@ import { UsageSnapshot, AccountHealth, StoredAccount, ModelQuota } from './types
 import { t } from './i18n';
 import { notifyUi } from './uiChannel';
 
-/** 状态栏左段信息密度：smart 聚合段（默认，账号+最紧额度）；dot/percent/compact/dual 极简；labeled/full 平铺 */
+/** 状态栏左段信息密度：full 全量（默认：账号+级别+族分格+倒计时+积分）；smart 聚合段等其余档位为极简可选 */
 export type StatusBarStyle = 'smart' | 'dot' | 'percent' | 'compact' | 'dual' | 'labeled' | 'full';
 
 export type StatusBarPosition = 'left' | 'right';
@@ -36,7 +36,7 @@ const OPEN_SIDEBAR_CMD = 'antigravityKite.openSidebar';
 
 /** 样式白名单校验：非法值回退 smart（读失败 = 未知，走默认保守路径） */
 export function validateStyle(v: string): StatusBarStyle {
-  return VALID_STYLES.includes(v as StatusBarStyle) ? (v as StatusBarStyle) : 'smart';
+  return VALID_STYLES.includes(v as StatusBarStyle) ? (v as StatusBarStyle) : 'full';
 }
 
 /**
@@ -277,7 +277,7 @@ export class StatusBarManager implements vscode.Disposable {
 
     // 主段：账号 + 额度聚合，点击弹切号菜单（QuickPick）
     this._main = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    this._main.command = 'antigravityKite.quickSwitchAccount';
+    this._main.command = 'antigravityKite.openSettings';
     this._main.name = 'Kite Quota';
 
     // 副段：号池统计，点击开侧栏
@@ -342,7 +342,7 @@ export class StatusBarManager implements vscode.Disposable {
   }
 
   private _getStyle(): StatusBarStyle {
-    return validateStyle(this._sbCfg<string>('style', 'smart'));
+    return validateStyle(this._sbCfg<string>('style', 'full'));
   }
 
   private _getPosition(): StatusBarPosition {
@@ -376,7 +376,7 @@ export class StatusBarManager implements vscode.Disposable {
     try { this._pool.dispose(); } catch { /* ignore */ }
     this._main = vscode.window.createStatusBarItem(target, 100);
     this._pool = vscode.window.createStatusBarItem(target, 99);
-    this._main.command = 'antigravityKite.quickSwitchAccount';
+    this._main.command = 'antigravityKite.openSettings';
     this._pool.command = OPEN_SIDEBAR_CMD;
     this._currentAlignment = target;
   }
