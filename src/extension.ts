@@ -1434,8 +1434,8 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
             <option value="percent" data-i18n="sbStylePercent">75% — 仅最低百分比</option>
             <option value="compact" data-i18n="sbStyleCompact">状态灯 75% — 图标 + 最低百分比</option>
             <option value="dual" data-i18n="sbStyleDual">状态灯 75% + AI 积分 — 双指标</option>
-            <option value="labeled" data-i18n="sbStyleLabeled">账号 + 各模型额度 — 标签式</option>
-            <option value="full" data-i18n="sbStyleFull">账号 + 各模型额度 + AI 积分 — 完整</option>
+            <option value="labeled" data-i18n="sbStyleLabeled">账号 + 各池配额 + 倒计时 — 标签式</option>
+            <option value="full" data-i18n="sbStyleFull">账号 + 级别 + 各池配额 + 倒计时 + 积分 — 完整（默认）</option>
           </select>
         </div>
         <div class="v2-opt-row">
