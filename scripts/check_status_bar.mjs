@@ -184,10 +184,17 @@ if (typeof mod.formatResetHint !== 'function') {
   const past = new Date(Date.now() - 3600e3).toISOString();
   const mq2 = (id, p2, rt) => ({ modelId: id, label: id, remainingPercent: p2, resetTime: rt });
   const hint = mod.formatResetHint([mq2('claude:5h', 96, future)]);
-  assert('未来重置 → 🕐 时长', /^🕐 \d/.test(hint), hint);
+  assert('全局最近 → 带归属 🕐 Claude 5h 时长', /^🕐 Claude 5h \d/.test(hint), hint);
+  const weekly = mod.formatResetHint([mq2('argon:weekly', 8, future)]);
+  assert('周窗 → W 短词（en）/周（zh）', /^🕐 Gemini 4 (W|周) \d/.test(weekly), weekly);
   const hint2 = mod.formatResetHint([mq2('a:5h', 96, past), mq2('b:5h', 90, future)]);
-  assert('过期窗口剔除，取最近未来', /^🕐 \d/.test(hint2), hint2);
+  assert('过期窗口剔除，取最近未来', /^🕐 \w+ 5h \d/.test(hint2), hint2);
   assert('无/过期数据 → 空串不占位', mod.formatResetHint([]) === '' && mod.formatResetHint([mq2('a:5h', 96, past)]) === '');
+  const inFam = mod.formatResetHintIn([
+    mq2('claude:5h', 96, future), mq2('claude:weekly', 100, new Date(Date.now() + 80 * 3600e3).toISOString()),
+  ], 'claude');
+  assert('族内倒计时 → 🕐 5h 时长（池名省略）', /^🕐 5h \d/.test(inFam), inFam);
+  assert('族内无窗口 → 空串', mod.formatResetHintIn([mq2('gemini:5h', 50, future)], 'claude') === '');
 }
 
 console.log(failures === 0

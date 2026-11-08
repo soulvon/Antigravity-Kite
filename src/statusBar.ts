@@ -64,17 +64,47 @@ export function colorDot(pct: number): string {
   return '🔴';
 }
 
+/** 窗口短名：5h 直用；weekly 用 i18n 短词（周/W） */
+function windowShort(modelId: string): string {
+  return modelId.endsWith(':weekly') ? t('quotaWeeklyShort') : '5h';
+}
+
+const FAMILY_LABELS: Record<string, string> = { claude: 'Claude', gemini: 'Gemini', argon: 'Gemini 4' };
+
 /**
- * 重置倒计时（对标 Manager 的 🕐 窗口回血提示）：取过滤后窗口中"最近即将重置"的一个。
+ * 重置倒计时（对标 Manager 的 🕐 窗口回血提示）——带归属：
+ * 取过滤后窗口中"最近即将重置"的一个，形态 `🕐 Claude 5h 4h55m`（池名+窗口名+时长）。
+ * 三个池两个窗口共 6 份倒计时，不带归属的数字等于没信息。
  * 无未来重置时间（数据缺失/全部过期）返回空串——没信息不占位。
  */
 export function formatResetHint(models: ModelQuota[]): string {
   const now = Date.now();
-  const times = models
-    .map(m => (m.resetTime ? new Date(m.resetTime).getTime() : NaN))
-    .filter(t => Number.isFinite(t) && t > now);
-  if (times.length === 0) return '';
-  return '🕐 ' + fmtDuration(Math.min(...times) - now);
+  let best: { m: ModelQuota; t: number } | null = null;
+  for (const m of models) {
+    const t = m.resetTime ? new Date(m.resetTime).getTime() : NaN;
+    if (!Number.isFinite(t) || t <= now) continue;
+    if (!best || t < best.t) best = { m, t };
+  }
+  if (!best) return '';
+  const famKey = (best.m.modelId || '').split(':')[0];
+  return `🕐 ${FAMILY_LABELS[famKey] || famKey} ${windowShort(best.m.modelId)} ${fmtDuration(best.t - now)}`;
+}
+
+/**
+ * 族内重置倒计时（族分格用，池名由族格自带）：`🕐 5h 4h55m`。
+ * 只看该族窗口，取最近即将重置的；无则空串。
+ */
+export function formatResetHintIn(models: ModelQuota[], familyKey: string): string {
+  const now = Date.now();
+  let best: { m: ModelQuota; t: number } | null = null;
+  for (const m of models) {
+    if ((m.modelId || '').split(':')[0] !== familyKey) continue;
+    const t = m.resetTime ? new Date(m.resetTime).getTime() : NaN;
+    if (!Number.isFinite(t) || t <= now) continue;
+    if (!best || t < best.t) best = { m, t };
+  }
+  if (!best) return '';
+  return `🕐 ${windowShort(best.m.modelId)} ${fmtDuration(best.t - now)}`;
 }
 
 /**
@@ -83,7 +113,7 @@ export function formatResetHint(models: ModelQuota[]): string {
  * 族内 5h 与周额度斜杠并排（96%/100%），缺失窗口只显已有的——不对称账号天然兼容；
  * 色点取族内最紧窗口（变色取"最吃紧"一档的收敛共识）。
  */
-export function formatFamilySegments(models: ModelQuota[], families?: Set<string>): string {
+export function formatFamilySegments(models: ModelQuota[], families?: Set<string>, resetHints?: boolean): string {
   const FAMILIES: { key: string; label: string }[] = [
     { key: 'claude', label: 'Claude' },
     { key: 'gemini', label: 'Gemini' },
@@ -98,7 +128,8 @@ export function formatFamilySegments(models: ModelQuota[], families?: Set<string
     const pcts = [five?.remainingPercent, week?.remainingPercent].filter((v): v is number => typeof v === 'number');
     const dot = colorDot(Math.min(...pcts));
     const pair = pcts.map(v => v + '%').join('/');
-    segments.push(dot + ' ' + fam.label + ' ' + pair);
+    const hint = resetHints ? formatResetHintIn(models, fam.key) : '';
+    segments.push(dot + ' ' + fam.label + ' ' + pair + (hint ? ' ' + hint : ''));
   }
   return segments.join(' · ');
 }
@@ -506,10 +537,8 @@ export class StatusBarManager implements vscode.Disposable {
     } else {
       if (showAccount) segments.push(`$(account) ${short}${tierStr}`);
       if (showModels) {
-        const famSegs = formatFamilySegments(models);
-        if (famSegs) {
-          segments.push(resetStr ? `${famSegs} ${resetStr}` : famSegs);
-        }
+        const famSegs = formatFamilySegments(models, undefined, resetStr ? true : false);
+        if (famSegs) segments.push(famSegs);
       }
       if (style === 'full' && showCredits) {
         const c = formatCredits(usage.availableAICredits);

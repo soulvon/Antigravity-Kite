@@ -248,6 +248,7 @@ const S: Record<string, [string, string]> = {
   qpOpenSettings: ['打开设置', 'Open settings'],
   qpOpenSettingsDesc: ['状态栏样式、刷新间隔、切号与调试等全部设置', 'Status bar, refresh intervals, switching and debugging'],
   quotaWeekly: ['周额度', 'Weekly'],
+  quotaWeeklyShort: ['周', 'W'],
   quota5h: ['5h', '5h'],
 
   // ── 更新器 ──
