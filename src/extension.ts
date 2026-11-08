@@ -46,6 +46,18 @@ function loadUsageCache(context: vscode.ExtensionContext) {
   usageCacheLastRefresh = ts;
 }
 
+/** 全池额度后台定时器（模块级句柄：设置保存时即时重排间隔，无需重启） */
+let quotaRefreshTimer: NodeJS.Timeout | null = null;
+
+/** 统一管线最近一次失败明细（批量汇总 toast 用；逐号明细已实时推卡片） */
+let lastUsageError = '';
+
+function applyQuotaRefreshInterval(context: vscode.ExtensionContext): void {
+  if (quotaRefreshTimer) clearInterval(quotaRefreshTimer);
+  const refreshMinutes = Math.max(5, vscode.workspace.getConfiguration('antigravityKite').get<number>('quotaRefreshMinutes', 15));
+  quotaRefreshTimer = setInterval(() => backgroundRefreshAllUsage(context), refreshMinutes * 60 * 1000);
+}
+
 function saveUsageCache(context: vscode.ExtensionContext) {
   const obj: Record<string, UsageSnapshot> = {};
   usageCache.forEach((v, k) => { obj[k] = v; });
@@ -102,7 +114,15 @@ export function activate(context: vscode.ExtensionContext) {
     (email) => {
       sidebarProvider?.refresh();
     },
-    (email) => sidebarProvider.requestSwitch(email)
+    (email) => sidebarProvider.requestSwitch(email),
+    // 管线合一：底栏数据与刷新全部走共享缓存与统一管线，不再自建定时抓取
+    {
+      getUsage: (email) => usageCache.get(email),
+      refreshCurrent: (email) => refreshOneAccountUsage(email, context).then(() => undefined),
+      refreshAll: () => refreshAllUsageInteractive(context).then(() => undefined),
+      recheckHealth: () => backgroundProbeAllHealth(),
+      openSettings: () => sidebarProvider?.openSettingsUi(),
+    }
   );
   context.subscriptions.push(statusBarManager);
 
@@ -124,6 +144,18 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(openLogPanelCmd);
 
+  // 注册全量额度刷新命令（命令面板 / 快捷键可用）
+  const refreshQuotaCmd = vscode.commands.registerCommand('antigravityKite.refreshQuota', async () => {
+    await refreshAllUsageInteractive(context);
+  });
+  context.subscriptions.push(refreshQuotaCmd);
+
+  // 注册健康复检命令（独立推理探针，封禁只在推理端点现形）
+  const healthRecheckCmd = vscode.commands.registerCommand('antigravityKite.healthRecheck', async () => {
+    await backgroundProbeAllHealth();
+  });
+  context.subscriptions.push(healthRecheckCmd);
+
   // 延迟 2 秒执行首次后台静默全局额度刷新
   setTimeout(() => backgroundRefreshAllUsage(context), 2000);
 
@@ -132,10 +164,11 @@ export function activate(context: vscode.ExtensionContext) {
   const healthInterval = setInterval(() => backgroundProbeAllHealth(), HEALTH_PROBE_INTERVAL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(healthInterval) });
 
-  // 后台定时刷新（间隔可配置，默认 15 分钟，重启生效）
-  const refreshMinutes = Math.max(5, vscode.workspace.getConfiguration('antigravityKite').get<number>('quotaRefreshMinutes', 15));
-  const refreshInterval = setInterval(() => backgroundRefreshAllUsage(context), refreshMinutes * 60 * 1000);
-  context.subscriptions.push({ dispose: () => clearInterval(refreshInterval) });
+  // 后台定时刷新（间隔可配置，默认 15 分钟；设置保存时即时重排，无需重启）
+  applyQuotaRefreshInterval(context);
+  context.subscriptions.push({
+    dispose: () => { if (quotaRefreshTimer) { clearInterval(quotaRefreshTimer); quotaRefreshTimer = null; } }
+  });
 }
 
 export function deactivate() {
@@ -154,6 +187,42 @@ function healthFromError(err: unknown): AccountHealth {
 }
 
 /**
+ * 统一单账号额度刷新管线（v1.1.16 管线合一：唯一权威实现）。
+ * 此前状态栏私有 30s 定时器、后台全池 15min、侧栏手动单号/全量四条路径各抓各的，
+ * 缓存两份、tracker 漏采、健康归类缺失。现在全部收敛到这里：
+ *   抓取 → 共享 usageCache → usageTracker 统计 → 失败健康归类 → 三端分发（底栏/侧栏/统计面板）
+ * @param batch 批量模式：跳过逐号落盘与统计面板推送，由调用方收口一次（避免 8 号 ×2 次写盘风暴）
+ */
+async function refreshOneAccountUsage(
+  email: string,
+  context: vscode.ExtensionContext,
+  opts: { batch?: boolean } = {}
+): Promise<UsageSnapshot | null> {
+  const account = accountStore.getAll().find(a => a.email === email && !a.disabled);
+  if (!account) return null;
+  try {
+    const snapshot = await fetchUsage(account);
+    usageCache.set(email, snapshot);
+    usageCacheLastRefresh = Date.now();
+    if (!opts.batch) saveUsageCache(context);
+    usageTracker.recordRefresh();
+    usageTracker.recordUsage(email, snapshot.minRemainingPercent, snapshot.tierId);
+    statusBarManager?.updateUsage(email, snapshot);
+    sidebarProvider?.postMessage({ type: 'usage', email, snapshot });
+    if (!opts.batch) logPanel.pushLogPanelData(context, usageTracker);
+    return snapshot;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Kite-Usage] 刷新账号 ${email} 额度失败:`, msg);
+    lastUsageError = msg;
+    // 元数据层失败顺路归类凭据失效；封禁在推理端点，由健康探针负责
+    persistHealthIfChanged(email, healthFromError(err));
+    sidebarProvider?.postMessage({ type: 'usage', email, error: msg });
+    return null;
+  }
+}
+
+/**
  * 健康状态落盘（去抖）：只在 status 翻转时写 accounts.json。
  * 背景探测每小时×N 账号，若每次都写盘会触发 watcher→load→pushAccounts 风暴，
  * 挤占切号流程的写窗口（v1.1.13 教训）。
@@ -165,6 +234,8 @@ function persistHealthIfChanged(email: string, health: AccountHealth): void {
   }
   // 无论是否落盘都推给侧栏：checkedAt/detail 实时可见，卡片即时变色
   sidebarProvider?.postMessage({ type: 'health', email, health });
+  // 健康翻转同步底栏（封禁/失效在状态栏亮牌，额度满格不包庇封禁号）
+  statusBarManager?.update();
 }
 
 /**
@@ -191,26 +262,27 @@ async function backgroundProbeAllHealth() {
 async function backgroundRefreshAllUsage(context: vscode.ExtensionContext) {
   console.log('[Kite-Background] 正在执行后台定时静默全局额度刷新...');
   const accounts = accountStore.getAll().filter(a => !a.disabled);
+  // 批量模式走统一管线（逐号分发底栏/侧栏，落盘与统计面板由本函数收口一次）
   for (const account of accounts) {
-    try {
-      const snapshot = await fetchUsage(account);
-      usageCache.set(account.email, snapshot);
-
-      // 实时同步给状态栏
-      statusBarManager?.updateUsage(account.email, snapshot);
-      // 实时推送给当前活动的侧栏
-      sidebarProvider?.postMessage({ type: 'usage', email: account.email, snapshot });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.warn(`[Kite-Background] 刷新账号 ${account.email} 额度失败:`, msg);
-      // 失败同步给卡片，杜绝无反馈占位；顺路归类凭据失效（封禁由健康探针负责）
-      persistHealthIfChanged(account.email, healthFromError(e));
-      sidebarProvider?.postMessage({ type: 'usage', email: account.email, error: msg });
-    }
+    await refreshOneAccountUsage(account.email, context, { batch: true });
   }
-  usageCacheLastRefresh = Date.now();
   saveUsageCache(context);
+  logPanel.pushLogPanelData(context, usageTracker);
   console.log('[Kite-Background] 后台定时静默全局额度刷新完成。');
+}
+
+/** 全池刷新（QuickPick / 命令面板入口），带完成提示 */
+async function refreshAllUsageInteractive(context: vscode.ExtensionContext) {
+  const accounts = accountStore.getAll().filter(a => !a.disabled);
+  let successCount = 0;
+  for (const account of accounts) {
+    const snap = await refreshOneAccountUsage(account.email, context, { batch: true });
+    if (snap) successCount++;
+  }
+  saveUsageCache(context);
+  logPanel.pushLogPanelData(context, usageTracker);
+  sidebarProvider?.refresh();
+  return successCount;
 }
 
 /** 切号防连点：调度成功后 IDE 会关闭，无需重置；调度失败时重置 */
@@ -379,6 +451,12 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     await this._handleMessage({ type: 'setCurrentAccount', email });
   }
 
+  /** 底栏"打开设置"快捷入口：聚焦侧栏并弹出设置模态框 */
+  openSettingsUi() {
+    vscode.commands.executeCommand('antigravityKite.sidebar.focus');
+    this._view?.webview.postMessage({ type: 'openSettings' });
+  }
+
   /** 推送设置到 webview（读 package.json 中 contributes.configuration 的配置项） */
   private _pushSettings() {
     const cfg = vscode.workspace.getConfiguration('antigravityKite');
@@ -389,10 +467,13 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         updateAutoInstall: cfg.get<boolean>('update.autoInstall', true),
         autoConfirmDeclaration: cfg.get<boolean>('autoConfirmDeclaration', true),
         cdpPort: cfg.get<number>('cdpPort', 9333),
+        cdpHeartbeatMs: cfg.get<number>('cdpHeartbeatMs', 500),
+        syncGeminiFiles: cfg.get<boolean>('switch.syncGeminiFiles', true),
+        quotaRefreshMinutes: cfg.get<number>('quotaRefreshMinutes', 15),
         locale: cfg.get<string>('locale', 'auto'),
         statusBarEnabled: cfg.get<boolean>('statusBar.enabled', true),
         statusBarPosition: cfg.get<string>('statusBar.position', 'right'),
-        statusBarStyle: cfg.get<string>('statusBar.style', 'full'),
+        statusBarStyle: cfg.get<string>('statusBar.style', 'smart'),
         statusBarAccount: cfg.get<boolean>('statusBar.showAccount', true),
         statusBarModels: cfg.get<boolean>('statusBar.showModels', true),
         statusBarCredits: cfg.get<boolean>('statusBar.showCredits', true),
@@ -413,19 +494,29 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     await cfg.update('update.autoInstall', s.updateAutoInstall !== false, target);
     await cfg.update('autoConfirmDeclaration', s.autoConfirmDeclaration !== false, target);
     await cfg.update('cdpPort', Number.isFinite(port) && port > 0 ? port : 9333, target);
+    const heartbeat = Number(s.cdpHeartbeatMs);
+    await cfg.update('cdpHeartbeatMs', Number.isFinite(heartbeat) ? Math.min(5000, Math.max(200, Math.round(heartbeat))) : 500, target);
+    await cfg.update('switch.syncGeminiFiles', s.syncGeminiFiles !== false, target);
+    const quotaMin = Number(s.quotaRefreshMinutes);
+    const prevQuotaMin = cfg.get<number>('quotaRefreshMinutes', 15);
+    await cfg.update('quotaRefreshMinutes', Number.isFinite(quotaMin) ? Math.min(120, Math.max(5, Math.round(quotaMin))) : 15, target);
     await cfg.update('locale', nextLocale, target);
     await cfg.update('statusBar.enabled', s.statusBarEnabled !== false, target);
     const sbPosition = String(s.statusBarPosition ?? 'right');
-    const sbStyle = String(s.statusBarStyle ?? 'full');
+    const sbStyle = String(s.statusBarStyle ?? 'smart');
     const sbRefresh = Number(s.statusBarRefresh);
     await cfg.update('statusBar.position', sbPosition === 'left' ? 'left' : 'right', target);
-    await cfg.update('statusBar.style', ['dot', 'percent', 'compact', 'dual', 'labeled', 'full'].includes(sbStyle) ? sbStyle : 'full', target);
+    await cfg.update('statusBar.style', ['smart', 'dot', 'percent', 'compact', 'dual', 'labeled', 'full'].includes(sbStyle) ? sbStyle : 'smart', target);
     await cfg.update('statusBar.refreshSeconds', Number.isFinite(sbRefresh) ? Math.min(600, Math.max(10, Math.round(sbRefresh))) : 30, target);
     await cfg.update('statusBar.showAccount', s.statusBarAccount !== false, target);
     await cfg.update('statusBar.showModels', s.statusBarModels !== false, target);
     await cfg.update('statusBar.showCredits', s.statusBarCredits !== false, target);
     await cfg.update('statusBar.showPool', s.statusBarPool !== false, target);
     logInfo('settings.saved', { ...s });
+    // 全池刷新间隔改动即时重排（此前要重启才生效）
+    if (Number.isFinite(quotaMin) && Math.min(120, Math.max(5, Math.round(quotaMin))) !== prevQuotaMin) {
+      applyQuotaRefreshInterval(this._context);
+    }
     // 语言切换：重建 webview 使界面文案立即生效，并补推全部状态
     if (nextLocale !== prevLocale && this._view) {
       statusBarManager?.update();
@@ -497,56 +588,30 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     }
   }
 
-  /** 刷新单个账号配额 */
+  /** 刷新单个账号配额（v1.1.16 起委托统一管线：抓取→缓存→tracker→健康归类→三端分发） */
   private async _refreshUsage(email: string) {
-    const account = accountStore.getAll().find(a => a.email === email);
-    if (!account) return;
-    try {
-      const snapshot = await fetchUsage(account);
-      usageCache.set(email, snapshot);
-      saveUsageCache(this._context);
-      usageTracker.recordRefresh();
-      usageTracker.recordUsage(email, snapshot.minRemainingPercent, snapshot.tierId);
-      this._view?.webview.postMessage({ type: 'usage', email, snapshot });
-      logPanel.pushLogPanelData(this._context, usageTracker);
-    } catch (err) {
-      // 元数据层失败顺路归类凭据失效；封禁在推理端点，由健康探针负责
-      persistHealthIfChanged(email, healthFromError(err));
-      this._view?.webview.postMessage({ type: 'usage', email, error: String(err) });
-    }
+    await refreshOneAccountUsage(email, this._context);
     // 无论成败都要收口旋转态，否则按钮会一直转
     this._view?.webview.postMessage({ type: 'refreshDone', scope: 'one', email });
   }
 
-  /** 批量刷新所有账号配额 */
+  /** 批量刷新所有账号配额（委托统一管线，批量模式统一落盘收口） */
   private async _refreshAllUsage() {
     const accounts = accountStore.getAll().filter(a => !a.disabled);
     let successCount = 0;
-    let errorCount = 0;
-    let lastError = '';
     for (const account of accounts) {
-      try {
-        const snapshot = await fetchUsage(account);
-        usageCache.set(account.email, snapshot);
-        usageTracker.recordRefresh();
-        usageTracker.recordUsage(account.email, snapshot.minRemainingPercent, snapshot.tierId);
-        this._view?.webview.postMessage({ type: 'usage', email: account.email, snapshot });
-        successCount++;
-      } catch (err) {
-        errorCount++;
-        lastError = err instanceof Error ? err.message : String(err);
-        persistHealthIfChanged(account.email, healthFromError(err));
-        this._view?.webview.postMessage({ type: 'usage', email: account.email, error: lastError });
-      }
+      const snap = await refreshOneAccountUsage(account.email, this._context, { batch: true });
+      if (snap) successCount++;
     }
-    usageCacheLastRefresh = Date.now();
+    const errorCount = accounts.length - successCount;
     saveUsageCache(this._context);
     this._pushAccounts();
     logPanel.pushLogPanelData(this._context, usageTracker);
     if (errorCount === 0) {
       this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('refreshedQuota', successCount) });
     } else if (successCount === 0) {
-      this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('refreshAllFailed', errorCount, lastError) });
+      // 失败明细已由统一管线逐号推送到卡片（usage error），toast 带最近一条明细
+      this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('refreshAllFailed', errorCount, lastUsageError) });
     } else {
       this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: t('refreshPartial', successCount, errorCount) });
     }
@@ -860,6 +925,11 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
 
       case 'getSettings':
         this._pushSettings();
+        break;
+
+      case 'openSettings':
+        // 底栏 QuickPick"打开设置"落地：webview 侧弹出设置模态框
+        this._view?.webview.postMessage({ type: 'openSettings' });
         break;
 
       case 'getCdpStatus':
@@ -1260,9 +1330,21 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
           <label class="as-switch"><input type="checkbox" id="setAutoConfirm"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
         </div>
         <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="syncGeminiRow">切号同步 Gemini 配置</span>
+          <label class="as-switch"><input type="checkbox" id="setSyncGemini"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+        <div class="v2-opt-row">
           <span class="v2-opt-label" data-i18n="cdpPortRow">调试端口</span>
           <input type="number" class="v2-sel sb-port-input" id="setCdpPort" min="1024" max="65535" placeholder="9333">
         </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="heartbeatRow">CDP 心跳间隔</span>
+          <div class="sb-num-row">
+            <input type="number" class="v2-param-val" id="setCdpHeartbeat" min="200" max="5000" placeholder="500">
+            <span class="v2-param-unit" data-i18n="unitMs">毫秒</span>
+          </div>
+        </div>
+        <div class="settings-hint" data-i18n="heartbeatHint">切号后探测 IDE 就绪的心跳节奏。数值越小切号越快、占用越高；200–5000 毫秒。</div>
         <div class="settings-hint" data-i18n="cdpPortHint">切号时通过该端口与 IDE 通信，9222 会作为兜底自动尝试。</div>
         <div class="cdp-status-row">
           <span class="cdp-dot is-unknown" id="cdpStatusDot"></span>
@@ -1293,6 +1375,21 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
       <div class="settings-group">
         <div class="settings-group-head">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="15" x2="21" y2="15"/></svg>
+          <span data-i18n="quotaGroup">额度与刷新</span>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="quotaPoolRow">全池后台刷新间隔</span>
+          <div class="sb-num-row">
+            <input type="number" class="v2-param-val" id="setQuotaRefresh" min="5" max="120" placeholder="15">
+            <span class="v2-param-unit" data-i18n="unitMin">分钟</span>
+          </div>
+        </div>
+        <div class="settings-hint" data-i18n="quotaPoolHint">驱动号池卡片、统计面板与底栏的全量刷新（保存即时生效）。底栏"当前号"另有短周期增量刷新，在状态栏组单独配置。</div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-head">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="15" x2="21" y2="15"/></svg>
           <span data-i18n="statusBar">状态栏</span>
         </div>
         <div class="v2-opt-row">
@@ -1309,6 +1406,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         <div class="v2-opt-row">
           <span class="v2-opt-label" data-i18n="sbStyleRow">样式</span>
           <select class="v2-sel" id="setStatusStyle" data-sb="style">
+            <option value="smart" data-i18n="sbStyleSmart">账号 + 最紧额度 — 聚合（推荐）</option>
             <option value="dot" data-i18n="sbStyleDot">状态灯 — 仅图标</option>
             <option value="percent" data-i18n="sbStylePercent">75% — 仅最低百分比</option>
             <option value="compact" data-i18n="sbStyleCompact">状态灯 75% — 图标 + 最低百分比</option>
@@ -1962,6 +2060,10 @@ window.addEventListener('message', e => {
   if (msg.type === 'settings') {
     fillSettingsForm(msg.settings);
   }
+  if (msg.type === 'openSettings') {
+    // 底栏 QuickPick"打开设置"入口：聚焦侧栏后弹出设置模态框
+    openSettingsModal();
+  }
   if (msg.type === 'switchResult') {
     switchingEmail = null;
     renderAccounts();
@@ -2124,11 +2226,14 @@ function fillSettingsForm(s) {
   chk('setUpdateAutoCheck', s.updateAutoCheck !== false);
   chk('setUpdateAutoInstall', s.updateAutoInstall !== false);
   chk('setAutoConfirm', s.autoConfirmDeclaration !== false);
+  chk('setSyncGemini', s.syncGeminiFiles !== false);
   set('setCdpPort', s.cdpPort || 9333);
+  set('setCdpHeartbeat', s.cdpHeartbeatMs || 500);
+  set('setQuotaRefresh', s.quotaRefreshMinutes || 15);
   set('setLocale', s.locale || 'auto');
   chk('setStatusEnabled', s.statusBarEnabled !== false);
   set('setStatusPosition', s.statusBarPosition || 'right');
-  set('setStatusStyle', s.statusBarStyle || 'full');
+  set('setStatusStyle', s.statusBarStyle || 'smart');
   chk('setStatusAccount', s.statusBarAccount !== false);
   chk('setStatusModels', s.statusBarModels !== false);
   chk('setStatusCredits', s.statusBarCredits !== false);
@@ -2228,10 +2333,13 @@ function renderCdpStatus(s) {
       updateAutoInstall: on('setUpdateAutoInstall'),
       autoConfirmDeclaration: on('setAutoConfirm'),
       cdpPort: num('setCdpPort', 9333),
+      cdpHeartbeatMs: num('setCdpHeartbeat', 500),
+      syncGeminiFiles: on('setSyncGemini'),
+      quotaRefreshMinutes: num('setQuotaRefresh', 15),
       locale: val('setLocale') || 'auto',
       statusBarEnabled: on('setStatusEnabled'),
       statusBarPosition: val('setStatusPosition') || 'right',
-      statusBarStyle: val('setStatusStyle') || 'full',
+      statusBarStyle: val('setStatusStyle') || 'smart',
       statusBarRefresh: num('setStatusRefresh', 30),
       statusBarAccount: on('setStatusAccount'),
       statusBarModels: on('setStatusModels'),
@@ -2260,10 +2368,13 @@ function renderCdpStatus(s) {
       updateAutoInstall: true,
       autoConfirmDeclaration: true,
       cdpPort: 9333,
+      cdpHeartbeatMs: 500,
+      syncGeminiFiles: true,
+      quotaRefreshMinutes: 15,
       locale: 'auto',
       statusBarEnabled: true,
       statusBarPosition: 'right',
-      statusBarStyle: 'full',
+      statusBarStyle: 'smart',
       statusBarRefresh: 30,
       statusBarAccount: true,
       statusBarModels: true,

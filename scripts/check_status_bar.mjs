@@ -1,0 +1,135 @@
+#!/usr/bin/env node
+/**
+ * 底栏重构检查（devloop 红线 4：修改旧行为前，先写一条能在旧代码上失败的检查）
+ *
+ * 断言 out/statusBar.js 的纯函数导出（不实例化 StatusBarManager、不触 real globalState）：
+ *   1. validateStyle —— 新增 smart 聚合样式且为默认；旧 6 档全保留（自定义丰富）；非法值回退 smart
+ *   2. sortPoolForQuickPick —— 可用号按最紧额度降序（最优号在顶）→ 未知 → 封禁/登录失效 → 禁用垫底
+ *   3. pickHealthMark —— 封禁=error 红底 / 登录失效=warning / ok 与未检测不亮牌（异常才亮牌）
+ *   4. formatWindowShort —— 平铺样式窗口短标（复用 usageService 权威 label，不重复实现）
+ *
+ * 旧产物（<1.1.16）没有这些导出 → 直接 FAIL，这正是本次重构的行为差异。
+ */
+import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, '..');
+const require2 = createRequire(import.meta.url);
+
+// NODE_PATH 注入 vscode 桩：本脚本自造链式桩（浅桩返回 {}，i18n.getLang 要调 getConfiguration().get() 会断）
+// 共享桩 .preview/vscode-stub 仍留给 probe 脚本，互不影响
+const stubNM = path.join(root, '.preview', 'vscode-stub', 'node_modules');
+const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kite-vscode-stub-'));
+fs.mkdirSync(path.join(stubDir, 'vscode'), { recursive: true });
+fs.writeFileSync(
+  path.join(stubDir, 'vscode', 'package.json'),
+  JSON.stringify({ name: 'vscode', main: 'index.js' })
+);
+const STUB_SRC = `
+const chain = new Proxy(function () {}, {
+  get: (t, prop) => {
+    if (prop === 'then' || prop === Symbol.toPrimitive) return undefined;
+    return chain;
+  },
+  apply: () => chain,
+  construct: () => chain,
+});
+module.exports = chain;
+`;
+fs.writeFileSync(path.join(stubDir, 'vscode', 'index.js'), STUB_SRC);
+process.env.NODE_PATH = [stubDir, stubNM, process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
+const Module = require2('module');
+Module._initPaths();
+
+let failures = 0;
+const ok = (name) => console.log(`  PASS  ${name}`);
+const fail = (name, msg) => { failures++; console.error(`  FAIL  ${name}\n        ${msg}`); };
+const assert = (name, cond, msg = '') => (cond ? ok(name) : fail(name, msg));
+
+console.log('[check_status_bar] 加载 out/statusBar.js …');
+let mod;
+try {
+  mod = require2(path.join(root, 'out', 'statusBar.js'));
+} catch (e) {
+  console.error(`  FAIL  out/statusBar.js 加载失败: ${e.message}`);
+  process.exit(1);
+}
+
+// ── 1. validateStyle ──────────────────────────────────────────────
+if (typeof mod.validateStyle !== 'function') {
+  fail('validateStyle 存在', '旧产物无此导出——底栏尚未引入 smart 聚合样式（本次重构核心行为）');
+} else {
+  assert('validateStyle(smart) = smart（默认聚合段）', mod.validateStyle('smart') === 'smart');
+  assert('validateStyle(full) 保留旧样式', mod.validateStyle('full') === 'full');
+  assert('validateStyle(dot/percent/compact/dual/labeled) 全保留',
+    ['dot', 'percent', 'compact', 'dual', 'labeled'].every(s => mod.validateStyle(s) === s));
+  assert('validateStyle(非法值) 回退 smart', mod.validateStyle('bogus') === 'smart');
+}
+
+// ── 2. sortPoolForQuickPick ───────────────────────────────────────
+if (typeof mod.sortPoolForQuickPick !== 'function') {
+  fail('sortPoolForQuickPick 存在', '旧产物无此导出——QuickPick 未按最紧额度排序（对标 BoyGR 模式）');
+} else {
+  const mk = (email, extra = {}) => ({ email, ...extra });
+  const usage = (min) => ({ minRemainingPercent: min, models: [] });
+  const pool = [
+    mk('banned@x.com', { health: { status: 'banned', checkedAt: '' } }),      // 封禁但额度满格
+    mk('low@x.com'),                                                          // 可用 20%
+    mk('disabled@x.com', { disabled: true }),                                 // 禁用
+    mk('high@x.com'),                                                         // 可用 80%
+    mk('unknown@x.com', { health: { status: 'unknown', checkedAt: '' } }),    // 检测异常
+    mk('current@x.com'),                                                      // 当前号 50%
+  ];
+  const getUsage = (email) => ({
+    'banned@x.com': usage(100), 'low@x.com': usage(20), 'disabled@x.com': usage(90),
+    'high@x.com': usage(80), 'unknown@x.com': usage(100), 'current@x.com': usage(50),
+  }[email]);
+  const got = mod.sortPoolForQuickPick(pool, getUsage, 'current@x.com').map(a => a.email);
+  const want = ['current@x.com', 'high@x.com', 'low@x.com', 'unknown@x.com', 'banned@x.com', 'disabled@x.com'];
+  assert('QuickPick 排序：当前号 → 可用按最紧额度降序 → 未知 → 封禁 → 禁用垫底',
+    JSON.stringify(got) === JSON.stringify(want), `实际: ${got.join(' , ')}`);
+}
+
+// ── 3. pickHealthMark ─────────────────────────────────────────────
+if (typeof mod.pickHealthMark !== 'function') {
+  fail('pickHealthMark 存在', '旧产物无此导出——健康态未接入底栏（封禁号照样 ✓ 100% 的化装问题）');
+} else {
+  assert('封禁 → error 红底', (() => {
+    const m = mod.pickHealthMark({ status: 'banned', checkedAt: '' });
+    return m.icon === '$(error)' && m.bg === 'error';
+  })(), JSON.stringify(mod.pickHealthMark({ status: 'banned', checkedAt: '' })));
+  assert('登录失效 → warning 橙底', (() => {
+    const m = mod.pickHealthMark({ status: 'auth_invalid', checkedAt: '' });
+    return m.bg === 'warning' && m.icon === '$(key)';
+  })(), JSON.stringify(mod.pickHealthMark({ status: 'auth_invalid', checkedAt: '' })));
+  assert('检测异常 → 圆斜杠不亮底', (() => {
+    const m = mod.pickHealthMark({ status: 'unknown', checkedAt: '' });
+    return m.bg === undefined && !!m.icon;
+  })(), JSON.stringify(mod.pickHealthMark({ status: 'unknown', checkedAt: '' })));
+  assert('ok / 未检测 → 不亮牌（异常才亮牌原则）', (() => {
+    const a = mod.pickHealthMark({ status: 'ok', checkedAt: '' });
+    const b = mod.pickHealthMark(undefined);
+    return !a.icon && !a.bg && !b.icon && !b.bg;
+  })(), JSON.stringify([mod.pickHealthMark({ status: 'ok', checkedAt: '' }), mod.pickHealthMark(undefined)]));
+}
+
+// ── 4. formatWindowShort（平铺样式短标，标签唯一权威源在 usageService.label）────
+if (typeof mod.formatWindowShort !== 'function') {
+  fail('formatWindowShort 存在', '旧产物无此导出——平铺样式仍在 statusBar 内重复实现模型标签');
+} else {
+  assert('label 优先（usageService 权威标签直通）',
+    mod.formatWindowShort({ label: 'Gemini 周额度', modelId: 'gemini:weekly', remainingPercent: 100 }) === 'Gemini 周额度',
+    mod.formatWindowShort({ label: 'Gemini 周额度', modelId: 'gemini:weekly', remainingPercent: 100 }));
+  assert('无 label 时按 modelId 推导兜底',
+    /Gemini/.test(mod.formatWindowShort({ modelId: 'gemini:weekly', remainingPercent: 50 })),
+    mod.formatWindowShort({ modelId: 'gemini:weekly', remainingPercent: 50 }));
+}
+
+console.log(failures === 0
+  ? '[check_status_bar] 全部通过 ✔'
+  : `[check_status_bar] ${failures} 项失败 ✘`);
+process.exit(failures === 0 ? 0 : 1);

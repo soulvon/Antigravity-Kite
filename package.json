@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.1.15",
+  "version": "1.1.16",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -52,6 +52,26 @@
       {
         "command": "antigravityKite.openLogPanel",
         "title": "%cmd.openLogPanel%",
+        "category": "Antigravity Kite"
+      },
+      {
+        "command": "antigravityKite.quickSwitchAccount",
+        "title": "%cmd.quickSwitch%",
+        "category": "Antigravity Kite"
+      },
+      {
+        "command": "antigravityKite.openSidebar",
+        "title": "%cmd.openSidebar%",
+        "category": "Antigravity Kite"
+      },
+      {
+        "command": "antigravityKite.refreshQuota",
+        "title": "%cmd.refreshQuota%",
+        "category": "Antigravity Kite"
+      },
+      {
+        "command": "antigravityKite.healthRecheck",
+        "title": "%cmd.healthRecheck%",
         "category": "Antigravity Kite"
       }
     ],
@@ -141,6 +161,7 @@
         "antigravityKite.statusBar.style": {
           "type": "string",
           "enum": [
+            "smart",
             "dot",
             "percent",
             "compact",
@@ -149,6 +170,7 @@
             "full"
           ],
           "enumDescriptions": [
+            "%config.statusBar.style.smart%",
             "%config.statusBar.style.dot%",
             "%config.statusBar.style.percent%",
             "%config.statusBar.style.compact%",
@@ -156,7 +178,7 @@
             "%config.statusBar.style.labeled%",
             "%config.statusBar.style.full%"
           ],
-          "default": "full",
+          "default": "smart",
           "description": "%config.statusBar.style%"
         },
         "antigravityKite.statusBar.refreshSeconds": {

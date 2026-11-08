@@ -1,72 +1,163 @@
 /**
- * 底部状态栏管理器
+ * 底部状态栏管理器（v1.1.16 重构：对标 12 家同类 + BuddyRelay 范式）
  *
- * 设计（对齐 BuddyRelay 的 codicon 体系，100% 无 Emoji）：
- *   [左]  $(account) 邮箱前缀 | $(check) Claude: 92% | ... | $(credit-card) 87.5
- *   [右]  $(pulse) 池 3/5
+ * 设计：
+ *   [右·主]  $(account) 账号前缀 ✓ 98%   —— smart 聚合段（默认）：账号 + 最紧额度，异常才升级
+ *   [右·副]  $(pulse) 池 3/5             —— 号池统计，点击开侧栏
+ *
+ * 模式收敛（对标结论）：
+ * - 默认单段聚合，详情下沉 tooltip / QuickPick（Copilot 官方、Gravity Orchestrator、BuddyRelay 同款）
+ * - 变色取"最吃紧"一档：min(各窗口) 决定，<30 警告底 / <10 错误底（社区阈值收敛区）
+ * - 健康态上栏：封禁=$(error) 红底、登录失效=$(key) 橙底、检测异常=$(circle-slash) 不亮底
+ *   （元数据端点对封禁隐身，额度满格 ≠ 健康——v1.1.14 实测定案）
+ * - 点击弹混合菜单：账号按最紧额度降序（最优号在顶，BoyGR 模式）+ 快捷操作区（BuddyRelay 模式）
+ * - 数据管线合一：不再自建定时抓取，走 extension.ts 的共享 usageCache + 统一刷新管线（deps 注入）
+ * - 平铺样式（labeled/full）保留给重度用户（自定义丰富），标签唯一权威源是 usageService.label
  *
  * 特性：
- * - 额度低于阈值时切换警告/错误图标与背景色
- * - 订阅账号变化事件，自动重绘
- * - 自动刷新额度（间隔可配置，改动即时生效）
+ * - 6 档旧样式全保留，新增 smart 聚合段并设为默认（validateStyle 兜底非法值）
+ * - 订阅账号变化 / 配置变化事件，自动重绘；健康翻转由 persistHealthIfChanged 触发重绘
  */
 import * as vscode from 'vscode';
 import * as accountStore from './accountStore';
-import { fetchUsage } from './usageService';
-import { UsageSnapshot } from './types';
+import { UsageSnapshot, AccountHealth, StoredAccount, ModelQuota } from './types';
 import { t } from './i18n';
 import { notifyUi } from './uiChannel';
 
-function formatModelLabel(m: { modelId?: string; label?: string }): string {
-  const isWeekly = m.modelId?.endsWith(':weekly') || /week/i.test(m.label || '');
-  const family = /argon/i.test(m.modelId || '') ? 'Gemini 4'
-    : /claude/i.test(m.modelId || m.label || '') ? 'Claude'
-    : 'Gemini';
-  return `${family} ${isWeekly ? t('quotaWeekly') : t('quota5h')}`;
-}
-
-/** 状态栏左段信息密度：dot/percent/compact 极简（只看最低额度）；labeled 账号+各模型；full 完整（加积分） */
-export type StatusBarStyle = 'dot' | 'percent' | 'compact' | 'dual' | 'labeled' | 'full';
+/** 状态栏左段信息密度：smart 聚合段（默认，账号+最紧额度）；dot/percent/compact/dual 极简；labeled/full 平铺 */
+export type StatusBarStyle = 'smart' | 'dot' | 'percent' | 'compact' | 'dual' | 'labeled' | 'full';
 
 export type StatusBarPosition = 'left' | 'right';
 
-const VALID_STYLES: StatusBarStyle[] = ['dot', 'percent', 'compact', 'dual', 'labeled', 'full'];
+const VALID_STYLES: StatusBarStyle[] = ['smart', 'dot', 'percent', 'compact', 'dual', 'labeled', 'full'];
 const VALID_POSITIONS: StatusBarPosition[] = ['left', 'right'];
 
 const OPEN_SIDEBAR_CMD = 'antigravityKite.openSidebar';
 
+/** 样式白名单校验：非法值回退 smart（读失败 = 未知，走默认保守路径） */
+export function validateStyle(v: string): StatusBarStyle {
+  return VALID_STYLES.includes(v as StatusBarStyle) ? (v as StatusBarStyle) : 'smart';
+}
+
+/**
+ * 健康态 → 底栏标记。异常才亮牌：ok 与未检测返回空标记。
+ * bg 用官方语义色（error/warning background 是官方告警条款的合理使用：额度监控类的危险档）。
+ */
+export function pickHealthMark(health?: AccountHealth): { icon: string; bg: 'error' | 'warning' | undefined } {
+  switch (health?.status) {
+    case 'banned':
+      return { icon: '$(error)', bg: 'error' };
+    case 'auth_invalid':
+      return { icon: '$(key)', bg: 'warning' };
+    case 'unknown':
+      return { icon: '$(circle-slash)', bg: undefined };
+    default:
+      return { icon: '', bg: undefined };
+  }
+}
+
+/**
+ * QuickPick 账号排序（切号场景最顺手：想切的号永远在上面）：
+ * 当前号 → 可用（按最紧额度降序）→ 检测异常 → 封禁/登录失效 → 禁用垫底
+ */
+export function sortPoolForQuickPick(
+  accounts: StoredAccount[],
+  getUsage: (email: string) => UsageSnapshot | undefined,
+  currentEmail: string
+): StoredAccount[] {
+  const rank = (a: StoredAccount): number => {
+    if (a.disabled) return 4;
+    if (a.email.toLowerCase() === currentEmail.toLowerCase()) return 0;
+    const h = a.health?.status;
+    if (h === 'banned' || h === 'auth_invalid') return 3;
+    if (h === 'unknown') return 2;
+    return 1;
+  };
+  return [...accounts].sort((a, b) => {
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    if (ra === 1) {
+      // 同为可用：最紧额度高的在前（undefined 额度当 -1 沉底）
+      const pa = getUsage(a.email)?.minRemainingPercent ?? -1;
+      const pb = getUsage(b.email)?.minRemainingPercent ?? -1;
+      if (pb !== pa) return pb - pa;
+    }
+    return a.email.localeCompare(b.email);
+  });
+}
+
+/** 平铺样式窗口短标：label 唯一权威源是 usageService（族×窗口已在抓取层定型），此处仅兜底推导 */
+export function formatWindowShort(m: { label?: string; modelId?: string }): string {
+  if (m.label) return m.label;
+  const modelId = m.modelId || '';
+  const family = modelId.startsWith('argon') ? 'Gemini 4'
+    : modelId.startsWith('claude') ? 'Claude'
+    : 'Gemini';
+  const isWeekly = modelId.endsWith(':weekly');
+  return `${family} ${isWeekly ? t('quotaWeekly') : t('quota5h')}`;
+}
+
+/** 依赖注入：状态栏不再自建数据管线，全部走 extension.ts 的共享缓存与统一刷新 */
+export interface StatusBarDeps {
+  /** 读共享额度缓存（唯一数据源） */
+  getUsage?: (email: string) => UsageSnapshot | undefined;
+  /** 刷新指定账号（统一管线：抓取→缓存→tracker→健康归类→三端分发） */
+  refreshCurrent?: (email: string) => Promise<void>;
+  /** 刷新全池（QuickPick 快捷操作） */
+  refreshAll?: () => Promise<void>;
+  /** 健康复检（QuickPick 快捷操作，独立推理探针） */
+  recheckHealth?: () => Promise<void>;
+  /** 打开设置弹窗（侧栏 webview 模态） */
+  openSettings?: () => void;
+}
+
+/** 配额条分档色（BuddyRelay 药丸同源：ok 翡翠/warn 橙黄/danger 红） */
+function barColor(pct: number): string {
+  if (pct >= 50) return '#10b981';
+  if (pct >= 30) return '#f59e0b';
+  if (pct >= 10) return '#f97316';
+  return '#ef4444';
+}
+
+/** 毫秒 → "3h 12m" / "2d 4h"（重置倒计时用；不可解析返回空串） */
+function fmtDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const m = Math.round(ms / 60000);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
 export class StatusBarManager implements vscode.Disposable {
-  private _left: vscode.StatusBarItem;
-  private _right: vscode.StatusBarItem;
+  private _main: vscode.StatusBarItem;
+  private _pool: vscode.StatusBarItem;
   private _ctx: vscode.ExtensionContext;
+  private _deps: StatusBarDeps;
   private _disposables: vscode.Disposable[] = [];
   private _currentAlignment: vscode.StatusBarAlignment = vscode.StatusBarAlignment.Right;
 
-  // 额度缓存
-  private _usageCache: Map<string, UsageSnapshot> = new Map();
   private _refreshTimer: NodeJS.Timeout | null = null;
-  private _isRefreshing = false;
-  private _onAccountSwitched?: (email: string) => void | Promise<void>;
-  private _switchRequest?: (email: string) => Promise<void>;
 
   constructor(
     ctx: vscode.ExtensionContext,
     onAccountSwitched?: (email: string) => void | Promise<void>,
-    switchRequest?: (email: string) => Promise<void>
+    switchRequest?: (email: string) => Promise<void>,
+    deps: StatusBarDeps = {}
   ) {
     this._ctx = ctx;
-    this._onAccountSwitched = onAccountSwitched;
-    this._switchRequest = switchRequest;
+    this._deps = deps;
 
-    // 左侧：配额 + 积分（对齐 Cockpit 风格），点击直接弹出切号列表
-    this._left = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    this._left.command = 'antigravityKite.quickSwitchAccount';
-    this._left.name = 'Kite Quota';
+    // 主段：账号 + 额度聚合，点击弹切号菜单（QuickPick）
+    this._main = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    this._main.command = 'antigravityKite.quickSwitchAccount';
+    this._main.name = 'Kite Quota';
 
-    // 右侧：号池统计，点击打开侧栏
-    this._right = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-    this._right.command = OPEN_SIDEBAR_CMD;
-    this._right.name = 'Kite Pool';
+    // 副段：号池统计，点击开侧栏
+    this._pool = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+    this._pool.command = OPEN_SIDEBAR_CMD;
+    this._pool.name = 'Kite Pool';
 
     // 注册打开侧栏命令
     this._disposables.push(
@@ -78,73 +169,7 @@ export class StatusBarManager implements vscode.Disposable {
     // 注册状态栏点击快速切号命令
     this._disposables.push(
       vscode.commands.registerCommand('antigravityKite.quickSwitchAccount', async () => {
-        const accounts = accountStore.getAll();
-        if (accounts.length === 0) {
-          notifyUi('warning', t('sbPoolEmpty'));
-          return;
-        }
-
-        const curEmail = this._ctx.globalState.get<string>('currentEmail') || '';
-
-        const items = accounts.map(a => {
-          const isCurrent = a.email.toLowerCase() === curEmail.toLowerCase();
-          const usage = this._usageCache.get(a.email);
-          let details = '';
-          if (usage) {
-            const detailsParts: string[] = [];
-            if (usage.availableAICredits !== undefined && usage.availableAICredits !== null) {
-              detailsParts.push(`$(credit-card) ${usage.availableAICredits}`);
-            }
-            for (const m of usage.models) {
-              detailsParts.push(`${formatModelLabel(m)}: ${m.remainingPercent}%`);
-            }
-            details = detailsParts.join(' | ');
-          }
-
-          return {
-            label: `${isCurrent ? '$(check) ' : ''}${a.email}`,
-            description: a.name || '',
-            detail: details ? `(${details})` : (a.disabled ? t('sbDisabled') : t('sbAvailable')),
-            account: a,
-            picked: isCurrent
-          };
-        });
-
-        const selected = await vscode.window.showQuickPick(items, {
-          placeHolder: t('sbPickAccount'),
-          matchOnDescription: true,
-          matchOnDetail: true
-        });
-
-        if (selected) {
-          if (selected.account.disabled) {
-            notifyUi('warning', t('sbAccountDisabled', selected.account.email));
-            return;
-          }
-
-          const email = selected.account.email;
-          if (email.toLowerCase() === curEmail.toLowerCase()) {
-            notifyUi('info', t('sbAlreadyCurrent', email));
-            return;
-          }
-
-          await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: t('sbSwitching', email),
-            cancellable: false
-          }, async () => {
-            // 复用侧栏完整切号链路（门控/token/凭据/状态库/agy/gemini/会话/引擎重载），
-            // 不再单独调 seamlessSwitch——那会只切会话不切凭据
-            try {
-              await this._switchRequest?.(email);
-              await this._onAccountSwitched?.(email);
-              this.update();
-              await this._refreshCurrentUsage();
-            } catch (err) {
-              notifyUi('error', t('sbSwitchFail', err instanceof Error ? err.message : String(err)));
-            }
-          });
-        }
+        await this._showQuickSwitch(onAccountSwitched, switchRequest);
       })
     );
 
@@ -158,60 +183,28 @@ export class StatusBarManager implements vscode.Disposable {
       })
     );
 
-    // 订阅账号变化
-    accountStore.onChange(() => {
-      this.update();
-      this._refreshCurrentUsage(); // 账号变化时刷新额度
-    });
-    
-    // 初始更新
+    // 订阅账号变化（健康/禁用/增删都在 store 里，重绘即可；额度刷新由统一管线推送）
+    accountStore.onChange(() => this.update());
+
     this.update();
-    
-    // 启动时刷新当前账号额度
-    this._refreshCurrentUsage();
-    
-    // 定时刷新当前账号额度（间隔可配置，改动即时生效）
     this._startRefreshTimer();
   }
 
   /**
-   * 更新额度缓存（供外部调用）
+   * 外部额度数据到位（统一管线推送），重绘即可——数据本体在共享 usageCache
    */
-  updateUsage(email: string, usage: UsageSnapshot): void {
-    this._usageCache.set(email, usage);
+  updateUsage(_email: string, _usage: UsageSnapshot): void {
     this.update();
   }
 
-  /**
-   * 刷新当前账号的额度
-   */
-  private async _refreshCurrentUsage(): Promise<void> {
-    if (this._isRefreshing) return;
-    
-    const curEmail = this._ctx.globalState.get<string>('currentEmail');
-    if (!curEmail) return;
-    
-    const account = accountStore.getByEmail(curEmail);
-    if (!account || !account.accessToken) return;
-    
-    this._isRefreshing = true;
-    try {
-      const snapshot = await fetchUsage(account);
-      this._usageCache.set(curEmail, snapshot);
-      this.update();
-    } catch (err) {
-      // 静默失败，保持显示缓存或默认值
-      console.error('[StatusBar] Failed to refresh usage:', err);
-    } finally {
-      this._isRefreshing = false;
-    }
-  }
-
-  /**
-   * 手动触发刷新额度
-   */
+  /** 手动触发当前号刷新（走统一管线） */
   async refreshUsage(): Promise<void> {
-    await this._refreshCurrentUsage();
+    const cur = this._ctx.globalState.get<string>('currentEmail') || '';
+    if (cur && this._deps.refreshCurrent) {
+      await this._deps.refreshCurrent(cur);
+    } else {
+      this.update();
+    }
   }
 
   private _sbCfg<T>(key: string, dft: T): T {
@@ -219,8 +212,7 @@ export class StatusBarManager implements vscode.Disposable {
   }
 
   private _getStyle(): StatusBarStyle {
-    const v = this._sbCfg<string>('style', 'full');
-    return VALID_STYLES.includes(v as StatusBarStyle) ? (v as StatusBarStyle) : 'full';
+    return validateStyle(this._sbCfg<string>('style', 'smart'));
   }
 
   private _getPosition(): StatusBarPosition {
@@ -233,22 +225,29 @@ export class StatusBarManager implements vscode.Disposable {
     return Number.isFinite(n) ? Math.min(600, Math.max(10, Math.floor(n))) : 30;
   }
 
-  /** 启动/重启当前账号额度定时刷新 */
+  /** 当前号短周期增量刷新：走统一管线（抓取→缓存→tracker→健康归类→分发），不自建 fetch */
   private _startRefreshTimer(): void {
     if (this._refreshTimer) clearInterval(this._refreshTimer);
-    this._refreshTimer = setInterval(() => this._refreshCurrentUsage(), this._getRefreshSeconds() * 1000);
+    this._refreshTimer = setInterval(() => {
+      const cur = this._ctx.globalState.get<string>('currentEmail');
+      if (!cur || !this._deps.refreshCurrent) return;
+      void this._deps.refreshCurrent(cur).catch(err => {
+        // 管线内部已归类健康并推送卡片；这里只留痕防定时器静默失败
+        console.warn('[StatusBar] 当前号刷新失败:', err instanceof Error ? err.message : String(err));
+      });
+    }, this._getRefreshSeconds() * 1000);
   }
 
   /** 按配置重建两个状态栏项的对齐方向（对齐仅创建时可指定，需重建 item） */
   private _ensureAlignment(position: StatusBarPosition): void {
     const target = position === 'left' ? vscode.StatusBarAlignment.Left : vscode.StatusBarAlignment.Right;
     if (target === this._currentAlignment) return;
-    try { this._left.dispose(); } catch { /* ignore */ }
-    try { this._right.dispose(); } catch { /* ignore */ }
-    this._left = vscode.window.createStatusBarItem(target, 100);
-    this._right = vscode.window.createStatusBarItem(target, 99);
-    this._left.command = 'antigravityKite.quickSwitchAccount';
-    this._right.command = OPEN_SIDEBAR_CMD;
+    try { this._main.dispose(); } catch { /* ignore */ }
+    try { this._pool.dispose(); } catch { /* ignore */ }
+    this._main = vscode.window.createStatusBarItem(target, 100);
+    this._pool = vscode.window.createStatusBarItem(target, 99);
+    this._main.command = 'antigravityKite.quickSwitchAccount';
+    this._pool.command = OPEN_SIDEBAR_CMD;
     this._currentAlignment = target;
   }
 
@@ -257,152 +256,392 @@ export class StatusBarManager implements vscode.Disposable {
    */
   update(): void {
     if (!this._sbCfg('enabled', true)) {
-      this._left.hide();
-      this._right.hide();
+      this._main.hide();
+      this._pool.hide();
       return;
     }
     this._ensureAlignment(this._getPosition());
-    this._renderLeft();
-    this._renderRight();
+    this._renderMain();
+    this._renderPool();
   }
 
+  /** 额度状态图标（额度维度；健康维度见 pickHealthMark） */
   private _getStatusIcon(pct: number): string {
     if (pct < 10) return '$(error)';
     if (pct < 30) return '$(warning)';
     return '$(check)';
   }
 
-  private _renderLeft(): void {
+  private _renderMain(): void {
     const curEmail = this._ctx.globalState.get<string>('currentEmail') || '';
-    const usage = curEmail ? this._usageCache.get(curEmail) : undefined;
-    
-    // 最低百分比决定背景色
-    const min = usage?.minRemainingPercent ?? 100;
-    if (min < 10) {
-      this._left.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-    } else if (min < 30) {
-      this._left.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-    } else {
-      this._left.backgroundColor = undefined;
-    }
-
+    const account = curEmail ? accountStore.getByEmail(curEmail) : undefined;
+    const usage = this._deps.getUsage ? this._deps.getUsage(curEmail) : undefined;
     const style = this._getStyle();
-    const icon = this._getStatusIcon(min);
-    const credits = usage && usage.availableAICredits !== undefined && usage.availableAICredits !== null
-      ? String(usage.availableAICredits) : '-';
+    const showAccount = this._sbCfg('showAccount', true);
     const showCredits = this._sbCfg('showCredits', true);
 
-    // 极简样式（dot/percent/compact/dual）：只看最低额度，不含账号；无额度数据时回退账号前缀
+    const short = curEmail ? curEmail.split('@')[0] : t('sbNotLoggedIn');
+
+    // 健康优先于额度：封禁号额度照样满格（元数据端点对封禁隐身），必须由健康定调
+    const health = pickHealthMark(account?.health);
+    const min = usage?.minRemainingPercent ?? 100;
+    const quotaIcon = this._getStatusIcon(min);
+    const statusBg = health.bg
+      ?? (min < 10 ? 'error' : min < 30 ? 'warning' : undefined);
+    this._main.backgroundColor = statusBg === 'error'
+      ? new vscode.ThemeColor('statusBarItem.errorBackground')
+      : statusBg === 'warning'
+        ? new vscode.ThemeColor('statusBarItem.warningBackground')
+        : undefined;
+
+    const credits = usage && usage.availableAICredits !== undefined && usage.availableAICredits !== null
+      ? String(usage.availableAICredits) : '-';
+
+    // 聚合段文本；无账号也无额度数据时整段隐藏
+    const smartText = (): string | null => {
+      if (health.icon) return `${health.icon} ${short} ${this._healthShortLabel(account?.health)}`.trim();
+      if (usage && usage.models.length > 0) {
+        return `${showAccount ? `$(account) ${short} ` : ''}${quotaIcon} ${min}%`.trim();
+      }
+      return showAccount ? `$(account) ${short}` : null;
+    };
+
     let text: string | null = null;
     if (usage && usage.models.length > 0) {
       switch (style) {
         case 'dot':
-          text = icon;
+          text = health.icon || quotaIcon;
           break;
         case 'percent':
           text = `${min}%`;
           break;
         case 'compact':
-          text = `${icon} ${min}%`;
+          text = `${health.icon || quotaIcon} ${min}%`;
           break;
         case 'dual':
-          text = showCredits ? `${icon} ${min}% | $(credit-card) ${credits}` : `${icon} ${min}%`;
+          text = showCredits ? `${health.icon || quotaIcon} ${min}% | $(credit-card) ${credits}` : `${health.icon || quotaIcon} ${min}%`;
+          break;
+        case 'smart':
+          text = smartText();
+          break;
+        case 'labeled':
+        case 'full':
+          text = this._flatText(style, usage, short, showAccount, showCredits, health.icon, quotaIcon);
           break;
       }
     }
 
-    // labeled / full（及无数据回退）：账号前缀 | 各模型额度 | AI 积分
     if (text === null) {
-      const segments: string[] = [];
-      if (this._sbCfg('showAccount', true)) {
-        const short = curEmail ? curEmail.split('@')[0] : t('sbNotLoggedIn');
-        segments.push(`$(account) ${short}`);
+      // 无额度数据：回退账号段（smart/labeled/full）；极简样式直接隐藏
+      const fallback = smartText();
+      if (style === 'smart' || style === 'labeled' || style === 'full') {
+        text = fallback;
       }
-      if (usage && usage.models.length > 0 && this._sbCfg('showModels', true)) {
+      if (text === null) {
+        this._main.hide();
+        return;
+      }
+    }
+
+    this._main.text = text;
+    this._main.tooltip = this._buildTooltip(curEmail, usage);
+    this._main.show();
+  }
+
+  private _healthShortLabel(health?: AccountHealth): string {
+    switch (health?.status) {
+      case 'banned': return t('sbHealthBanned');
+      case 'auth_invalid': return t('sbHealthAuthInvalid');
+      case 'unknown': return t('sbHealthUnknown');
+      default: return '';
+    }
+  }
+
+  /**
+   * 平铺样式（labeled/full）：账号 + 各窗口额度（异常窗才带图标，正常不刷 ✓）。
+   * 溢出保护：VS Code 状态栏单项不自动截断，超宽会被顶出屏幕（1.1.15 前的老毛病），
+   * 文本超长自动降级为聚合段。
+   */
+  private _flatText(
+    style: 'labeled' | 'full',
+    usage: UsageSnapshot,
+    short: string,
+    showAccount: boolean,
+    showCredits: boolean,
+    healthIcon: string,
+    quotaIcon: string
+  ): string | null {
+    const segments: string[] = [];
+    if (healthIcon) {
+      segments.push(`${healthIcon} ${short} ${this._healthShortLabel(accountStore.getByEmail(this._ctx.globalState.get<string>('currentEmail') || '')?.health)}`.trim());
+    } else {
+      if (showAccount) segments.push(`$(account) ${short}`);
+      if (this._sbCfg('showModels', true)) {
         for (const m of usage.models) {
-          segments.push(`${this._getStatusIcon(m.remainingPercent)} ${formatModelLabel(m)}: ${m.remainingPercent}%`);
-        }
-        if (style === 'full' && showCredits) {
-          segments.push(`$(credit-card) ${credits}`);
+          const icon = m.remainingPercent < 30 ? this._getStatusIcon(m.remainingPercent) : '';
+          segments.push(`${icon ? icon + ' ' : ''}${formatWindowShort(m)}: ${m.remainingPercent}%`);
         }
       }
-      if (segments.length > 0) {
-        text = segments.join(' | ');
+      if (style === 'full' && showCredits && usage.availableAICredits !== undefined && usage.availableAICredits !== null) {
+        segments.push(`$(credit-card) ${usage.availableAICredits}`);
       }
     }
+    if (segments.length === 0) return null;
+    const text = segments.join(' | ');
+    // 溢出降级：超过 110 字符（约状态栏可用宽度上限）回退聚合段
+    return text.length > 110 ? `${quotaIcon} ${usage.minRemainingPercent}% | $(account) ${short}` : text;
+  }
 
-    if (text === null) {
-      this._left.hide();
-      return;
-    }
-
-    this._left.text = text;
-    this._left.tooltip = this._buildTooltip(curEmail, usage);
-    this._left.show();
+  /** tooltip 内联 CSS 配额条（Wanow 踩坑定案：█░ Unicode 在 Windows 字体度量错位，必须 CSS） */
+  private _bar(pct: number): string {
+    const c = barColor(pct);
+    return `<span style="display:inline-block;width:120px;height:6px;border-radius:3px;background:#8884;">`
+      + `<span style="display:inline-block;width:${Math.max(0, Math.min(100, pct))}%;height:6px;border-radius:3px;background:${c};vertical-align:top;"></span></span>`;
   }
 
   private _buildTooltip(email: string, usage?: UsageSnapshot): vscode.MarkdownString {
     const md = new vscode.MarkdownString();
     md.isTrusted = true;
     md.supportThemeIcons = true;
+    md.supportHtml = true;
 
     if (!email) {
       md.appendMarkdown(`**Antigravity Kite**\n\n${t('sbNotSignedInTip')}\n\n_${t('sbOpenPoolTip')}_`);
       return md;
     }
 
-    md.appendMarkdown(`**${email}**\n\n`);
+    const account = accountStore.getByEmail(email);
+    md.appendMarkdown(`**$(account) ${email}**${account?.name ? ` · ${account.name}` : ''}${usage?.tierId ? ` · ${usage.tierId.toUpperCase()}` : ''}\n\n`);
 
-    if (usage && usage.models.length > 0) {
-      // 显示订阅级别
-      if (usage.tierId) {
-        md.appendMarkdown(`**${t('sbSubscription')}**：${usage.tierId.toUpperCase()}\n\n`);
+    // 健康块：异常才亮牌（ok 与未检测不出现在 tooltip）
+    const health = account?.health;
+    if (health && health.status !== 'ok') {
+      const mark = pickHealthMark(health);
+      const label = this._healthShortLabel(health);
+      md.appendMarkdown(`${mark.icon} **${label}**${health.detail ? ` —— ${health.detail.replace(/\|/g, '/')}` : ''}\n\n`);
+      if (health.checkedAt) {
+        md.appendMarkdown(`_${t('sbHealthCheckedAt')} ${new Date(health.checkedAt).toLocaleString()}_\n\n`);
       }
-      // 显示各分组配额（每组独立状态图标）
-      for (const model of usage.models) {
-        const icon = this._getStatusIcon(model.remainingPercent);
-        md.appendMarkdown(`${icon} **${formatModelLabel(model)}**：${model.remainingPercent}%\n\n`);
-      }
-      // AI 积分
-      if (usage.availableAICredits !== undefined) {
-        md.appendMarkdown(`---\n\n**$(credit-card) ${t('sbAiCredits')}**：${usage.availableAICredits}\n`);
-      }
-    } else {
-      md.appendMarkdown(`_${t('sbNoQuotaData')}_\n`);
     }
 
-    md.appendMarkdown(`\n_${t('sbOpenPoolTip')}_`);
+    if (usage && usage.models.length > 0) {
+      for (const model of usage.models) {
+        md.appendMarkdown(`${this._windowLine(model)}\n\n`);
+      }
+      if (usage.availableAICredits !== undefined) {
+        md.appendMarkdown(`---\n\n**$(credit-card) ${t('sbAiCredits')}**：${usage.availableAICredits}\n\n`);
+      }
+      if (usage.updatedAt) {
+        md.appendMarkdown(`_${t('sbUpdated')} ${new Date(usage.updatedAt).toLocaleTimeString()}_\n\n`);
+      }
+    } else {
+      md.appendMarkdown(`_${t('sbNoQuotaData')}_\n\n`);
+    }
+
+    md.appendMarkdown(`---\n\n_${t('sbTooltipClick')}_`);
     return md;
   }
 
-  private _renderRight(): void {
+  /** 单窗口行：`$(pulse) **label** — 98% [CSS bar] · 3h 12m 后重置` */
+  private _windowLine(model: ModelQuota): string {
+    const label = formatWindowShort(model);
+    let line = `$(pulse) **${label}**：${model.remainingPercent}% ${this._bar(model.remainingPercent)}`;
+    if (model.resetTime) {
+      const left = fmtDuration(new Date(model.resetTime).getTime() - Date.now());
+      if (left) line += ` · _${t('sbResetIn', left)}_`;
+    }
+    return line;
+  }
+
+  private _renderPool(): void {
     if (!this._sbCfg('showPool', true)) {
-      this._right.hide();
+      this._pool.hide();
       return;
     }
 
     const accounts = accountStore.getAll();
     const curEmail = this._ctx.globalState.get<string>('currentEmail') || '';
-    
+
     const total = accounts.filter(a => !a.disabled).length;
     const available = accounts.filter(a => !a.disabled && a.email !== curEmail).length;
 
     if (total === 0) {
-      this._right.hide();
+      this._pool.hide();
       return;
     }
 
-    this._right.text = `$(pulse) ${t('sbPool')} ${available}/${total}`;
-    this._right.tooltip = `${t('sbPoolTooltip', available, total)}\n\n_${t('sbOpenPoolTip')}_`;
-    this._right.show();
+    this._pool.text = `$(pulse) ${t('sbPool')} ${available}/${total}`;
+    this._pool.tooltip = `${t('sbPoolTooltip', available, total)}\n\n_${t('sbOpenPoolTip')}_`;
+    this._pool.show();
+  }
+
+  /**
+   * 点击弹混合菜单：账号（按最紧额度降序 + 健康图标）+ 分隔线 + 快捷操作（BuddyRelay 模式）
+   */
+  private async _showQuickSwitch(
+    onAccountSwitched?: (email: string) => void | Promise<void>,
+    switchRequest?: (email: string) => Promise<void>
+  ): Promise<void> {
+    const accounts = accountStore.getAll();
+    if (accounts.length === 0) {
+      notifyUi('warning', t('sbPoolEmpty'));
+      return;
+    }
+
+    const curEmail = this._ctx.globalState.get<string>('currentEmail') || '';
+    const getUsage = (email: string) => this._deps.getUsage?.(email);
+    const sorted = sortPoolForQuickPick(accounts, getUsage, curEmail);
+
+    const healthIconOf = (a: StoredAccount): string => {
+      if (a.disabled) return '$(circle-slash)';
+      const m = pickHealthMark(a.health);
+      if (m.icon) return m.icon;
+      if (a.email.toLowerCase() === curEmail.toLowerCase()) return '$(check)';
+      return '$(account)';
+    };
+
+    interface QPItem extends vscode.QuickPickItem {
+      type: 'account' | 'action';
+      email?: string;
+      actionId?: string;
+    }
+
+    const items: QPItem[] = sorted.map(a => {
+      const isCurrent = a.email.toLowerCase() === curEmail.toLowerCase();
+      const usage = getUsage(a.email);
+      const details: string[] = [];
+      if (a.health?.status === 'banned') details.push(t('sbHealthBanned'));
+      else if (a.health?.status === 'auth_invalid') details.push(t('sbHealthAuthInvalid'));
+      else if (a.health?.status === 'unknown') details.push(t('sbHealthUnknown'));
+      if (usage && usage.models.length > 0) {
+        details.push(usage.models.map(m => `${formatWindowShort(m)} ${m.remainingPercent}%`).join(' · '));
+        if (usage.availableAICredits !== undefined && usage.availableAICredits !== null) {
+          details.push(`$(credit-card) ${usage.availableAICredits}`);
+        }
+      }
+      return {
+        label: `${healthIconOf(a)} ${a.email}`,
+        description: (isCurrent ? t('sbCurrent') : (a.name || '')) || undefined,
+        detail: details.length > 0 ? details.join(' | ') : (a.disabled ? t('sbDisabled') : t('sbAvailable')),
+        type: 'account' as const,
+        email: a.email
+      };
+    });
+
+    // ── 快捷操作区（BuddyRelay 分隔线模式）──
+    items.push({ label: t('qpQuickActions'), kind: vscode.QuickPickItemKind.Separator, type: 'action' });
+    items.push({
+      label: `$(refresh) ${t('qpRefreshAll')}`,
+      detail: t('qpRefreshAllDesc'),
+      actionId: 'refreshAll',
+      type: 'action'
+    });
+    items.push({
+      label: `$(shield) ${t('qpRecheckHealth')}`,
+      detail: t('qpRecheckHealthDesc'),
+      actionId: 'recheckHealth',
+      type: 'action'
+    });
+    items.push({
+      label: `$(layout-sidebar-left) ${t('qpOpenPanel')}`,
+      detail: t('qpOpenPanelDesc'),
+      actionId: 'openPanel',
+      type: 'action'
+    });
+    items.push({
+      label: `$(gear) ${t('qpOpenSettings')}`,
+      detail: t('qpOpenSettingsDesc'),
+      actionId: 'openSettings',
+      type: 'action'
+    });
+
+    const selected = await vscode.window.showQuickPick(items, {
+      title: 'Antigravity Kite',
+      placeHolder: t('sbPickAccount'),
+      matchOnDescription: true,
+      matchOnDetail: true
+    });
+
+    if (!selected) return;
+
+    if (selected.type === 'action') {
+      switch (selected.actionId) {
+        case 'refreshAll':
+          await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: t('qpRefreshAll'),
+            cancellable: false
+          }, async () => {
+            try {
+              await this._deps.refreshAll?.();
+            } catch (err) {
+              notifyUi('error', t('sbSwitchFail', err instanceof Error ? err.message : String(err)));
+            }
+          });
+          this.update();
+          break;
+        case 'recheckHealth':
+          await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: t('qpRecheckHealth'),
+            cancellable: false
+          }, async () => {
+            try {
+              await this._deps.recheckHealth?.();
+            } catch (err) {
+              notifyUi('error', String(err instanceof Error ? err.message : err));
+            }
+          });
+          this.update();
+          break;
+        case 'openPanel':
+          await vscode.commands.executeCommand(OPEN_SIDEBAR_CMD);
+          break;
+        case 'openSettings':
+          this._deps.openSettings?.();
+          break;
+      }
+      return;
+    }
+
+    // ── 账号分支：完整切号链路 ──
+    if (selected.type !== 'account' || !selected.email) return;
+    const account = accounts.find(a => a.email === selected.email);
+    if (!account) return;
+
+    if (account.disabled) {
+      notifyUi('warning', t('sbAccountDisabled', account.email));
+      return;
+    }
+    if (account.email.toLowerCase() === curEmail.toLowerCase()) {
+      notifyUi('info', t('sbAlreadyCurrent', account.email));
+      return;
+    }
+
+    await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: t('sbSwitching', account.email),
+      cancellable: false
+    }, async () => {
+      // 复用侧栏完整切号链路（门控/token/凭据/状态库/agy/gemini/会话/引擎重载）
+      try {
+        await switchRequest?.(account.email);
+        await onAccountSwitched?.(account.email);
+        this.update();
+        const cur = this._ctx.globalState.get<string>('currentEmail') || account.email;
+        await this._deps.refreshCurrent?.(cur);
+      } catch (err) {
+        notifyUi('error', t('sbSwitchFail', err instanceof Error ? err.message : String(err)));
+      }
+    });
   }
 
   /**
    * 隐藏状态栏
    */
   hide(): void {
-    this._left.hide();
-    this._right.hide();
+    this._main.hide();
+    this._pool.hide();
   }
 
   /**
@@ -417,8 +656,8 @@ export class StatusBarManager implements vscode.Disposable {
       clearInterval(this._refreshTimer);
       this._refreshTimer = null;
     }
-    this._left.dispose();
-    this._right.dispose();
+    this._main.dispose();
+    this._pool.dispose();
     for (const d of this._disposables) {
       try { d.dispose(); } catch { /* ignore */ }
     }
