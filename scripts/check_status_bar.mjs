@@ -143,13 +143,16 @@ if (typeof mod.formatFamilySegments !== 'function') {
   fail('formatFamilySegments 存在', '旧产物无此导出——多池多窗口未按族分格（Wanow 斜杠范式）');
 } else {
   const mq = (id, p) => ({ modelId: id, label: id, remainingPercent: p });
-  const segs = mod.formatFamilySegments([
+  const models = [
     mq('claude:5h', 96), mq('claude:weekly', 100),
     mq('gemini:5h', 44),            // Gemini 只有 5h（无周）
     mq('argon:weekly', 8),          // Gemini 4 只有周（无 5h）
-  ]);
+  ];
+  const segs = mod.formatFamilySegments(models);
   assert('族分格：三池三格，5h/周斜杠并排，缺窗跳过，色点取族内最紧',
     segs === '🟢 Claude 96%/100% · 🟡 Gemini 44% · 🔴 Gemini 4 8%', segs);
+  const segsFiltered = mod.formatFamilySegments(models, new Set(['gemini']));
+  assert('池过滤：只开 Gemini → 只渲染 Gemini 格', segsFiltered === '🟡 Gemini 44%', segsFiltered);
   const onlyClaude = mod.formatFamilySegments([mq('claude:weekly', 100)]);
   assert('单池单窗：无斜杠直接显示', onlyClaude === '🟢 Claude 100%', onlyClaude);
   const empty = mod.formatFamilySegments([]);

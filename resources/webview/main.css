@@ -7423,3 +7423,63 @@ body.vscode-light .grid-plan-chip {
 .sb-style-name { font-size: 10.5px; color: var(--muted); margin-top: 4px; text-align: center; }
 .sb-style-card.is-on .sb-style-name { color: #10b981; font-weight: 600; }
 .sb-style-card:last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+/* ─── 设置弹窗美化（v1.1.20：全屏铺满式 → 居中卡片式，BuddyRelay/Cockpit 范式）─── */
+/* overlay：半透明遮罩 + 毛玻璃，替代不透明整页 */
+#settingsOverlay.modal-overlay:not([hidden]) {
+    background: rgba(0, 0, 0, 0.45) !important;
+    backdrop-filter: blur(2px) !important;
+    -webkit-backdrop-filter: blur(2px) !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+/* modal-box：居中限宽卡片，宽侧栏不再把每行拉到屏幕边缘 */
+#settingsOverlay .modal-box {
+    width: min(560px, 94vw) !important;
+    max-width: min(560px, 94vw) !important;
+    height: auto !important;
+    max-height: 88vh !important;
+    border: 1px solid var(--card-border) !important;
+    border-radius: var(--radius-lg, 12px) !important;
+    background: var(--vscode-editorWidget-background, var(--card-bg)) !important;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5) !important;
+    animation: modalSlideIn 0.2s ease-out !important;
+    overflow: hidden !important;
+}
+#settingsOverlay .modal-header {
+    border-bottom: 1px solid var(--card-border) !important;
+    background: var(--elevated-bg) !important;
+    border-radius: var(--radius-lg, 12px) var(--radius-lg, 12px) 0 0 !important;
+}
+#settingsOverlay .modal-footer {
+    border-top: 1px solid var(--card-border) !important;
+    background: var(--elevated-bg) !important;
+}
+/* 组头标题条化：翡翠左灯 + 微底色，层次立起来 */
+.settings-group-head {
+    position: relative !important;
+    background: var(--elevated-bg) !important;
+    margin: -10px -12px 8px !important;
+    padding: 8px 12px 8px 14px !important;
+    border-radius: var(--radius-md, 8px) var(--radius-md, 8px) 0 0 !important;
+    font-weight: 600 !important;
+}
+.settings-group-head::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 6px;
+    bottom: 6px;
+    width: 3px;
+    border-radius: 2px;
+    background: #10b981;
+}
+.settings-group-head svg { color: #10b981 !important; flex-shrink: 0; }
+/* 行控件限宽：select/数字输入不再被 flex 拉满整行 */
+.settings-group .v2-opt-row select,
+.settings-group .v2-sel { flex: 0 1 auto !important; min-width: 170px; max-width: 240px; margin-left: auto; }
+.settings-group .v2-param-val { width: 90px !important; }
+.settings-group .v2-opt-row { gap: 12px; }
+.settings-hint { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 2px 0 6px; opacity: 0.85; }
+/* 卡片墙：自适应列宽，宽屏不无限拉伸 */
+.sb-style-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)) !important; }

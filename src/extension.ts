@@ -479,6 +479,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         statusBarModels: cfg.get<boolean>('statusBar.showModels', true),
         statusBarCredits: cfg.get<boolean>('statusBar.showCredits', true),
         statusBarPool: cfg.get<boolean>('statusBar.showPool', true),
+        statusBarFamilies: cfg.get<string[]>('statusBar.families', ['claude', 'gemini', 'argon']),
         statusBarRefresh: cfg.get<number>('statusBar.refreshSeconds', 30),
       },
     });
@@ -513,6 +514,8 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     await cfg.update('statusBar.showModels', s.statusBarModels !== false, target);
     await cfg.update('statusBar.showCredits', s.statusBarCredits !== false, target);
     await cfg.update('statusBar.showPool', s.statusBarPool !== false, target);
+    const famsIn = Array.isArray(s.statusBarFamilies) ? s.statusBarFamilies.filter((x: unknown): x is string => typeof x === 'string' && ['claude', 'gemini', 'argon'].includes(x)) : ['claude', 'gemini', 'argon'];
+    await cfg.update('statusBar.families', famsIn.length > 0 ? famsIn : ['claude', 'gemini', 'argon'], target);
     logInfo('settings.saved', { ...s });
     // 全池刷新间隔改动即时重排（此前要重启才生效）
     if (Number.isFinite(quotaMin) && Math.min(120, Math.max(5, Math.round(quotaMin))) !== prevQuotaMin) {
@@ -1435,6 +1438,14 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
           </div>
         </div>
         <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="sbFamilyRow">配额池</span>
+          <div class="sb-tag-row">
+            <span class="v2-tag is-on" id="setStatusFamClaude" data-family="claude">Claude</span>
+            <span class="v2-tag is-on" id="setStatusFamGemini" data-family="gemini">Gemini</span>
+            <span class="v2-tag is-on" id="setStatusFamArgon" data-family="argon">Gemini 4</span>
+          </div>
+        </div>
+        <div class="v2-opt-row">
           <span class="v2-opt-label" data-i18n="sbRefreshRow">刷新间隔</span>
           <div class="sb-num-row">
             <input type="number" class="v2-param-val" id="setStatusRefresh" data-sb="refreshSeconds" min="10" max="600" placeholder="30">
@@ -1479,7 +1490,8 @@ function tl(key) {
   return s;
 }
 (function applyI18n() {
-  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = tl(el.getAttribute('data-i18n')); });
+  // L 缺键时保留 HTML 里的中文兜底文案，绝不把键名裸奔给用户
+  document.querySelectorAll('[data-i18n]').forEach(el => { const v = L[el.getAttribute('data-i18n')]; if (v !== undefined) el.textContent = v; });
   document.querySelectorAll('[data-i18n-ph]').forEach(el => { el.placeholder = tl(el.getAttribute('data-i18n-ph')); });
   document.querySelectorAll('[data-i18n-title]').forEach(el => { el.title = tl(el.getAttribute('data-i18n-title')); });
   // 两个计数带参数，静态 HTML 不写死中文，交给 tl() 按当前语言填
@@ -2273,8 +2285,13 @@ function fillSettingsForm(s) {
   chk('setStatusModels', s.statusBarModels !== false);
   chk('setStatusCredits', s.statusBarCredits !== false);
   chk('setStatusPool', s.statusBarPool !== false);
+  const fams = Array.isArray(s.statusBarFamilies) ? s.statusBarFamilies : ['claude', 'gemini', 'argon'];
+  chk('setStatusFamClaude', fams.indexOf('claude') >= 0);
+  chk('setStatusFamGemini', fams.indexOf('gemini') >= 0);
+  chk('setStatusFamArgon', fams.indexOf('argon') >= 0);
   set('setStatusRefresh', s.statusBarRefresh || 30);
   if (typeof syncStyleCards === 'function') syncStyleCards();
+  if (typeof renderDemos === 'function') renderDemos();
 }
 
 function openSettingsModal() {
@@ -2380,7 +2397,10 @@ function renderCdpStatus(s) {
       statusBarAccount: on('setStatusAccount'),
       statusBarModels: on('setStatusModels'),
       statusBarCredits: on('setStatusCredits'),
-      statusBarPool: on('setStatusPool')
+      statusBarPool: on('setStatusPool'),
+      statusBarFamilies: ['setStatusFamClaude', 'setStatusFamGemini', 'setStatusFamArgon']
+        .filter(function (id) { return on(id); })
+        .map(function (id) { return document.getElementById(id).getAttribute('data-family'); })
     };
   };
   const pushSettings = (silent) => {
@@ -2391,22 +2411,51 @@ function renderCdpStatus(s) {
   // 图标体系对齐参考项目：emoji 色点四档（🟢≥50/🟡30-50/🟠10-30/🔴<10），族分格多池多窗口
   // demo 人形图标逐字复制本文件 list-icon 已验证 user 路径（devloop svg-icon-untested-asset 纪律）
   const SB_USER_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
+  // demo 与底栏同一套内容开关：读"显示内容/配额池"tag 的实时状态，点击 tag 立即在预览里见效（双反馈）
+  function sbOpts() {
+    const on = (id) => { const el = document.getElementById(id); return !el || el.classList.contains('is-on'); };
+    return {
+      account: on('setStatusAccount'),
+      models: on('setStatusModels'),
+      credits: on('setStatusCredits'),
+      claude: on('setStatusFamClaude'),
+      gemini: on('setStatusFamGemini'),
+      argon: on('setStatusFamArgon')
+    };
+  }
   function sbDemoHTML(style) {
-    const ACC = 'soulvon2501', PCT = '96%', CRED = '🪙 87.5';
+    const o = sbOpts();
     const DOT = '🟢';
-    const FAM = DOT + ' Claude 96%/100%' + ' · ' + DOT + ' Gemini 98%';
-    const acc = '<span class="sbd-seg">' + SB_USER_SVG + ACC + '</span>';
     const sep = '<span class="sbd-dim">|</span>';
+    // 族分格：与 statusBar.formatFamilySegments 同语义——关掉的池不渲染，族内 5h%/周% 斜杠
+    const fams = [];
+    if (o.claude) fams.push(DOT + ' Claude 96%/100%');
+    if (o.gemini) fams.push(DOT + ' Gemini 98%');
+    if (o.argon) fams.push(DOT + ' Gemini 4 91%');
+    const FAM = fams.join(' · ');
+    const acc = o.account ? '<span class="sbd-seg">' + SB_USER_SVG + 'soulvon2501</span>' : '';
+    const pct = o.models ? '<span class="sbd-seg">' + DOT + ' 96%</span>' : '';
+    const cred = o.credits ? '<span class="sbd-seg">🪙 87.5</span>' : '';
+    const minPct = o.claude && o.gemini ? (o.argon ? 91 : 96) : (o.gemini ? 98 : (o.argon ? 91 : 96));
+    const pctStr = o.models ? minPct + '%' : '';
     switch (style) {
-      case 'smart':   return acc + '<span class="sbd-seg">' + DOT + ' ' + PCT + ' ' + CRED + '</span>';
-      case 'dot':     return '<span class="sbd-seg">' + DOT + '</span>';
-      case 'percent': return '<span class="sbd-seg">' + PCT + '</span>';
-      case 'compact': return '<span class="sbd-seg">' + DOT + ' ' + PCT + '</span>';
-      case 'dual':    return '<span class="sbd-seg">' + DOT + ' ' + PCT + '</span>' + sep + '<span class="sbd-seg">' + CRED + '</span>';
-      case 'labeled': return acc + sep + '<span class="sbd-seg">' + FAM + '</span>';
-      case 'full':    return acc + sep + '<span class="sbd-seg">' + FAM + '</span>' + sep + '<span class="sbd-seg">' + CRED + '</span>';
+      case 'smart':   return [acc, pct, cred].filter(Boolean).join('') || '<span class="sbd-dim">—</span>';
+      case 'dot':     return o.models ? '<span class="sbd-seg">' + DOT + '</span>' : (cred || '<span class="sbd-dim">—</span>');
+      case 'percent': return o.models ? '<span class="sbd-seg">' + pctStr + '</span>' : '<span class="sbd-dim">—</span>';
+      case 'compact': return o.models ? '<span class="sbd-seg">' + DOT + ' ' + pctStr + '</span>' : '<span class="sbd-dim">—</span>';
+      case 'dual':    return (o.models ? '<span class="sbd-seg">' + DOT + ' ' + pctStr + '</span>' : '') + (cred ? (o.models ? sep : '') + cred : '') || '<span class="sbd-dim">—</span>';
+      case 'labeled': return [acc, o.models && FAM ? '<span class="sbd-seg">' + FAM + '</span>' : ''].filter(Boolean).join(sep) || '<span class="sbd-dim">—</span>';
+      case 'full':    return [acc, o.models && FAM ? '<span class="sbd-seg">' + FAM + '</span>' : '', cred].filter(Boolean).join(sep) || '<span class="sbd-dim">—</span>';
     }
     return '';
+  }
+  function renderDemos() {
+    const grid = document.getElementById('sbStyleGrid');
+    if (!grid) return;
+    grid.querySelectorAll('.sb-style-card').forEach(card => {
+      const demo = card.querySelector('.sb-style-demo');
+      if (demo) demo.innerHTML = sbDemoHTML(card.getAttribute('data-style'));
+    });
   }
   window.syncStyleCards = function() {
     const sel = document.getElementById('setStatusStyle');
@@ -2449,6 +2498,7 @@ function renderCdpStatus(s) {
     tag.onclick = () => {
       tag.classList.toggle('is-on');
       pushSettings(true);
+      if (typeof renderDemos === 'function') renderDemos();
     };
   });
 
@@ -2470,7 +2520,8 @@ function renderCdpStatus(s) {
       statusBarAccount: true,
       statusBarModels: true,
       statusBarCredits: true,
-      statusBarPool: true
+      statusBarPool: true,
+      statusBarFamilies: ['claude', 'gemini', 'argon']
     });
     // 恢复默认后立即落盘生效
     pushSettings(true);

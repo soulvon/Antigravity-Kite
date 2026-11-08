@@ -384,6 +384,7 @@ const S: Record<string, [string, string]> = {
   'ui.sbTagModels': ['模型额度', 'Models'],
   'ui.sbTagCredits': ['AI 积分', 'Credits'],
   'ui.sbTagPool': ['号池', 'Pool'],
+  'ui.sbFamilyRow': ['配额池', 'Quota families'],
   'ui.unitSec': ['秒', 'sec'],
   'ui.unitMin': ['分钟', 'min'],
   'ui.unitMs': ['毫秒', 'ms'],

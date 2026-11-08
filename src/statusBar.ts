@@ -70,7 +70,7 @@ export function colorDot(pct: number): string {
  * 族内 5h 与周额度斜杠并排（96%/100%），缺失窗口只显已有的——不对称账号天然兼容；
  * 色点取族内最紧窗口（变色取"最吃紧"一档的收敛共识）。
  */
-export function formatFamilySegments(models: ModelQuota[]): string {
+export function formatFamilySegments(models: ModelQuota[], families?: Set<string>): string {
   const FAMILIES: { key: string; label: string }[] = [
     { key: 'claude', label: 'Claude' },
     { key: 'gemini', label: 'Gemini' },
@@ -78,6 +78,7 @@ export function formatFamilySegments(models: ModelQuota[]): string {
   ];
   const segments: string[] = [];
   for (const fam of FAMILIES) {
+    if (families && !families.has(fam.key)) continue; // 用户关掉的池不显示（"某个池不用"）
     const five = models.find(m => m.modelId === fam.key + ':5h');
     const week = models.find(m => m.modelId === fam.key + ':weekly');
     if (!five && !week) continue; // 该池无数据就不渲染（没有数据就没有发言权）
@@ -331,12 +332,28 @@ export class StatusBarManager implements vscode.Disposable {
     return colorDot(pct);
   }
 
+  /** 池过滤白名单（配置缺失 = 全开，读失败走保守路径） */
+  private _getFamilies(): Set<string> {
+    const v = this._sbCfg<string[]>('families', ['claude', 'gemini', 'argon']);
+    const all = new Set(['claude', 'gemini', 'argon']);
+    if (!Array.isArray(v)) return all;
+    const set = new Set(v.filter((x): x is string => typeof x === 'string' && all.has(x)));
+    return set.size > 0 ? set : all; // 全关视为配置异常，回退全开
+  }
+
+  /** 池过滤后的模型列表（族分格与最紧额度共用同一过滤） */
+  private _filteredModels(usage: UsageSnapshot): ModelQuota[] {
+    const fams = this._getFamilies();
+    return usage.models.filter(m => fams.has((m.modelId || '').split(':')[0]));
+  }
+
   private _renderMain(): void {
     const curEmail = this._ctx.globalState.get<string>('currentEmail') || '';
     const account = curEmail ? accountStore.getByEmail(curEmail) : undefined;
-    const usage = this._deps.getUsage ? this._deps.getUsage(curEmail) : undefined;
+    const rawUsage = this._deps.getUsage ? this._deps.getUsage(curEmail) : undefined;
     const style = this._getStyle();
     const showAccount = this._sbCfg('showAccount', true);
+    const showModels = this._sbCfg('showModels', true);
     const showCredits = this._sbCfg('showCredits', true);
 
     const privacy = this._deps.getPrivacy?.() ?? false;
@@ -344,57 +361,64 @@ export class StatusBarManager implements vscode.Disposable {
 
     // 健康优先于额度：封禁号额度照样满格（元数据端点对封禁隐身），必须由健康定调
     const health = pickHealthMark(account?.health);
-    const min = usage?.minRemainingPercent ?? 100;
+
+    // 内容开关 x 池过滤：models 先过"池过滤"再过"模型额度开关"；
+    // min 不再信预聚合值（那是全池的），按过滤后窗口重算——关掉的池不参与"最紧额度"
+    const models = rawUsage ? this._filteredModels(rawUsage) : [];
+    const hasQuota = showModels && models.length > 0;
+    const pcts = models.map(m => m.remainingPercent).filter(v => typeof v === 'number');
+    const min = hasQuota && pcts.length > 0 ? Math.min(...pcts) : 100;
     const quotaIcon = this._getStatusIcon(min);
+    const creditsStr = showCredits && rawUsage ? formatCredits(rawUsage.availableAICredits) : '';
     const statusBg = health.bg
-      ?? (min < 10 ? 'error' : min < 30 ? 'warning' : undefined);
+      ?? (hasQuota && min < 10 ? 'error' : hasQuota && min < 30 ? 'warning' : undefined);
     this._main.backgroundColor = statusBg === 'error'
       ? new vscode.ThemeColor('statusBarItem.errorBackground')
       : statusBg === 'warning'
         ? new vscode.ThemeColor('statusBarItem.warningBackground')
         : undefined;
 
-    // 聚合段文本；无账号也无额度数据时整段隐藏
+    // 聚合段：账号 / 额度 / 积分 / 健康四块的合成器（内容开关全在这里收口）
     const smartText = (): string | null => {
       if (health.icon) return `${health.icon} ${short} ${this._healthShortLabel(account?.health)}`.trim();
-      if (usage && usage.models.length > 0) {
-        const c = showCredits ? formatCredits(usage.availableAICredits) : '';
-        return `${showAccount ? `$(account) ${short} ` : ''}${quotaIcon} ${min}%${c ? ' ' + c : ''}`.trim();
-      }
-      return showAccount ? `$(account) ${short}` : null;
+      const parts: string[] = [];
+      if (showAccount) parts.push(`$(account) ${short}`);
+      if (hasQuota) parts.push(`${quotaIcon} ${min}%`);
+      if (creditsStr) parts.push(creditsStr);
+      return parts.length > 0 ? parts.join(' ').trim() : null;
     };
 
     let text: string | null = null;
-    if (usage && usage.models.length > 0) {
+    if (rawUsage && models.length > 0) {
       switch (style) {
         case 'dot':
-          text = health.icon || quotaIcon;
+          // 仅图标：健康异常用健康图标；额度开关关掉后无内容可显
+          text = health.icon || (hasQuota ? quotaIcon : null);
           break;
         case 'percent':
-          text = `${min}%`;
+          text = hasQuota ? `${min}%` : null;
           break;
         case 'compact':
-          text = `${health.icon || quotaIcon} ${min}%`;
+          text = hasQuota ? `${health.icon || quotaIcon} ${min}%` : null;
           break;
         case 'dual':
-          text = `${health.icon || quotaIcon} ${min}%${showCredits && formatCredits(usage.availableAICredits) ? ' | ' + formatCredits(usage.availableAICredits) : ''}`;
+          text = hasQuota
+            ? `${health.icon || quotaIcon} ${min}%${creditsStr ? ' | ' + creditsStr : ''}`
+            : (creditsStr || null);
           break;
         case 'smart':
           text = smartText();
           break;
         case 'labeled':
         case 'full':
-          text = this._flatText(style, usage, short, showAccount, showCredits, health.icon, quotaIcon);
+          text = this._flatText(style, models, rawUsage, short, showAccount, showModels, showCredits, health.icon, quotaIcon);
           break;
       }
     }
 
     if (text === null) {
-      // 无额度数据：回退账号段（smart/labeled/full）；极简样式直接隐藏
-      const fallback = smartText();
-      if (style === 'smart' || style === 'labeled' || style === 'full') {
-        text = fallback;
-      }
+      // 无额度可显：回退聚合段（账号+积分），全空才隐藏
+      text = smartText();
       if (text === null) {
         this._main.hide();
         return;
@@ -402,7 +426,7 @@ export class StatusBarManager implements vscode.Disposable {
     }
 
     this._main.text = text;
-    this._main.tooltip = this._buildTooltip(curEmail, usage);
+    this._main.tooltip = this._buildTooltip(curEmail, rawUsage);
     this._main.show();
   }
 
@@ -422,9 +446,11 @@ export class StatusBarManager implements vscode.Disposable {
    */
   private _flatText(
     style: 'labeled' | 'full',
+    models: ModelQuota[],
     usage: UsageSnapshot,
     short: string,
     showAccount: boolean,
+    showModels: boolean,
     showCredits: boolean,
     healthIcon: string,
     quotaIcon: string
@@ -434,8 +460,8 @@ export class StatusBarManager implements vscode.Disposable {
       segments.push(`${healthIcon} ${short} ${this._healthShortLabel(accountStore.getByEmail(this._ctx.globalState.get<string>('currentEmail') || '')?.health)}`.trim());
     } else {
       if (showAccount) segments.push(`$(account) ${short}`);
-      if (this._sbCfg('showModels', true)) {
-        const famSegs = formatFamilySegments(usage.models);
+      if (showModels) {
+        const famSegs = formatFamilySegments(models);
         if (famSegs) segments.push(famSegs);
       }
       if (style === 'full' && showCredits) {
@@ -447,7 +473,8 @@ export class StatusBarManager implements vscode.Disposable {
     const text = segments.join(' | ');
     // 溢出降级：按渲染有效宽度估——$(codicon) 标记源码 8~10 字符，渲染只占约 1 字宽，按 1 计
     const effLen = text.replace(/\$\([a-z0-9-]+\)/gi, '@').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '@@').length;
-    return effLen > 110 ? `${quotaIcon} ${usage.minRemainingPercent}% | $(account) ${short}` : text;
+    const minPct = models.length > 0 ? Math.min(...models.map(m => m.remainingPercent)) : 100;
+    return effLen > 110 ? `${quotaIcon} ${minPct}% | $(account) ${short}` : text;
   }
 
   /** tooltip 内联 CSS 配额条（Wanow 踩坑定案：█░ Unicode 在 Windows 字体度量错位，必须 CSS） */

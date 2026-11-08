@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.1.19",
+  "version": "1.1.20",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -180,6 +180,15 @@
           ],
           "default": "smart",
           "description": "%config.statusBar.style%"
+        },
+        "antigravityKite.statusBar.families": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["claude", "gemini", "argon"]
+          },
+          "default": ["claude", "gemini", "argon"],
+          "description": "%config.statusBar.families%"
         },
         "antigravityKite.statusBar.refreshSeconds": {
           "type": "number",
