@@ -615,10 +615,15 @@ export async function fetchUsageBatch(
 }
 
 // ── 账号健康检测（封号识别） ─────────────────────────────────────────────
-// 判定签名参照 Antigravity-Manager（lbjlaq）proxy/handlers/common.rs：
-// 违反服务条款（反代/高频滥用等）的封禁在 Cloud Code API 上表现为 HTTP 403，
-// 错误体含 "This service has been disabled in this account for violation of
-// Terms of Service"（变体开头可能是 "Gemini has been disabled..."）。
+// 2026-11-08 真机实测（8 号池 × {Node fetch, Chrome 指纹} × {gemini, claude} 对照 IDE 报错）定案：
+// - 封禁（ToS）只在推理端点 generateContent 现形：403 + reason=TOS_VIOLATION；
+//   ToS 检查先于配额检查（额度耗尽的号用 2.5-flash 探测照样 403 ToS），固定模型即可。
+// - 元数据端点（loadCodeAssist/fetchAvailableModels/retrieveUserQuotaSummary）对封禁完全隐身，
+//   被封号照样 200 + 额度满格——所以额度刷新成功绝不能当作健康依据。
+// - 429 RESOURCE_EXHAUSTED = 配额耗尽/瞬时限流，与封禁无关（对齐 Antigravity-Manager 语义：
+//   其反代对短 RetryInfo 的 429 做同号 grace retry，属日常现象）。
+//   卡片额度满格仍可能 429：官方下发口径 ≠ 服务端真实准入池，勿拿额度反驳 429。
+// 判定签名同时参照 Antigravity-Manager（lbjlaq）proxy/handlers/common.rs。
 
 const TOS_BAN_PATTERN = /tos_violation|violation of terms of service|disabled in this account/i;
 const AUTH_FAIL_PATTERN = /auth_expired|invalid_grant|invalid_credentials|unauthenticated|http 401\b|no access token/i;
@@ -630,45 +635,93 @@ export function classifyAccountError(message: string): AccountHealth['status'] {
   return 'unknown';
 }
 
+/** 推理探针响应（只看状态码与错误签名，不打印 token） */
+interface ProbeResult {
+  status: number;
+  body: string;
+}
+
+/** 推理端点探测：generateContent（prod），1 token 损耗；探测模型固定 2.5-flash（ToS 检查先于配额检查） */
+async function probeGenerateContent(
+  accessToken: string,
+  project?: string,
+): Promise<ProbeResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${CLOUDCODE_PROD_URL}/v1internal:generateContent`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'User-Agent': getCloudCodeUA(),
+        'x-goog-api-client': `gl-node/${NODE_VERSION}`,
+        'Content-Type': 'application/json',
+        'Accept': '*/*',
+        'Accept-Encoding': 'gzip, deflate, br',
+      },
+      body: JSON.stringify({
+        project: project || 'aicode-consumers',
+        model: 'gemini-2.5-flash',
+        request: {
+          contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+          generationConfig: { maxOutputTokens: 1 },
+        },
+        userAgent: 'antigravity',
+        requestId: `kite-health-${Date.now()}`,
+      }),
+      signal: controller.signal,
+    });
+    return { status: response.status, body: await response.text() };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /**
- * 单账号健康探针：一次 loadCodeAssist 即可定性（封禁 403 / 凭据 401 都会在这一步返回），
- * 不拉模型与配额摘要，开销最小。网络失败等未知情况返回 unknown 并带原始错误。
+ * 单账号健康探针（两步，≈2s/号）：
+ * 1) loadCodeAssist 拿 project + 抓凭据失效（401 在这里现形）
+ * 2) generateContent 1-token 推理——封禁（ToS）唯一现形点
+ * 分类：200/429=ok（429 是没量不是封）、403 ToS=banned、401=auth_invalid、其余=unknown。
  */
 export async function checkAccountHealth(account: StoredAccount): Promise<AccountHealth> {
   const checkedAt = new Date().toISOString();
+  const fail = (status: AccountHealth['status'], detail: string): AccountHealth =>
+    ({ status, checkedAt, detail: detail.slice(0, 300) });
   try {
     if (!account.accessToken && !account.refreshToken) {
-      return { status: 'auth_invalid', checkedAt, detail: 'No access token' };
+      return fail('auth_invalid', 'No access token');
     }
     const accessToken = await ensureFreshToken(account);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
-    let httpStatus = 0;
-    let body = '';
+
+    // 1) project + 凭据层（401 在这里现形）
+    let projectId: string | undefined;
     try {
-      const response = await fetch(`${CLOUDCODE_DAILY_URL}/v1internal:loadCodeAssist`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'User-Agent': getLoadCodeAssistUA(),
-          'x-goog-api-client': `gl-node/${NODE_VERSION}`,
-          'Content-Type': 'application/json',
-          'Accept': '*/*',
-          'Accept-Encoding': 'gzip, deflate, br',
-        },
-        body: JSON.stringify({ metadata: getCloudCodeMetadata(), mode: 'FULL_ELIGIBILITY_CHECK' }),
-        signal: controller.signal,
-      });
-      httpStatus = response.status;
-      body = await response.text();
-    } finally {
-      clearTimeout(timeout);
+      const data = await loadCodeAssistRequest<LoadCodeAssistResponse>(
+        { metadata: getCloudCodeMetadata(), mode: 'FULL_ELIGIBILITY_CHECK' },
+        accessToken,
+      );
+      const proj = data.cloudaicompanionProject;
+      projectId = typeof proj === 'string' ? proj : proj?.id;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/auth_expired|http 401/i.test(msg)) return fail('auth_invalid', msg);
+      // 元数据失败不致命：project 缺省走共享池，继续推理探测
     }
-    if (httpStatus >= 200 && httpStatus < 300) {
+
+    // 2) 推理探测——封禁唯一现形点
+    const res = await probeGenerateContent(accessToken, projectId);
+    if (res.status >= 200 && res.status < 300) {
       return { status: 'ok', checkedAt };
     }
-    const combined = `HTTP ${httpStatus}: ${body}`;
-    return { status: classifyAccountError(combined), checkedAt, detail: combined.slice(0, 300) };
+    const combined = `HTTP ${res.status}: ${res.body}`;
+    if (TOS_BAN_PATTERN.test(combined)) return fail('banned', combined);
+    if (res.status === 401) return fail('auth_invalid', combined);
+    // 429 = 配额耗尽/限流：没封，量的事额度条负责（detail 留痕，悬停可见）
+    if (res.status === 429) {
+      return { status: 'ok', checkedAt, detail: combined.slice(0, 300) };
+    }
+    // 其余（license 403 / 5xx / 异常码）不装懂
+    return fail('unknown', combined);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return { status: classifyAccountError(msg), checkedAt, detail: msg.slice(0, 300) };

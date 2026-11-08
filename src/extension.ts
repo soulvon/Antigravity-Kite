@@ -127,6 +127,11 @@ export function activate(context: vscode.ExtensionContext) {
   // 延迟 2 秒执行首次后台静默全局额度刷新
   setTimeout(() => backgroundRefreshAllUsage(context), 2000);
 
+  // 健康探针：启动 8 秒后首轮定性，之后每小时一轮（独立于额度刷新，封禁只在推理端点现形）
+  setTimeout(() => backgroundProbeAllHealth(), 8000);
+  const healthInterval = setInterval(() => backgroundProbeAllHealth(), HEALTH_PROBE_INTERVAL_MS);
+  context.subscriptions.push({ dispose: () => clearInterval(healthInterval) });
+
   // 后台定时刷新（间隔可配置，默认 15 分钟，重启生效）
   const refreshMinutes = Math.max(5, vscode.workspace.getConfiguration('antigravityKite').get<number>('quotaRefreshMinutes', 15));
   const refreshInterval = setInterval(() => backgroundRefreshAllUsage(context), refreshMinutes * 60 * 1000);
@@ -148,6 +153,41 @@ function healthFromError(err: unknown): AccountHealth {
   return { status: classifyAccountError(msg), checkedAt: new Date().toISOString(), detail: msg.slice(0, 300) };
 }
 
+/**
+ * 健康状态落盘（去抖）：只在 status 翻转时写 accounts.json。
+ * 背景探测每小时×N 账号，若每次都写盘会触发 watcher→load→pushAccounts 风暴，
+ * 挤占切号流程的写窗口（v1.1.13 教训）。
+ */
+function persistHealthIfChanged(email: string, health: AccountHealth): void {
+  const prev = accountStore.getByEmail(email)?.health;
+  if (prev?.status !== health.status) {
+    accountStore.update(email, { health });
+  }
+  // 无论是否落盘都推给侧栏：checkedAt/detail 实时可见，卡片即时变色
+  sidebarProvider?.postMessage({ type: 'health', email, health });
+}
+
+/**
+ * 后台独立健康探针：每小时一轮（生成探测 1 token/号，损耗可忽略）。
+ * 与额度刷新分离——封禁只在推理端点现形，元数据 200 证明不了健康。
+ */
+const HEALTH_PROBE_INTERVAL_MS = 60 * 60 * 1000;
+
+async function backgroundProbeAllHealth() {
+  console.log('[Kite-Health] 开始后台账号健康探测...');
+  const accounts = accountStore.getAll().filter(a => !a.disabled);
+  for (const account of accounts) {
+    try {
+      const health = await checkAccountHealth(account);
+      persistHealthIfChanged(account.email, health);
+    } catch (e) {
+      // checkAccountHealth 内部已兜底，这里只防意外抛出中断整轮
+      console.warn(`[Kite-Health] 探测 ${account.email} 意外失败:`, e);
+    }
+  }
+  console.log('[Kite-Health] 后台账号健康探测完成。');
+}
+
 async function backgroundRefreshAllUsage(context: vscode.ExtensionContext) {
   console.log('[Kite-Background] 正在执行后台定时静默全局额度刷新...');
   const accounts = accountStore.getAll().filter(a => !a.disabled);
@@ -155,21 +195,17 @@ async function backgroundRefreshAllUsage(context: vscode.ExtensionContext) {
     try {
       const snapshot = await fetchUsage(account);
       usageCache.set(account.email, snapshot);
-      // 额度刷新第一步就是 loadCodeAssist，成功即服务正常——顺路沉淀健康状态
-      const health: AccountHealth = { status: 'ok', checkedAt: new Date().toISOString() };
-      accountStore.update(account.email, { health });
 
       // 实时同步给状态栏
       statusBarManager?.updateUsage(account.email, snapshot);
       // 实时推送给当前活动的侧栏
-      sidebarProvider?.postMessage({ type: 'usage', email: account.email, snapshot, health });
+      sidebarProvider?.postMessage({ type: 'usage', email: account.email, snapshot });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[Kite-Background] 刷新账号 ${account.email} 额度失败:`, msg);
-      // 失败同步给卡片，杜绝无反馈占位；顺路归类封禁/凭据失效
-      const health = healthFromError(e);
-      accountStore.update(account.email, { health });
-      sidebarProvider?.postMessage({ type: 'usage', email: account.email, error: msg, health });
+      // 失败同步给卡片，杜绝无反馈占位；顺路归类凭据失效（封禁由健康探针负责）
+      persistHealthIfChanged(account.email, healthFromError(e));
+      sidebarProvider?.postMessage({ type: 'usage', email: account.email, error: msg });
     }
   }
   usageCacheLastRefresh = Date.now();
@@ -471,14 +507,12 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
       saveUsageCache(this._context);
       usageTracker.recordRefresh();
       usageTracker.recordUsage(email, snapshot.minRemainingPercent, snapshot.tierId);
-      const health: AccountHealth = { status: 'ok', checkedAt: new Date().toISOString() };
-      accountStore.update(email, { health });
-      this._view?.webview.postMessage({ type: 'usage', email, snapshot, health });
+      this._view?.webview.postMessage({ type: 'usage', email, snapshot });
       logPanel.pushLogPanelData(this._context, usageTracker);
     } catch (err) {
-      const health = healthFromError(err);
-      accountStore.update(email, { health });
-      this._view?.webview.postMessage({ type: 'usage', email, error: String(err), health });
+      // 元数据层失败顺路归类凭据失效；封禁在推理端点，由健康探针负责
+      persistHealthIfChanged(email, healthFromError(err));
+      this._view?.webview.postMessage({ type: 'usage', email, error: String(err) });
     }
     // 无论成败都要收口旋转态，否则按钮会一直转
     this._view?.webview.postMessage({ type: 'refreshDone', scope: 'one', email });
@@ -496,16 +530,13 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         usageCache.set(account.email, snapshot);
         usageTracker.recordRefresh();
         usageTracker.recordUsage(account.email, snapshot.minRemainingPercent, snapshot.tierId);
-        const health: AccountHealth = { status: 'ok', checkedAt: new Date().toISOString() };
-        accountStore.update(account.email, { health });
-        this._view?.webview.postMessage({ type: 'usage', email: account.email, snapshot, health });
+        this._view?.webview.postMessage({ type: 'usage', email: account.email, snapshot });
         successCount++;
       } catch (err) {
         errorCount++;
         lastError = err instanceof Error ? err.message : String(err);
-        const health = healthFromError(err);
-        accountStore.update(account.email, { health });
-        this._view?.webview.postMessage({ type: 'usage', email: account.email, error: lastError, health });
+        persistHealthIfChanged(account.email, healthFromError(err));
+        this._view?.webview.postMessage({ type: 'usage', email: account.email, error: lastError });
       }
     }
     usageCacheLastRefresh = Date.now();
@@ -522,12 +553,12 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     this._view?.webview.postMessage({ type: 'refreshDone', scope: 'all' });
   }
 
-  /** 单账号健康检测（封禁/凭据探针，一次 loadCodeAssist 开销最小） */
+  /** 单账号健康检测（人工点药丸触发：loadCodeAssist + generateContent 推理探针） */
   private async _checkHealth(email: string) {
     const account = accountStore.getAll().find(a => a.email === email);
     if (!account) return;
     const health = await checkAccountHealth(account);
-    accountStore.update(email, { health });
+    persistHealthIfChanged(email, health);
     this._view?.webview.postMessage({ type: 'healthResult', email, health });
   }
 
@@ -1895,18 +1926,24 @@ window.addEventListener('message', e => {
       } else if (msg.error) {
         accounts[idx]._usageError = msg.error;
       }
-      if (msg.health) accounts[idx].health = msg.health;
       renderAccounts();
       updateSummary();
     }
   }
+  if (msg.type === 'health') {
+    // 后台探针推送：只更新卡片，不弹 toast（避免每小时骚扰）
+    const idx = accounts.findIndex(a => a.email === msg.email);
+    if (idx >= 0 && msg.health) accounts[idx].health = msg.health;
+    renderAccounts();
+    updateSummary();
+  }
   if (msg.type === 'healthResult') {
+    // 人工点击药丸的检测结果：给结论反馈；封禁/失效才弹，正常不刷屏
     healthCheckingEmail = null;
     const idx = accounts.findIndex(a => a.email === msg.email);
     if (idx >= 0 && msg.health) accounts[idx].health = msg.health;
     renderAccounts();
     updateSummary();
-    // 人工触发的检测要给结论反馈；封禁/失效才弹，正常不刷屏
     if (msg.health && msg.health.status === 'banned') {
       showToast(tl('healthBannedToast', msg.email), 'error');
     } else if (msg.health && msg.health.status === 'auth_invalid') {
