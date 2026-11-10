@@ -18,6 +18,7 @@ scripts/**
 2a941382-4b4f-4403-9856-e4ec79863fdd.png
 .trellis/**
 .codebuddy/**
+.agents/**
 spec/**
 .preview/**
 tmp/**

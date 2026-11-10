@@ -34,7 +34,6 @@
 	"config.statusBar.showResetCountdown": "Show a countdown to the nearest quota window reset (clock emoji) next to the quota figures.",
 	"config.statusBar.showTier": "Show subscription tier (PRO/ULTRA) next to the account name. FREE stays unlabeled to keep the bar quiet.",
 	"config.statusBar.families": "Which quota families show in the status bar (claude / gemini / argon=Gemini 4). Disabled pools are excluded from family segments and the tightest-quota aggregate.",
-	"config.statusBar.refreshSeconds": "Auto-refresh interval (seconds) for the current account quota shown in the status bar. Applies instantly.",
 	"config.syncGeminiFiles": "Sync ~/.gemini oauth_creds.json and google_accounts.json when switching accounts. Only turn this off if other tools such as AgyHop / Cockpit also manage these files.",
 	"config.locale": "Language for the UI and messages. auto = follow the IDE language.",
 	"config.locale.auto": "Follow IDE language (default)",

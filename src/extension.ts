@@ -21,6 +21,7 @@ import { StatusBarManager } from './statusBar';
 import { fetchUsage, checkAccountHealth, classifyAccountError } from './usageService';
 import { AccountHealth } from './types';
 import * as ideRuntime from './ideRuntime';
+import * as multiWindowMgr from './multiWindowManager';
 import { UsageTracker } from './usageTracker';
 import { showUpdateNotesOnStartup, autoCheckOnStartup, checkForUpdates } from './updater';
 import { registerUiPresenter, notifyUi, askUi, UiPresenter, UiAskOptions, UiStatus } from './uiChannel';
@@ -32,8 +33,11 @@ let usageTracker: UsageTracker;
 
 /** 配额缓存（email → UsageSnapshot），持久化到 globalState */
 const usageCache = new Map<string, UsageSnapshot>();
-let usageCacheLastRefresh = 0; // 上次全量刷新时间戳
-const USAGE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 分钟缓存有效期
+let usageCacheLastRefresh = 0; // 上次成功刷新的时间戳
+/** 按号最近一次刷新失败明细：失败不清缓存，UI 据此标注「缓存数据」并给出原因 */
+const usageErrors = new Map<string, string>();
+/** 全池刷新并发闸：定时器 / 启动 / 打开侧栏不得叠罗汉 */
+let refreshAllInFlight = false;
 
 function loadUsageCache(context: vscode.ExtensionContext) {
   const saved = context.globalState.get<Record<string, UsageSnapshot>>('usageCache');
@@ -49,13 +53,20 @@ function loadUsageCache(context: vscode.ExtensionContext) {
 /** 全池额度后台定时器（模块级句柄：设置保存时即时重排间隔，无需重启） */
 let quotaRefreshTimer: NodeJS.Timeout | null = null;
 
-/** 统一管线最近一次失败明细（批量汇总 toast 用；逐号明细已实时推卡片） */
-let lastUsageError = '';
+/** 刷新周期（与缓存新鲜度判据同源，避免两处硬编码漂移） */
+function quotaRefreshMs(): number {
+  const minutes = vscode.workspace.getConfiguration('antigravityKite').get<number>('quotaRefreshMinutes', 15);
+  return Math.min(120, Math.max(5, minutes)) * 60 * 1000;
+}
+
+/** 缓存为空或已过一个刷新周期才需要补刷；刚重启、刚刷完都不该再打网络 */
+function isUsageCacheStale(): boolean {
+  return usageCache.size === 0 || Date.now() - usageCacheLastRefresh > quotaRefreshMs();
+}
 
 function applyQuotaRefreshInterval(context: vscode.ExtensionContext): void {
   if (quotaRefreshTimer) clearInterval(quotaRefreshTimer);
-  const refreshMinutes = Math.max(5, vscode.workspace.getConfiguration('antigravityKite').get<number>('quotaRefreshMinutes', 15));
-  quotaRefreshTimer = setInterval(() => backgroundRefreshAllUsage(context), refreshMinutes * 60 * 1000);
+  quotaRefreshTimer = setInterval(() => backgroundRefreshAllUsage(context), quotaRefreshMs());
 }
 
 function saveUsageCache(context: vscode.ExtensionContext) {
@@ -75,6 +86,7 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   accountStore.init(context);
+  multiWindowMgr.init(context);
   logInfo('activate.init-done', { accounts: accountStore.count(), storageDir: accountStore.getStorageDirPath() });
 
   // 初始化侧栏，并把 UI 通道接到它上面：此后所有提示/询问都走 webview，不再弹原生对话框
@@ -137,6 +149,7 @@ export function activate(context: vscode.ExtensionContext) {
       recheckHealth: () => backgroundProbeAllHealth(),
       openSettings: () => sidebarProvider?.openSettingsUi(),
       getPrivacy: () => context.globalState.get<boolean>('privacyMode', false),
+      getUsageError: (email) => usageErrors.get(email),
     }
   );
   context.subscriptions.push(statusBarManager);
@@ -177,11 +190,13 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(openSettingsCmd);
 
-  // 延迟 2 秒执行首次后台静默全局额度刷新
-  setTimeout(() => backgroundRefreshAllUsage(context), 2000);
+  // 有新鲜缓存就别在启动时重复请求；为空或已过一个刷新周期才补一次静默全池刷新
+  setTimeout(() => {
+    if (isUsageCacheStale()) void backgroundRefreshAllUsage(context);
+  }, 2000);
 
-  // 健康探针：启动 8 秒后首轮定性，之后每小时一轮（独立于额度刷新，封禁只在推理端点现形）
-  setTimeout(() => backgroundProbeAllHealth(), 8000);
+  // 健康探针：启动 8 秒只补探「无结论 / 非正常 / 已过期」的号，之后每小时全池一轮
+  setTimeout(() => backgroundProbeAllHealth(true), 8000);
   const healthInterval = setInterval(() => backgroundProbeAllHealth(), HEALTH_PROBE_INTERVAL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(healthInterval) });
 
@@ -194,6 +209,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
   accountStore.dispose();
+  multiWindowMgr.dispose();
   usageTracker?.dispose();
   statusBarManager?.dispose();
 }
@@ -225,6 +241,7 @@ async function refreshOneAccountUsage(
     const snapshot = await fetchUsage(account);
     usageCache.set(email, snapshot);
     usageCacheLastRefresh = Date.now();
+    usageErrors.delete(email);
     if (!opts.batch) saveUsageCache(context);
     usageTracker.recordRefresh();
     usageTracker.recordUsage(email, snapshot.minRemainingPercent, snapshot.tierId);
@@ -235,10 +252,16 @@ async function refreshOneAccountUsage(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[Kite-Usage] 刷新账号 ${email} 额度失败:`, msg);
-    lastUsageError = msg;
-    // 元数据层失败顺路归类凭据失效；封禁在推理端点，由健康探针负责
-    persistHealthIfChanged(email, healthFromError(err));
+    usageErrors.set(email, msg);
+    // 不清 usageCache：失败时继续展示上次成功快照，只在两端标注「缓存数据」
+    // 额度刷新走元数据端点：网络失败/5xx 不是账号健康结论，唯一权威是推理探针。
+    // 只让凭据失效这类明确签名顺路标记，避免把 ok/banned 刷成 unknown 或 unreachable。
+    const health = healthFromError(err);
+    if (health.status === 'auth_invalid' || health.status === 'banned') {
+      persistHealthIfChanged(email, health);
+    }
     sidebarProvider?.postMessage({ type: 'usage', email, error: msg });
+    statusBarManager?.update();
     return null;
   }
 }
@@ -250,6 +273,9 @@ async function refreshOneAccountUsage(
  */
 function persistHealthIfChanged(email: string, health: AccountHealth): void {
   const prev = accountStore.getByEmail(email)?.health;
+  if (health.status !== 'ok') {
+    logWarn('health.probe', { email, status: health.status, detail: health.detail || '' });
+  }
   if (prev?.status !== health.status) {
     accountStore.update(email, { health });
   }
@@ -265,9 +291,15 @@ function persistHealthIfChanged(email: string, health: AccountHealth): void {
  */
 const HEALTH_PROBE_INTERVAL_MS = 60 * 60 * 1000;
 
-async function backgroundProbeAllHealth() {
+async function backgroundProbeAllHealth(onlyStale = false) {
   console.log('[Kite-Health] 开始后台账号健康探测...');
-  const accounts = accountStore.getAll().filter(a => !a.disabled);
+  const accounts = accountStore.getAll().filter(a => {
+    if (a.disabled) return false;
+    if (!onlyStale) return true;
+    if (!a.health) return true;
+    const age = Date.parse(a.health.checkedAt);
+    return a.health.status !== 'ok' || !Number.isFinite(age) || Date.now() - age > HEALTH_PROBE_INTERVAL_MS;
+  });
   for (const account of accounts) {
     try {
       const health = await checkAccountHealth(account);
@@ -281,29 +313,48 @@ async function backgroundProbeAllHealth() {
 }
 
 async function backgroundRefreshAllUsage(context: vscode.ExtensionContext) {
-  console.log('[Kite-Background] 正在执行后台定时静默全局额度刷新...');
-  const accounts = accountStore.getAll().filter(a => !a.disabled);
-  // 批量模式走统一管线（逐号分发底栏/侧栏，落盘与统计面板由本函数收口一次）
-  for (const account of accounts) {
-    await refreshOneAccountUsage(account.email, context, { batch: true });
+  if (refreshAllInFlight) {
+    logInfo('usage.refresh.skip.inflight');
+    return;
   }
-  saveUsageCache(context);
-  logPanel.pushLogPanelData(context, usageTracker);
-  console.log('[Kite-Background] 后台定时静默全局额度刷新完成。');
+  refreshAllInFlight = true;
+  try {
+    console.log('[Kite-Background] 正在执行后台静默全局额度刷新...');
+    const accounts = accountStore.getAll().filter(a => !a.disabled);
+    // 批量模式走统一管线（逐号分发底栏/侧栏，落盘与统计面板由本函数收口一次）
+    for (const account of accounts) {
+      await refreshOneAccountUsage(account.email, context, { batch: true });
+    }
+    saveUsageCache(context);
+    logPanel.pushLogPanelData(context, usageTracker);
+    console.log('[Kite-Background] 后台静默全局额度刷新完成。');
+  } finally {
+    refreshAllInFlight = false;
+  }
 }
 
 /** 全池刷新（QuickPick / 命令面板入口），带完成提示 */
 async function refreshAllUsageInteractive(context: vscode.ExtensionContext) {
-  const accounts = accountStore.getAll().filter(a => !a.disabled);
-  let successCount = 0;
-  for (const account of accounts) {
-    const snap = await refreshOneAccountUsage(account.email, context, { batch: true });
-    if (snap) successCount++;
+  if (refreshAllInFlight) {
+    notifyUi('info', t('refreshInProgress'));
+    logInfo('usage.refresh.skip.inflight');
+    return 0;
   }
-  saveUsageCache(context);
-  logPanel.pushLogPanelData(context, usageTracker);
-  sidebarProvider?.refresh();
-  return successCount;
+  refreshAllInFlight = true;
+  try {
+    const accounts = accountStore.getAll().filter(a => !a.disabled);
+    let successCount = 0;
+    for (const account of accounts) {
+      const snap = await refreshOneAccountUsage(account.email, context, { batch: true });
+      if (snap) successCount++;
+    }
+    saveUsageCache(context);
+    logPanel.pushLogPanelData(context, usageTracker);
+    sidebarProvider?.refresh();
+    return successCount;
+  } finally {
+    refreshAllInFlight = false;
+  }
 }
 
 /** 切号防连点：调度成功后 IDE 会关闭，无需重置；调度失败时重置 */
@@ -439,10 +490,9 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
       webviewView.webview.postMessage({ type: 'tagColorsSync', colors: savedTagColors });
     }
 
-    // 有缓存且未过期则跳过刷新，否则自动刷新
-    const cacheAge = Date.now() - usageCacheLastRefresh;
-    if (usageCache.size === 0 || cacheAge > USAGE_CACHE_TTL_MS) {
-      this._refreshAllUsage();
+    // 有新鲜缓存就直接用；过期才走带闸的静默全池刷新（打开侧栏不弹 toast、不与定时器叠加）
+    if (isUsageCacheStale()) {
+      void backgroundRefreshAllUsage(this._context);
     }
   }
 
@@ -453,6 +503,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     const accountsWithUsage = accounts.map(a => ({
       ...a,
       usage: usageCache.get(a.email),
+      _usageError: usageErrors.get(a.email),
     }));
     const payload = { type: 'accounts', accounts: accountsWithUsage, currentEmail, privacyMode: this._context.globalState.get<boolean>('privacyMode', false) };
     const res = this._view?.webview.postMessage(payload);
@@ -476,6 +527,97 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
   openSettingsUi() {
     vscode.commands.executeCommand('antigravityKite.sidebar.focus');
     this._view?.webview.postMessage({ type: 'openSettings' });
+  }
+
+  private _mwPollTimer: NodeJS.Timeout | null = null;
+
+  /**
+   * 启动/停止多开后的短期渐进探测轮询（消除 Windows 进程列表中命令行探测延迟）
+   * 间隔：600ms, 1500ms, 3000ms, 5000ms。一旦达到预期状态立即推送并停止轮询。
+   */
+  pollMultiWindowStatus(targetId: string, expectRunning: boolean) {
+    if (this._mwPollTimer) {
+      clearTimeout(this._mwPollTimer);
+      this._mwPollTimer = null;
+    }
+    const intervals = [600, 1500, 3000, 5000];
+    let step = 0;
+    const tick = async () => {
+      multiWindowMgr.invalidateProcessCache();
+      const list = await multiWindowMgr.listWindows();
+      const win = list.find(w => w.id === targetId);
+      const isRun = win ? (win.isRunning ?? win.running) : false;
+      await this.pushMultiWindows();
+      if (win && isRun === expectRunning) {
+        return; // 目标状态已达成，提前收口
+      }
+      step++;
+      if (step < intervals.length) {
+        this._mwPollTimer = setTimeout(tick, intervals[step]);
+      }
+    };
+    this._mwPollTimer = setTimeout(tick, intervals[0]);
+  }
+
+  /**
+   * 启动前把目标账号身份直接写进该窗口的 state.vscdb。
+   * 实测：不预写时窗口要等运行时自愈切号，约 35 秒才变成目标号；
+   * 预写后 2.1 秒即就位（身份按窗口隔离，不会波及主窗口）。
+   * token 临期则跳过预写，退回运行时切号，避免写进一个即将失效的凭据。
+   */
+  private _primeWindowIdentity(win: import('./types').MultiWindowConfig): void {
+    if (!win.bindEmail) return;
+    try {
+      const acc = accountStore.getByEmail(win.bindEmail);
+      if (!acc) {
+        logWarn('multiWindow.preIdentity.noAccount', { email: win.bindEmail });
+        return;
+      }
+      const expMs = new Date(acc.expiresAt || 0).getTime();
+      if (!expMs || expMs - Date.now() < 2 * 60 * 1000) {
+        logWarn('multiWindow.preIdentity.tokenExpiring', { email: acc.email, expiresAt: acc.expiresAt });
+        return;
+      }
+      const res = switchIdeStateIdentity(acc.email, {
+        accessToken: acc.accessToken,
+        refreshToken: acc.refreshToken,
+        expiryDateSeconds: Math.floor(expMs / 1000),
+        isGcpTos: false,
+        idToken: acc.idToken,
+      }, { dbPath: resolveIdeStateDbPathFromUserData(win.userDataDir) });
+      logInfo('multiWindow.preIdentity', { email: acc.email, dbWritten: res.dbWritten, error: res.error });
+      if (!res.dbWritten) {
+        logWarn('multiWindow.preIdentity.fail', { email: acc.email, error: res.error });
+      }
+    } catch (e) {
+      logWarn('multiWindow.preIdentity.throw', e);
+    }
+  }
+
+  /** 多开操作阶段进度：让界面显示「复制配置 12/278」而不是干等 */
+  private _mwProgress(msg: WebviewMessage, text: string): void {
+    this._post({ type: 'mwProgress', key: msg.actionKey, text }, false);
+  }
+
+  /** 多开操作终态回报：成功与失败都必须发，前端据此收口等待态（禁止静默） */
+  private _mwDone(msg: WebviewMessage, ok: boolean, message: string, closeModal = false): void {
+    this._post({ type: 'mwActionDone', key: msg.actionKey, ok, message, closeModal }, false);
+  }
+
+  /** 向 Webview 推送多开列表 */
+  async pushMultiWindows() {
+    try {
+      const list = await multiWindowMgr.listWindows();
+      const currentEmail = this._context.globalState.get<string>('currentEmail') || '';
+      for (const win of list) {
+        if (win.isCurrent) {
+          win.currentEmail = currentEmail;
+        }
+      }
+      this._view?.webview.postMessage({ type: 'multiWindowList', windows: list, currentEmail });
+    } catch (e) {
+      logWarn('multiWindow.push.fail', e);
+    }
   }
 
   /** 推送设置到 webview（读 package.json 中 contributes.configuration 的配置项） */
@@ -502,7 +644,6 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         statusBarTier: cfg.get<boolean>('statusBar.showTier', true),
         statusBarResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
         statusBarFamilies: cfg.get<string[]>('statusBar.families', ['claude', 'gemini', 'argon']),
-        statusBarRefresh: cfg.get<number>('statusBar.refreshSeconds', 30),
       },
     });
   }
@@ -528,10 +669,8 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     await cfg.update('statusBar.enabled', s.statusBarEnabled !== false, target);
     const sbPosition = String(s.statusBarPosition ?? 'right');
     const sbStyle = String(s.statusBarStyle ?? 'smart');
-    const sbRefresh = Number(s.statusBarRefresh);
     await cfg.update('statusBar.position', sbPosition === 'left' ? 'left' : 'right', target);
     await cfg.update('statusBar.style', ['smart', 'dot', 'percent', 'compact', 'dual', 'labeled', 'full'].includes(sbStyle) ? sbStyle : 'smart', target);
-    await cfg.update('statusBar.refreshSeconds', Number.isFinite(sbRefresh) ? Math.min(600, Math.max(10, Math.round(sbRefresh))) : 30, target);
     await cfg.update('statusBar.showAccount', s.statusBarAccount !== false, target);
     await cfg.update('statusBar.showModels', s.statusBarModels !== false, target);
     await cfg.update('statusBar.showCredits', s.statusBarCredits !== false, target);
@@ -625,25 +764,38 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
 
   /** 批量刷新所有账号配额（委托统一管线，批量模式统一落盘收口） */
   private async _refreshAllUsage() {
-    const accounts = accountStore.getAll().filter(a => !a.disabled);
-    let successCount = 0;
-    for (const account of accounts) {
-      const snap = await refreshOneAccountUsage(account.email, this._context, { batch: true });
-      if (snap) successCount++;
+    if (refreshAllInFlight) {
+      // 已有全池刷新在跑：明确反馈并收口旋转态，绝不静默吞掉点击
+      this._view?.webview.postMessage({ type: 'refreshDone', scope: 'all' });
+      this._view?.webview.postMessage({ type: 'toast', status: 'info', message: t('refreshInProgress') });
+      logInfo('usage.refresh.skip.inflight');
+      return;
     }
-    const errorCount = accounts.length - successCount;
-    saveUsageCache(this._context);
-    this._pushAccounts();
-    logPanel.pushLogPanelData(this._context, usageTracker);
-    if (errorCount === 0) {
-      this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('refreshedQuota', successCount) });
-    } else if (successCount === 0) {
-      // 失败明细已由统一管线逐号推送到卡片（usage error），toast 带最近一条明细
-      this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('refreshAllFailed', errorCount, lastUsageError) });
-    } else {
-      this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: t('refreshPartial', successCount, errorCount) });
+    refreshAllInFlight = true;
+    try {
+      const accounts = accountStore.getAll().filter(a => !a.disabled);
+      let successCount = 0;
+      for (const account of accounts) {
+        const snap = await refreshOneAccountUsage(account.email, this._context, { batch: true });
+        if (snap) successCount++;
+      }
+      const errorCount = accounts.length - successCount;
+      saveUsageCache(this._context);
+      this._pushAccounts();
+      logPanel.pushLogPanelData(this._context, usageTracker);
+      if (errorCount === 0) {
+        this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('refreshedQuota', successCount) });
+      } else if (successCount === 0) {
+        // 失败明细已由统一管线逐号推送到卡片（usage error），toast 带最近一条明细
+        const failedDetail = Array.from(usageErrors.values()).pop() || '';
+        this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('refreshAllFailed', errorCount, failedDetail) });
+      } else {
+        this._view?.webview.postMessage({ type: 'toast', status: 'warning', message: t('refreshPartial', successCount, errorCount) });
+      }
+    } finally {
+      this._view?.webview.postMessage({ type: 'refreshDone', scope: 'all' });
+      refreshAllInFlight = false;
     }
-    this._view?.webview.postMessage({ type: 'refreshDone', scope: 'all' });
   }
 
   /** 单账号健康检测（人工点药丸触发：loadCodeAssist + generateContent 推理探针） */
@@ -929,7 +1081,6 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
             usageTracker.recordSwitch(msg.email);
             this._pushAccounts();
             this._view?.webview.postMessage({ type: 'switchResult', ok: true });
-            statusBarManager?.refreshUsage();
             logPanel.pushLogPanelData(this._context, usageTracker);
             this._refreshUsage(msg.email);
             switchInFlight = false;
@@ -1088,6 +1239,123 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         this._flushOutbox();
         break;
 
+      // ── 多开窗口 ──
+      case 'listMultiWindows':
+        try {
+          await this.pushMultiWindows();
+          this._mwDone(msg, true, '');
+        } catch (err) {
+          this._mwDone(msg, false, String(err instanceof Error ? err.message : err));
+        }
+        break;
+
+      case 'createMultiWindow':
+        try {
+          const created = await multiWindowMgr.createWindow({
+            name: msg.name,
+            bindEmail: msg.bindEmail || '',
+            assignedTag: msg.assignedTag,
+            onProgress: (text) => this._mwProgress(msg, text),
+          }).catch((err) => {
+            this._mwDone(msg, false, String(err instanceof Error ? err.message : err));
+            return null;
+          });
+          if (!created) break;
+          // 窗口已落盘：此后即使启动失败也不能回滚，否则用户重试会被前端重名拦住
+          try {
+            if (msg.startImmediately) {
+              this._primeWindowIdentity(created);
+              await multiWindowMgr.startWindow(created.id);
+              this.pollMultiWindowStatus(created.id, true);
+            }
+            await this.pushMultiWindows();
+            this._mwDone(msg, true, t('mwCreatedToast'));
+          } catch (err) {
+            await this.pushMultiWindows();
+            this._mwDone(msg, false, t('mwCreatedStartFailed', String(err instanceof Error ? err.message : err)), true);
+          }
+        } catch (err) {
+          this._mwDone(msg, false, String(err instanceof Error ? err.message : err));
+        }
+        break;
+
+      case 'startMultiWindow':
+        try {
+          const startWin = multiWindowMgr.getWindowById(msg.id);
+          if (startWin) this._primeWindowIdentity(startWin);
+          await multiWindowMgr.startWindow(msg.id);
+          await this.pushMultiWindows();
+          this.pollMultiWindowStatus(msg.id, true);
+          this._mwDone(msg, true, t('mwStartedToast'));
+        } catch (err) {
+          this._mwDone(msg, false, String(err instanceof Error ? err.message : err));
+        }
+        break;
+
+      case 'stopMultiWindow':
+        try {
+          await multiWindowMgr.stopWindow(msg.id);
+          await this.pushMultiWindows();
+          this.pollMultiWindowStatus(msg.id, false);
+          this._mwDone(msg, true, t('mwStoppedToast'));
+        } catch (err) {
+          this._mwDone(msg, false, String(err instanceof Error ? err.message : err));
+        }
+        break;
+
+      case 'focusMultiWindow':
+        try {
+          await multiWindowMgr.focusWindow(msg.id);
+          this._mwDone(msg, true, t('mwFocusToast'));
+        } catch (err) {
+          this._mwDone(msg, false, String(err instanceof Error ? err.message : err));
+        }
+        break;
+
+      case 'updateMultiWindow':
+        try {
+          multiWindowMgr.updateWindow(msg.id, {
+            name: msg.name,
+            bindEmail: msg.bindEmail,
+            assignedTag: msg.assignedTag,
+          });
+          await this.pushMultiWindows();
+          this._mwDone(msg, true, t('mwUpdatedToast'));
+        } catch (err) {
+          this._mwDone(msg, false, String(err instanceof Error ? err.message : err));
+        }
+        break;
+
+      case 'deleteMultiWindow':
+        try {
+          await multiWindowMgr.deleteWindow(msg.id);
+          await this.pushMultiWindows();
+          this._mwDone(msg, true, t('mwDeletedToast'));
+        } catch (err) {
+          this._mwDone(msg, false, String(err instanceof Error ? err.message : err));
+        }
+        break;
+
+      case 'listCockpitCandidates':
+        try {
+          const candidates = multiWindowMgr.listCockpitCandidates();
+          this._view?.webview.postMessage({ type: 'cockpitCandidateList', candidates });
+          this._mwDone(msg, true, '');
+        } catch (err) {
+          this._mwDone(msg, false, String(err instanceof Error ? err.message : err));
+        }
+        break;
+
+      case 'importCockpitCandidate':
+        try {
+          multiWindowMgr.importCockpitCandidate(msg.name, msg.userDataDir, msg.bindEmail || '');
+          await this.pushMultiWindows();
+          this._mwDone(msg, true, t('mwCreatedToast'));
+        } catch (err) {
+          this._mwDone(msg, false, String(err instanceof Error ? err.message : err));
+        }
+        break;
+
       case 'askResult': {
         const settle = this._askResolvers.get(String(msg.id));
         if (settle) settle(msg.ok === true);
@@ -1121,6 +1389,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
 <div class="tab-page active" id="tabAccounts">
   <div class="list-body">
       <!-- 账号区标题与操作 -->
+      <!-- 账号区标题与操作 -->
       <div class="accounts-section-header list-summary">
         <svg class="list-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
         <h3 data-i18n="myAccounts">我的账号</h3>
@@ -1129,6 +1398,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         <span class="grid-count" id="gridCount"></span>
         <button class="add-account-btn" id="addAccountBtn" data-i18n="addAccount">添加账号</button>
       </div>
+
       <div class="panel-divider"></div>
       <!-- 搜索栏 -->
       <div class="search-bar">
@@ -1313,6 +1583,90 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
   </div>
 </div>
 
+<!-- 新建多开模态框 -->
+<div id="mwCreateOverlay" class="modal-overlay" hidden>
+  <div class="modal-box" style="width:min(420px,94vw)">
+    <div class="modal-header">
+      <h3 data-i18n="mwCreateModalTitle">新建多开窗口</h3>
+      <button class="modal-close" id="mwCreateClose" data-i18n-title="close" title="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <label style="font-size:12px;opacity:0.85;margin-bottom:4px;display:block" data-i18n="mwCreateNameLabel">多开名称</label>
+      <input type="text" id="mwCreateNameInput" placeholder="例如：工作号、测试号" style="width:100%;box-sizing:border-box;margin-bottom:10px" data-i18n-ph="mwCreateNamePh">
+      
+      <label style="font-size:12px;opacity:0.85;margin-bottom:4px;display:block" data-i18n="mwCreateAccountLabel">绑定账号</label>
+      <select id="mwCreateAccountSelect" class="as-select" style="width:100%;margin-bottom:10px">
+        <option value="" data-i18n="mwCreateSelectAccount">选择绑定账号（可选）</option>
+      </select>
+
+      <div id="mwCreateTagGroup">
+        <label style="font-size:12px;opacity:0.85;margin-bottom:4px;display:block" data-i18n="mwCreateTagLabel">标签分组</label>
+        <select id="mwCreateTagSelect" class="as-select" style="width:100%;margin-bottom:10px">
+          <option value="" data-i18n="mwCreateTagAll">不限（全部账号）</option>
+        </select>
+      </div>
+
+      <div style="font-size:12px;color:var(--muted);line-height:1.4;margin:6px 0 12px 0;" data-i18n="mwCreateHint">
+        独立启动新窗口，直接共享同一套项目与会话，纯为多账号并发使用。
+      </div>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="modal-cancel-btn" id="mwCreateCancel" style="min-width:72px;padding:6px 20px" data-i18n="cancel">取消</button>
+        <button class="primary" id="mwCreateSubmit" data-mw-static-action="create" style="width:auto;min-width:90px;padding:6px 20px" data-i18n="mwCreateSubmit">创建并启动</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 编辑多开模态框 -->
+<div id="mwEditOverlay" class="modal-overlay" hidden>
+  <div class="modal-box" style="width:min(420px,94vw)">
+    <div class="modal-header">
+      <h3 data-i18n="mwEditModalTitle">编辑多开窗口</h3>
+      <button class="modal-close" id="mwEditClose" data-i18n-title="close" title="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="mwEditId">
+      <label style="font-size:12px;opacity:0.85;margin-bottom:4px;display:block" data-i18n="mwCreateNameLabel">多开名称</label>
+      <input type="text" id="mwEditNameInput" style="width:100%;box-sizing:border-box;margin-bottom:10px">
+      
+      <label style="font-size:12px;opacity:0.85;margin-bottom:4px;display:block" data-i18n="mwCreateAccountLabel">绑定账号</label>
+      <select id="mwEditAccountSelect" class="as-select" style="width:100%;margin-bottom:10px">
+        <option value="" data-i18n="mwCreateSelectAccount">选择绑定账号（可选）</option>
+      </select>
+
+      <div id="mwEditTagGroup">
+        <label style="font-size:12px;opacity:0.85;margin-bottom:4px;display:block" data-i18n="mwCreateTagLabel">标签分组</label>
+        <select id="mwEditTagSelect" class="as-select" style="width:100%;margin-bottom:12px">
+          <option value="" data-i18n="mwCreateTagAll">不限（全部账号）</option>
+        </select>
+      </div>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="modal-cancel-btn" id="mwEditCancel" style="min-width:72px;padding:6px 20px" data-i18n="cancel">取消</button>
+        <button class="primary" id="mwEditSubmit" data-mw-static-action="update" style="width:auto;min-width:90px;padding:6px 20px" data-i18n="mwEditSubmit">保存修改</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Cockpit 导入模态框 -->
+<div id="mwCockpitOverlay" class="modal-overlay" hidden>
+  <div class="modal-box" style="width:min(460px,94vw)">
+    <div class="modal-header">
+      <h3 data-i18n="mwCockpitModalTitle">从 Cockpit 导入多开</h3>
+      <button class="modal-close" id="mwCockpitClose" data-i18n-title="close" title="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="mwCockpitList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px"></div>
+      <div id="mwCockpitEmpty" style="font-size:12px;color:var(--muted);text-align:center;padding:16px 0" hidden data-i18n="mwCockpitEmpty">未检测到可导入的 Cockpit 多开</div>
+      <div style="display:flex;justify-content:flex-end">
+        <button class="modal-cancel-btn" id="mwCockpitCancel" style="min-width:72px;padding:6px 20px" data-i18n="cancel">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- 通用询问弹窗（宿主 askUi 驱动，替代 VS Code 原生 showXxxMessage） -->
 <div id="askOverlay" class="modal-overlay" hidden>
   <div class="modal-box" style="width:min(440px,92vw)">
@@ -1471,13 +1825,6 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
             <span class="v2-tag is-on" id="setStatusFamArgon" data-family="argon">Gemini 4</span>
           </div>
         </div>
-        <div class="v2-opt-row">
-          <span class="v2-opt-label" data-i18n="sbRefreshRow">刷新间隔</span>
-          <div class="sb-num-row">
-            <input type="number" class="v2-param-val" id="setStatusRefresh" data-sb="refreshSeconds" min="10" max="600" placeholder="30">
-            <span class="v2-param-unit" data-i18n="unitSec">秒</span>
-          </div>
-        </div>
         <div class="settings-hint" data-i18n="sbRefreshHint">以上改动即时生效，无需点保存。极简样式只显示最低额度，标签式逐项列出各模型。</div>
       </div>
 
@@ -1495,6 +1842,11 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
 <div id="toastContainer" class="toast-container"></div>
 
 <script>
+// 多开操作等待态：反馈 / 状态 / 进度 / 超时四项约束（《方法/04_前端与交互.md》）
+const MW_ACTION_TIMEOUT_MS = 30000;
+const MW_ERROR_TOAST_MS = 10000;
+let mwPending = null;
+let mwActionSeq = 0;
 window.onerror = function(msg, url, line, col, err) {
   document.title = 'ERR: ' + msg + ' @L' + line;
   const d = document.createElement('pre');
@@ -1542,6 +1894,8 @@ let tagEditBatchEmails = null;
 let tagEditPendingTags = [];
 let selectMode = false;
 const selectedEmails = new Set();
+let multiWindows = [];
+let selectedMultiWindowId = null;
 
 // ── 标签颜色系统 ──
 const TAG_PALETTE = ['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ef4444','#ec4899','#06b6d4','#84cc16','#f97316','#6366f1'];
@@ -2098,6 +2452,26 @@ function saveTagEdit() {
 
 window.addEventListener('message', e => {
   const msg = e.data;
+  if (msg.type === 'multiWindowList') {
+    multiWindows = msg.windows || [];
+    if (msg.currentEmail) currentEmail = msg.currentEmail;
+    renderMultiWindows();
+    renderAccounts();
+  }
+  if (msg.type === 'mwProgress') {
+    // 阶段进度：只更新文案，不动计时器（已用秒数由 ticker 继续刷）
+    if (mwPending && mwPending.key === msg.key && msg.text) {
+      mwPending.label = msg.text;
+      const msgEl = mwPending.toast && mwPending.toast.querySelector('.toast-msg');
+      if (msgEl) msgEl.textContent = msg.text;
+    }
+  }
+  if (msg.type === 'mwActionDone') {
+    endMwAction(msg.key, !!msg.ok, msg.message || '', !!msg.closeModal);
+  }
+  if (msg.type === 'cockpitCandidateList') {
+    renderCockpitCandidates(msg.candidates || []);
+  }
   if (msg.type === 'privacyMode') {
     // 宿主广播（本窗切换回推 / 其他窗口同步）：统一按钮态与渲染
     privacyMode = !!msg.enabled;
@@ -2125,6 +2499,7 @@ window.addEventListener('message', e => {
       try { const st = vscode.getState() || {}; st._privacy = privacyMode; vscode.setState(st); } catch (e) {}
     }
     renderAccounts();
+    renderMultiWindows();
     updateSummary();
   }
   if (msg.type === 'tagColorsSync') {
@@ -2148,6 +2523,7 @@ window.addEventListener('message', e => {
     const idx = accounts.findIndex(a => a.email === msg.email);
     if (idx >= 0 && msg.health) accounts[idx].health = msg.health;
     renderAccounts();
+    renderMultiWindows();
     updateSummary();
   }
   if (msg.type === 'healthResult') {
@@ -2156,6 +2532,7 @@ window.addEventListener('message', e => {
     const idx = accounts.findIndex(a => a.email === msg.email);
     if (idx >= 0 && msg.health) accounts[idx].health = msg.health;
     renderAccounts();
+    renderMultiWindows();
     updateSummary();
     if (msg.health && msg.health.status === 'banned') {
       showToast(tl('healthBannedToast', msg.email), 'error');
@@ -2271,8 +2648,12 @@ function showToast(message, type = 'info', duration = 3000, raw = false) {
     container.className = 'toast-container';
     document.body.appendChild(container);
   }
+  // 失败提示保护期：未过期的 error toast 不被后续自动刷新顶掉，新提示追加显示
   const existing = container.querySelector('.toast');
-  if (existing) existing.remove();
+  if (existing) {
+    const until = Number(existing.dataset.protectUntil || 0);
+    if (!until || Date.now() >= until) existing.remove();
+  }
 
   const toast = document.createElement('div');
   toast.className = 'toast toast-' + type;
@@ -2282,6 +2663,9 @@ function showToast(message, type = 'info', duration = 3000, raw = false) {
   // 默认转义：错误文案可能来自服务端返回的 HTML 片段；raw=true 仅用于调用方自建的排版片段
   const body = raw ? String(message) : escHtml(String(message));
   toast.innerHTML = icon + '<span class="toast-msg">' + body + '</span>';
+  if (duration >= MW_ERROR_TOAST_MS) {
+    toast.dataset.protectUntil = String(Date.now() + duration);
+  }
   container.appendChild(toast);
 
   requestAnimationFrame(() => toast.classList.add('show'));
@@ -2328,6 +2712,623 @@ function closeConfirm() {
   ov.addEventListener('click', (e) => { if (e.target === ov) closeConfirm(); });
 })();
 
+// ── 多开窗口系统（复刻 Kite 正统列表条与完整窗口切换设置能力） ──
+// ── 多开操作等待态：点击即反馈 / 进行中禁用 / 每秒进度 / 30s 超时主动报错 / 终态可重试 ──
+// 加载态由 mwPending 状态驱动，renderMultiWindows 重绘 innerHTML 后仍会恢复，不会被冲掉。
+function beginMwAction(type, id, labelKey) {
+  if (mwPending) return null;
+  const key = 'mw' + (++mwActionSeq);
+  const label = tl(labelKey);
+  const startedAt = Date.now();
+  const toast = showToast(label, 'loading', 0);
+  const ticker = setInterval(() => {
+    if (!mwPending || mwPending.key !== key) return;
+    const msgEl = toast && toast.querySelector('.toast-msg');
+    if (msgEl) msgEl.textContent = tl('mwActionElapsed', mwPending.label, String(Math.floor((Date.now() - mwPending.startedAt) / 1000)));
+  }, 1000);
+  const timer = setTimeout(() => endMwAction(key, false, tl('mwActionTimeout')), MW_ACTION_TIMEOUT_MS);
+  mwPending = { key, type, id: id || '', label, startedAt, toast, ticker, timer };
+  renderMultiWindows();
+  syncMwBusyUi();
+  return key;
+}
+
+function endMwAction(key, ok, message, closeModal) {
+  if (!mwPending || mwPending.key !== key) {
+    // 超时后宿主迟到的结果：如实展示，不伪装成功也不静默丢弃
+    if (message) showToast(message, ok ? 'success' : 'error', ok ? 3000 : MW_ERROR_TOAST_MS);
+    return;
+  }
+  const p = mwPending;
+  mwPending = null;
+  clearTimeout(p.timer);
+  clearInterval(p.ticker);
+  if (p.toast) p.toast.remove();
+  renderMultiWindows();
+  syncMwBusyUi();
+  // 成功后收起弹窗；失败保留输入停在可重试态。
+  // closeModal=true 表示"窗口已创建、只是启动失败"：创建目标已达成，弹窗必须收起，
+  // 否则用户再点会被前端重名拦住。
+  if (ok || closeModal) {
+    if (p.type === 'create') closeCreateMultiWindow();
+    else if (p.type === 'update') closeEditMultiWindow();
+    else if (p.type === 'import') closeCockpitModal();
+  }
+  if (!ok && p.type === 'cockpit') {
+    const listEl = document.getElementById('mwCockpitList');
+    const emptyEl = document.getElementById('mwCockpitEmpty');
+    if (listEl) listEl.innerHTML = '';
+    if (emptyEl) emptyEl.hidden = false;
+  }
+  if (message) showToast(message, ok ? 'success' : 'error', ok ? 3000 : MW_ERROR_TOAST_MS);
+}
+
+function syncMwBusyUi() {
+  const p = mwPending;
+  document.querySelectorAll('[data-mw-static-action]').forEach(btn => {
+    const active = !!p && btn.dataset.mwStaticAction === p.type;
+    const iconOnly = btn.classList.contains('icon-only');
+    if (active) {
+      if (btn.dataset.mwOrigHtml === undefined) btn.dataset.mwOrigHtml = btn.innerHTML;
+      btn.disabled = true;
+      if (iconOnly) btn.classList.add('is-spinning');
+      else {
+        btn.classList.add('is-loading');
+        btn.innerHTML = '<span class="btn-mini-spinner"></span>' + escHtml(p.label);
+      }
+    } else {
+      btn.classList.remove('is-loading', 'is-spinning');
+      btn.disabled = !!p;
+      if (btn.dataset.mwOrigHtml !== undefined) {
+        btn.innerHTML = btn.dataset.mwOrigHtml;
+        delete btn.dataset.mwOrigHtml;
+      }
+    }
+  });
+}
+
+function renderMultiWindows() {
+  // 卡片按钮等待态按 mwPending 渲染，innerHTML 重绘后自动恢复
+  const mwBtn = (type, id, iconOnly) => {
+    const p = mwPending;
+    const active = !!p && p.type === type && p.id === id;
+    return {
+      cls: active ? ' is-loading' : '',
+      dis: p ? ' disabled' : '',
+      inner: active ? '<span class="btn-mini-spinner"></span>' + (iconOnly ? '' : escHtml(p.label)) : null
+    };
+  };
+  const badgeEl = document.getElementById('headerMwBadge');
+  if (badgeEl) badgeEl.textContent = String(multiWindows.length);
+
+  const listEl = document.getElementById('mwList');
+  const emptyEl = document.getElementById('mwEmpty');
+  if (!listEl) return;
+
+  if (multiWindows.length === 0) {
+    listEl.innerHTML = '';
+    if (emptyEl) emptyEl.hidden = false;
+    return;
+  }
+  if (emptyEl) emptyEl.hidden = true;
+
+  // 默认高亮选中当前运行窗口
+  if (!selectedMultiWindowId || !multiWindows.some(w => w.id === selectedMultiWindowId)) {
+    const cur = multiWindows.find(w => !!(w.isCurrent ?? w.current ?? (w.id === 'default')));
+    if (cur) selectedMultiWindowId = cur.id;
+  }
+
+  listEl.innerHTML = multiWindows.map(win => {
+    const isDefault = !!(win.isDefault ?? (win.id === 'default'));
+    const isCurrent = !!(win.isCurrent ?? win.current ?? isDefault);
+    const isRunning = isCurrent || !!(win.isRunning ?? win.running);
+    const isSelected = selectedMultiWindowId === win.id;
+    const safeId = attrEsc(win.id);
+    const safeName = escHtml((isDefault || win.name === '默认实例' || win.name === '默认多开') ? tl('mwMainWinTitle') : win.name.replace(/实例/g, '多开'));
+
+    const statusClass = isCurrent ? 'current' : (isRunning ? 'running' : 'stopped');
+    const stateText = isCurrent ? tl('mwCurrentTag') : (isRunning ? tl('mwRunningTag') : tl('mwStoppedTag'));
+
+    // 邮箱信息行：
+    // 若当前窗口未绑定或为智能选号，默认展示当前窗口实际正在使用的账号 (currentEmail)
+    let emailHtml = '';
+    const showMasked = (em) => escHtml(displayEmail(em));
+
+    if (win.bindEmail === '__auto__') {
+      // 智能选号模式：
+      // 若当前窗口：优先展示当前窗口真实使用的 currentEmail
+      // 若其他窗口：若有已知 currentEmail 则展示，否则展示「尚未启动」；绝不显示裸字 '__auto__'
+      const liveEmail = isCurrent ? (currentEmail || win.currentEmail || '') : (win.currentEmail || '');
+      const emailPart = liveEmail
+        ? '<span class="inst-email-sep">·</span><span class="inst-email-text">' + showMasked(liveEmail) + '</span>'
+        : '<span class="inst-email-sep">·</span><span class="inst-email-empty">' + escHtml(tl('mwNotStarted')) + '</span>';
+      emailHtml = '<div class="inst-card-email" title="' + attrEsc(liveEmail || tl('mwSmartPick')) + '">'
+        + '<span class="inst-smart-label"><svg class="inst-smart-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M3 12h3M18 12h3M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg>' + escHtml(tl('mwSmartPick')) + '</span>'
+        + emailPart
+        + '</div>';
+    } else if (win.bindEmail) {
+      // 固定绑定账号
+      const liveEmail = isCurrent ? (currentEmail || win.bindEmail) : win.bindEmail;
+      emailHtml = '<div class="inst-card-email" title="' + attrEsc(liveEmail) + '">'
+        + '<span class="inst-email-text">' + showMasked(liveEmail) + '</span>'
+        + '</div>';
+    } else if (isCurrent && currentEmail) {
+      // 未显式绑定的当前主窗口：默认显示当前使用的账号
+      emailHtml = '<div class="inst-card-email" title="' + attrEsc(currentEmail) + '">'
+        + '<span class="inst-email-text">' + showMasked(currentEmail) + '</span>'
+        + '</div>';
+    } else {
+      // 未绑定账号
+      emailHtml = '<div class="inst-card-email">'
+        + '<span class="inst-email-empty">' + escHtml(tl('mwUnbound')) + '</span>'
+        + '</div>';
+    }
+
+    // 分组标签行：没有标签彻底不显示（绝不强贴「默认分组」），有标签则按 Kite 调色盘渲染
+    let tagHtml = '';
+    const activeTag = win.assignedTag;
+    if (activeTag) {
+      const tc = getTagColor(activeTag);
+      tagHtml = '<span class="inst-tag-badge" style="background:' + tc + '18;border:1px solid ' + tc + '60;color:' + tc + '">' + escHtml(activeTag) + '</span>';
+    }
+
+    // 卡片头部右上角操作区：状态胶囊 + 醒目的跳转置顶 + 启动/停止
+    const stateBadge = '<span class="inst-card-state ' + statusClass + '">' + escHtml(stateText) + '</span>';
+
+    const focusState = mwBtn('focus', win.id, false);
+    let focusBtn = '';
+    if (!isCurrent && isRunning) {
+      focusBtn = '<button class="inst-card-btn focus' + focusState.cls + '"' + focusState.dis + ' onclick="focusMultiWindow(\\x27' + safeId + '\\x27, event)" title="' + attrEsc(tl('mwFocus')) + '">'
+        + (focusState.inner || (
+          '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>'
+          + escHtml(tl('mwFocus')))) + '</button>';
+    }
+
+    let primaryBtn = '';
+    if (!isCurrent) {
+      if (isRunning) {
+        if (!isDefault) {
+          const stopState = mwBtn('stop', win.id, false);
+          primaryBtn = '<button class="inst-card-btn stop' + stopState.cls + '"' + stopState.dis + ' onclick="stopMultiWindow(\\x27' + safeId + '\\x27, event)" title="' + attrEsc(tl('mwStop')) + '">'
+            + (stopState.inner || (
+              '<svg width="10" height="10" viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="10" fill="currentColor" rx="1"/></svg>'
+              + escHtml(tl('mwStop')))) + '</button>';
+        }
+      } else {
+        const startState = mwBtn('start', win.id, false);
+        primaryBtn = '<button class="inst-card-btn start' + startState.cls + '"' + startState.dis + ' onclick="startMultiWindow(\\x27' + safeId + '\\x27, event)" title="' + attrEsc(tl('mwStart')) + '">'
+          + (startState.inner || (
+            '<svg width="10" height="10" viewBox="0 0 16 16"><polygon points="4,3 13,8 4,13" fill="currentColor"/></svg>'
+            + escHtml(tl('mwStart')))) + '</button>';
+      }
+    }
+
+    // 右下角小图标操作区：编辑（笔图标）与删除（垃圾桶图标）
+    const editState = mwBtn('update', win.id, true);
+    const editBtn = '<button class="inst-card-action-btn' + editState.cls + '"' + editState.dis + ' onclick="openEditMultiWindow(\\x27' + safeId + '\\x27, event)" title="' + attrEsc(tl('mwEdit')) + '">'
+      + (editState.inner || '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>') + '</button>';
+
+    const canDelete = !isDefault && !isCurrent;
+    const delState = mwBtn('delete', win.id, true);
+    const delBtn = '<button class="inst-card-action-btn danger' + delState.cls + '"' + delState.dis + ' onclick="deleteMultiWindow(\\x27' + safeId + '\\x27, event)" title="' + attrEsc(tl('mwDelete')) + '"' + (canDelete ? '' : ' disabled') + '>'
+      + (delState.inner || '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>') + '</button>';
+
+    return '<div class="inst-card ' + statusClass + (isSelected ? ' is-selected' : '') + '" data-inst-id="' + safeId + '" onclick="selectMultiWindowCard(\\x27' + safeId + '\\x27, event)">'
+      + '<div class="inst-card-header">'
+        + '<div class="inst-card-title-group">'
+          + '<div class="inst-card-name" title="' + safeName + '">' + safeName + '</div>'
+        + '</div>'
+        + '<div class="inst-card-header-actions">'
+          + stateBadge
+          + focusBtn
+          + primaryBtn
+        + '</div>'
+      + '</div>'
+      + '<div class="inst-card-body">'
+        + emailHtml
+      + '</div>'
+      + '<div class="inst-card-footer">'
+        + '<div class="inst-card-footer-left">'
+          + tagHtml
+        + '</div>'
+        + '<div class="inst-card-footer-right">'
+          + editBtn
+          + delBtn
+        + '</div>'
+      + '</div>'
+    + '</div>';
+  }).join('');
+}
+
+function selectMultiWindowCard(id, e) {
+  if (e && e.target && e.target.closest('button')) return;
+  selectedMultiWindowId = id;
+  renderMultiWindows();
+
+  const win = multiWindows.find(w => w.id === id);
+  if (!win) return;
+  const isCur = !!(win.isCurrent ?? win.current ?? (win.id === 'default'));
+  let targetEmail = '';
+  if (isCur) {
+    targetEmail = currentEmail || (win.bindEmail && win.bindEmail !== '__auto__' ? win.bindEmail : '') || win.currentEmail || '';
+  } else {
+    targetEmail = (win.bindEmail && win.bindEmail !== '__auto__' ? win.bindEmail : '') || win.currentEmail || '';
+  }
+  if (targetEmail) {
+    locateAccountInGrid(targetEmail);
+  }
+}
+
+function locateAccountInGrid(email) {
+  if (!email || email === '__auto__') return;
+  const normEmail = email.toLowerCase();
+  const grid = document.getElementById('accountGrid');
+  if (!grid) return;
+  let card = Array.from(grid.querySelectorAll('.grid-card')).find(c => {
+    const ce = (c.getAttribute('data-email') || '').toLowerCase();
+    return ce === normEmail;
+  });
+  if (!card && typeof pageSize !== 'undefined' && pageSize > 0 && Array.isArray(accounts)) {
+    const accIdx = accounts.findIndex(a => (a.email || '').toLowerCase() === normEmail);
+    if (accIdx >= 0) {
+      if (searchTerm && !normEmail.includes(searchTerm.toLowerCase())) {
+        searchTerm = '';
+        const searchInput = document.getElementById('searchInput');
+        if (searchInput) searchInput.value = '';
+      }
+      currentPage = Math.floor(accIdx / pageSize) + 1;
+      renderAccounts();
+      card = Array.from(grid.querySelectorAll('.grid-card')).find(c => {
+        const ce = (c.getAttribute('data-email') || '').toLowerCase();
+        return ce === normEmail;
+      });
+    }
+  }
+  if (card) {
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    card.classList.remove('is-card-linked');
+    void card.offsetWidth;
+    card.classList.add('is-card-linked');
+    setTimeout(() => card.classList.remove('is-card-linked'), 2000);
+  }
+}
+
+function focusMultiWindow(id, e) {
+  if (e) e.stopPropagation();
+  const key = beginMwAction('focus', id, 'mwFocusing');
+  if (!key) return;
+  vscode.postMessage({ type: 'focusMultiWindow', id, actionKey: key });
+}
+function startMultiWindow(id, e) {
+  if (e) e.stopPropagation();
+  const key = beginMwAction('start', id, 'mwStarting');
+  if (!key) return;
+  vscode.postMessage({ type: 'startMultiWindow', id, actionKey: key });
+}
+function stopMultiWindow(id, e) {
+  if (e) e.stopPropagation();
+  const key = beginMwAction('stop', id, 'mwStopping');
+  if (!key) return;
+  vscode.postMessage({ type: 'stopMultiWindow', id, actionKey: key });
+}
+function deleteMultiWindow(id, e) {
+  if (e) e.stopPropagation();
+  showConfirm(tl('mwDeleteConfirm'), {
+    title: tl('mwDelete'),
+    okText: tl('mwDelete'),
+    onConfirm: () => {
+      const key = beginMwAction('delete', id, 'mwDeleting');
+      if (!key) return;
+      vscode.postMessage({ type: 'deleteMultiWindow', id, actionKey: key });
+    }
+  });
+}
+
+function getNextDefaultWindowName() {
+  const existingNames = new Set(multiWindows.map(w => w.name));
+  let idx = multiWindows.length + 1;
+  while (existingNames.has('多开 ' + idx) || existingNames.has('Window ' + idx) || existingNames.has('多开窗口 ' + idx)) {
+    idx++;
+  }
+  return tl('mwDefaultWinName', String(idx));
+}
+
+let mwCreateUserEditedName = false;
+
+function openCreateMultiWindow() {
+  mwCreateUserEditedName = false;
+  const defaultName = getNextDefaultWindowName();
+  const input = document.getElementById('mwCreateNameInput');
+  if (input) {
+    input.value = defaultName;
+    input.placeholder = defaultName;
+    input.oninput = () => {
+      mwCreateUserEditedName = !!input.value.trim() && input.value.trim() !== defaultName;
+    };
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitCreateMultiWindow();
+      }
+    };
+  }
+
+  const accSel = document.getElementById('mwCreateAccountSelect');
+  if (accSel) {
+    accSel.innerHTML = '<option value="">' + escHtml(tl('mwCreateSelectAccount')) + '</option>'
+      + '<option value="__auto__">' + escHtml(tl('mwSmartPick')) + '</option>'
+      + accounts.map(a => '<option value="' + attrEsc(a.email) + '">' + escHtml(displayEmail(a.email)) + '</option>').join('');
+    accSel.value = '';
+    accSel.onchange = () => {
+      if (!mwCreateUserEditedName && input) {
+        if (accSel.value === '__auto__') {
+          input.value = tl('mwSmartPick') + ' ' + defaultName;
+        } else if (accSel.value) {
+          const shortName = accSel.value.split('@')[0];
+          input.value = shortName + ' ' + defaultName;
+        } else {
+          input.value = defaultName;
+        }
+      }
+    };
+  }
+
+  // 标签系统联动：用户未建任何标签时整行隐藏，不给界面增添杂质
+  const allKnownTags = getTagList();
+  const tagGroup = document.getElementById('mwCreateTagGroup');
+  const tagSel = document.getElementById('mwCreateTagSelect');
+  if (tagGroup) {
+    tagGroup.hidden = allKnownTags.length === 0;
+  }
+  if (tagSel && allKnownTags.length > 0) {
+    tagSel.innerHTML = '<option value="">' + escHtml(tl('mwCreateTagAll')) + '</option>'
+      + allKnownTags.map(t => '<option value="' + attrEsc(t) + '">' + escHtml(t) + '</option>').join('');
+    tagSel.value = '';
+  }
+
+  const overlay = document.getElementById('mwCreateOverlay');
+  if (overlay) overlay.hidden = false;
+  if (input) {
+    input.focus();
+    input.select();
+  }
+}
+function closeCreateMultiWindow() {
+  const overlay = document.getElementById('mwCreateOverlay');
+  if (overlay) overlay.hidden = true;
+}
+function submitCreateMultiWindow() {
+  const input = document.getElementById('mwCreateNameInput');
+  let name = (input ? input.value : '').trim();
+  // 交互心智：默认不需要强制填名字，若用户清空则自动赋予递增缺省名，绝不弹窗拦截
+  if (!name) {
+    name = getNextDefaultWindowName();
+  }
+  // 前端轻量防重：重名直接在模态框内提示，不关闭弹窗、不丢用户手输的名字
+  if (multiWindows.some(w => w.name === name)) {
+    showToast(tl('mwNameDuplicate'), 'warning', 4000);
+    return;
+  }
+  const accSel = document.getElementById('mwCreateAccountSelect');
+  const bindEmail = accSel ? accSel.value : '';
+  const tagGroup = document.getElementById('mwCreateTagGroup');
+  const tagSel = document.getElementById('mwCreateTagSelect');
+  const assignedTag = (tagGroup && !tagGroup.hidden && tagSel) ? tagSel.value : '';
+
+  const key = beginMwAction('create', '', 'mwCreating');
+  if (!key) return;
+  // 弹窗等终态再收起：成功自动关，失败保留输入停在可重试态
+  vscode.postMessage({
+    type: 'createMultiWindow',
+    name,
+    bindEmail,
+    assignedTag,
+    startImmediately: true,
+    actionKey: key,
+  });
+}
+
+function openEditMultiWindow(id, e) {
+  if (e) e.stopPropagation();
+  const win = multiWindows.find(w => w.id === id);
+  if (!win) return;
+
+  const idEl = document.getElementById('mwEditId');
+  if (idEl) idEl.value = id;
+
+  const isDefaultWin = !!(win.isDefault ?? (win.id === 'default'));
+  const input = document.getElementById('mwEditNameInput');
+  if (input) {
+    input.value = win.name;
+    input.disabled = isDefaultWin;
+    input.title = isDefaultWin ? tl('mwMainWinTitle') : '';
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submitEditMultiWindow();
+      }
+    };
+  }
+
+  const accSel = document.getElementById('mwEditAccountSelect');
+  if (accSel) {
+    accSel.innerHTML = '<option value="">' + escHtml(tl('mwCreateSelectAccount')) + '</option>'
+      + '<option value="__auto__" ' + (win.bindEmail === '__auto__' ? 'selected' : '') + '>' + escHtml(tl('mwSmartPick')) + '</option>'
+      + accounts.map(a => '<option value="' + attrEsc(a.email) + '" ' + (a.email === win.bindEmail ? 'selected' : '') + '>' + escHtml(displayEmail(a.email)) + '</option>').join('');
+  }
+
+  // 标签系统联动：未建标签时编辑弹窗也隐藏标签行
+  const allKnownTags = getTagList();
+  const tagGroup = document.getElementById('mwEditTagGroup');
+  const tagSel = document.getElementById('mwEditTagSelect');
+  if (tagGroup) {
+    tagGroup.hidden = allKnownTags.length === 0;
+  }
+  if (tagSel && allKnownTags.length > 0) {
+    tagSel.innerHTML = '<option value="">' + escHtml(tl('mwCreateTagAll')) + '</option>'
+      + allKnownTags.map(t => '<option value="' + attrEsc(t) + '" ' + (t === win.assignedTag ? 'selected' : '') + '>' + escHtml(t) + '</option>').join('');
+  }
+
+  const overlay = document.getElementById('mwEditOverlay');
+  if (overlay) overlay.hidden = false;
+  if (input && !isDefaultWin) {
+    input.focus();
+    input.select();
+  }
+}
+function closeEditMultiWindow() {
+  const overlay = document.getElementById('mwEditOverlay');
+  if (overlay) overlay.hidden = true;
+}
+function submitEditMultiWindow() {
+  const idEl = document.getElementById('mwEditId');
+  const id = idEl ? idEl.value : '';
+  if (!id) return;
+  const win = multiWindows.find(w => w.id === id);
+  const isDefaultWin = !!(win && (win.isDefault ?? (win.id === 'default')));
+  const input = document.getElementById('mwEditNameInput');
+  const name = isDefaultWin ? (win ? win.name : '') : (input ? input.value : '').trim();
+  if (!name && !isDefaultWin) {
+    showToast(tl('mwNameRequired'), 'warning');
+    return;
+  }
+  const accSel = document.getElementById('mwEditAccountSelect');
+  const bindEmail = accSel ? accSel.value : '';
+  const tagSel = document.getElementById('mwEditTagSelect');
+  const assignedTag = tagSel ? tagSel.value : '';
+
+  const key = beginMwAction('update', id, 'mwUpdating');
+  if (!key) return;
+  vscode.postMessage({
+    type: 'updateMultiWindow',
+    id,
+    name,
+    bindEmail,
+    assignedTag,
+    actionKey: key,
+  });
+}
+
+function openCockpitModal() {
+  const overlay = document.getElementById('mwCockpitOverlay');
+  if (overlay) overlay.hidden = false;
+  const listEl = document.getElementById('mwCockpitList');
+  const emptyEl = document.getElementById('mwCockpitEmpty');
+  if (listEl) listEl.innerHTML = '<div class="mw-cockpit-loading"><span class="btn-mini-spinner"></span>' + escHtml(tl('mwCockpitLoading')) + '</div>';
+  if (emptyEl) emptyEl.hidden = true;
+  const key = beginMwAction('cockpit', '', 'mwCockpitLoading');
+  if (!key) return;
+  vscode.postMessage({ type: 'listCockpitCandidates', actionKey: key });
+}
+function closeCockpitModal() {
+  const overlay = document.getElementById('mwCockpitOverlay');
+  if (overlay) overlay.hidden = true;
+}
+function renderCockpitCandidates(candidates) {
+  const listEl = document.getElementById('mwCockpitList');
+  const emptyEl = document.getElementById('mwCockpitEmpty');
+  if (!listEl) return;
+  if (!candidates || candidates.length === 0) {
+    listEl.innerHTML = '';
+    if (emptyEl) emptyEl.hidden = false;
+    return;
+  }
+  if (emptyEl) emptyEl.hidden = true;
+  listEl.innerHTML = candidates.map(c => {
+    const safeName = escHtml(c.name);
+    const safeDir = attrEsc(c.userDataDir);
+    const safeEmail = attrEsc(c.bindEmail || '');
+    const displayEm = c.bindEmail ? escHtml(displayEmail(c.bindEmail)) : escHtml(tl('mwUnbound'));
+    return '<div class="mw-card" style="padding:10px 12px;">'
+      + '<div class="mw-card-header">'
+        + '<div class="mw-card-title-group">'
+          + '<span class="mw-card-name">' + safeName + '</span>'
+          + '<span class="mw-source-badge">Cockpit</span>'
+        + '</div>'
+      + '</div>'
+      + '<div class="mw-card-account" style="margin:4px 0">'
+        + '<svg class="mw-acc-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>'
+        + '<span class="mw-acc-text">' + displayEm + '</span>'
+      + '</div>'
+      + '<div style="font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:8px" title="' + safeDir + '">' + escHtml(c.userDataDir) + '</div>'
+      + '<div style="display:flex;justify-content:flex-end">'
+        + '<button class="mw-action-btn start" onclick="importCockpitCandidate(\\x27' + attrEsc(c.name) + '\\x27, \\x27' + safeDir + '\\x27, \\x27' + safeEmail + '\\x27)">'
+          + escHtml(tl('mwCockpitImport')) + '</button>'
+      + '</div>'
+    + '</div>';
+  }).join('');
+}
+function importCockpitCandidate(name, userDataDir, bindEmail) {
+  const key = beginMwAction('import', '', 'mwImporting');
+  if (!key) return;
+  vscode.postMessage({
+    type: 'importCockpitCandidate',
+    name,
+    userDataDir,
+    bindEmail,
+    actionKey: key,
+  });
+}
+
+(function initMultiWindowUI() {
+  const toggleBtn = document.getElementById('headerMwToggleBtn');
+  const mwArea = document.getElementById('multiWindowArea');
+  if (toggleBtn && mwArea) {
+    const isExpanded = localStorage.getItem('kite_mw_expanded') === '1';
+    mwArea.hidden = !isExpanded;
+    toggleBtn.classList.toggle('is-active', isExpanded);
+    toggleBtn.onclick = (e) => {
+      e.stopPropagation();
+      const willShow = mwArea.hidden;
+      mwArea.hidden = !willShow;
+      toggleBtn.classList.toggle('is-active', willShow);
+      localStorage.setItem('kite_mw_expanded', willShow ? '1' : '0');
+    };
+  }
+
+  const addBtn = document.getElementById('mwAddBtn');
+  if (addBtn) addBtn.onclick = (e) => { e.stopPropagation(); openCreateMultiWindow(); };
+
+  const cockpitBtn = document.getElementById('mwCockpitBtn');
+  if (cockpitBtn) cockpitBtn.onclick = (e) => { e.stopPropagation(); openCockpitModal(); };
+
+  const refreshBtn = document.getElementById('mwRefreshBtn');
+  if (refreshBtn) refreshBtn.onclick = (e) => {
+    e.stopPropagation();
+    const key = beginMwAction('refresh', '', 'mwRefreshing');
+    if (!key) return;
+    vscode.postMessage({ type: 'listMultiWindows', actionKey: key });
+  };
+
+  const createClose = document.getElementById('mwCreateClose');
+  if (createClose) createClose.onclick = closeCreateMultiWindow;
+  const createCancel = document.getElementById('mwCreateCancel');
+  if (createCancel) createCancel.onclick = closeCreateMultiWindow;
+  const createSubmit = document.getElementById('mwCreateSubmit');
+  if (createSubmit) createSubmit.onclick = submitCreateMultiWindow;
+
+  const editClose = document.getElementById('mwEditClose');
+  if (editClose) editClose.onclick = closeEditMultiWindow;
+  const editCancel = document.getElementById('mwEditCancel');
+  if (editCancel) editCancel.onclick = closeEditMultiWindow;
+  const editSubmit = document.getElementById('mwEditSubmit');
+  if (editSubmit) editSubmit.onclick = submitEditMultiWindow;
+
+  const cockpitClose = document.getElementById('mwCockpitClose');
+  if (cockpitClose) cockpitClose.onclick = closeCockpitModal;
+  const cockpitCancel = document.getElementById('mwCockpitCancel');
+  if (cockpitCancel) cockpitCancel.onclick = closeCockpitModal;
+
+  const binds = ['mwCreateOverlay', 'mwEditOverlay', 'mwCockpitOverlay'];
+  binds.forEach(id => {
+    const ov = document.getElementById(id);
+    if (!ov) return;
+    ov.addEventListener('click', (e) => {
+      if (e.target === ov) ov.hidden = true;
+    });
+  });
+})();
+
 // ── 设置面板（工具栏齿轮入口） ──
 function fillSettingsForm(s) {
   if (!s) s = {};
@@ -2359,7 +3360,6 @@ function fillSettingsForm(s) {
   chk('setStatusFamClaude', fams.indexOf('claude') >= 0);
   chk('setStatusFamGemini', fams.indexOf('gemini') >= 0);
   chk('setStatusFamArgon', fams.indexOf('argon') >= 0);
-  set('setStatusRefresh', s.statusBarRefresh || 30);
   if (typeof syncStyleCards === 'function') syncStyleCards();
   if (typeof renderDemos === 'function') renderDemos();
 }
@@ -2463,7 +3463,6 @@ function renderCdpStatus(s) {
       statusBarEnabled: on('setStatusEnabled'),
       statusBarPosition: val('setStatusPosition') || 'right',
       statusBarStyle: val('setStatusStyle') || 'smart',
-      statusBarRefresh: num('setStatusRefresh', 30),
       statusBarAccount: on('setStatusAccount'),
       statusBarModels: on('setStatusModels'),
       statusBarCredits: on('setStatusCredits'),
@@ -2591,7 +3590,6 @@ function renderCdpStatus(s) {
       statusBarEnabled: true,
       statusBarPosition: 'right',
       statusBarStyle: 'smart',
-      statusBarRefresh: 30,
       statusBarAccount: true,
       statusBarModels: true,
       statusBarCredits: true,
@@ -2862,6 +3860,13 @@ function renderAccounts() {
         const resetStr = m.resetTime ? formatResetTime(m.resetTime) : '';
         return quotaItemHtml(displayLabel, m.remainingPercent, resetStr);
       }).join('');
+      // 刷新失败不清缓存：额度条照常显示，只补一行「缓存数据 · 更新于 X」，失败原因放 title
+      if (a._usageError) {
+        const cachedAt = a.usage && a.usage.updatedAt ? new Date(a.usage.updatedAt).toLocaleTimeString() : '—';
+        quotasHtml += '<div class="quota-cache-note" title="' + attrEsc(tl('quotaCacheTip', String(a._usageError))) + '">'
+          + '<span class="cache-dot"></span>' + escHtml(tl('quotaCached', cachedAt))
+          + '</div>';
+      }
     } else {
       // 无数据占位骨架：默认 4 项（双语自适应，无 Gemini 4 时不占位）
       const phLabels = [
@@ -2887,12 +3892,14 @@ function renderAccounts() {
       quotasHtml = phHtml + loadErrorHtml;
     }
 
+    const boundWin = multiWindows.find(w => (w.isRunning ?? w.running) && !(w.isCurrent ?? w.current) && (w.bindEmail === rawEmail || (w.bindEmail === '__auto__' && w.currentEmail === rawEmail)));
     const sig = cardSig(a);
     const html = '<div class="grid-card ' + (isCurrent ? 'is-active' : '') + ' ' + (isDisabled ? 'is-disabled' : '') + (a.health && a.health.status === 'banned' ? ' is-banned' : '') + (selectMode ? ' is-select-mode' : '') + '" data-email="' + safeEmail + '" data-sig="' + sig + '">'
       + (selectMode ? '<div class="grid-check-col"><input type="checkbox" class="grid-check-input" data-email="' + safeEmail + '" ' + (selectedEmails.has(rawEmail) ? 'checked' : '') + '></div>' : '')
       + '<div class="grid-card-head">'
         + '<div class="grid-card-email" title="' + emailTitle + '">' + showEmail + '</div>'
         + (isCurrent ? '<span class="grid-active-tag">' + tl('current') + '</span>' : '')
+        + (boundWin ? '<span class="grid-bound-tag" title="' + attrEsc(boundWin.name) + '">' + escHtml(boundWin.name) + '</span>' : '')
         + (isDisabled ? '<span class="grid-disabled-tag">' + tl('disabledTag') + '</span>' : '')
       + '</div>'
       + '<div class="grid-card-meta">'
@@ -2902,9 +3909,11 @@ function renderAccounts() {
       + '<div class="grid-card-actions">'
         + (isCurrent
           ? '<span class="grid-current-label"><span style="color:#3fb950">●</span> ' + tl('inUse') + '</span>'
-          : (switchingEmail === rawEmail
-            ? '<button class="grid-switch-btn is-loading" disabled><span class="btn-spinner"></span>' + tl('switching') + '</button>'
-            : '<button class="grid-switch-btn" onclick="setCurrent(\\x27' + safeEmail + '\\x27)">' + tl('switch') + '</button>'))
+          : (boundWin
+            ? '<button class="grid-switch-btn is-focus" onclick="focusMultiWindow(\\x27' + boundWin.id + '\\x27)" title="' + attrEsc(boundWin.name) + '">' + escHtml(tl('mwFocus')) + '</button>'
+            : (switchingEmail === rawEmail
+              ? '<button class="grid-switch-btn is-loading" disabled><span class="btn-spinner"></span>' + tl('switching') + '</button>'
+              : '<button class="grid-switch-btn" onclick="setCurrent(\\x27' + safeEmail + '\\x27)">' + tl('switch') + '</button>')))
         + healthPillHtml(a, safeEmail)
         + '<div class="grid-actions-right">'
           + '<button class="icon-btn" onclick="openTagEditModal(\\x27' + safeEmail + '\\x27)" title="' + tl('editTagsT') + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>'
@@ -2925,10 +3934,12 @@ function renderAccounts() {
 function cardSig(a) {
   const u = a.usage || {};
   const models = (u.models || []).map(m => (m.modelId || '') + ':' + m.remainingPercent + ':' + (m.resetTime || '')).join(',');
+  const bw = multiWindows.find(w => (w.isRunning ?? w.running) && !(w.isCurrent ?? w.current) && w.bindEmail === a.email);
   return [
     a.email,
     a.disabled ? '1' : '0',
     a.email === currentEmail ? '1' : '0',
+    bw ? (bw.id + ':' + bw.name) : '',
     privacyMode ? '1' : '0',
     switchingEmail === a.email ? '1' : '0',
     selectedEmails.has(a.email) ? '1' : '0',
@@ -3014,7 +4025,7 @@ function toggleDisabled(email) { vscode.postMessage({ type: 'toggleDisabled', em
 
 // ── 健康药丸（异常才亮牌：封禁/登录失效/未知；正常与未检测不占底栏，默认零打扰）──
 let healthCheckingEmail = null; // 正在单号检测的账号（按钮加载态）
-const HEALTH_LABEL_KEYS = { banned: 'healthBanned', auth_invalid: 'healthAuthInvalid', unknown: 'healthUnknown' };
+const HEALTH_LABEL_KEYS = { banned: 'healthBanned', auth_invalid: 'healthAuthInvalid', unknown: 'healthUnknown', unreachable: 'healthUnreachable' };
 
 /** 属性值转义：escHtml 不转义引号，detail 里带引号的错误 JSON 会击穿 title 属性 */
 function attrEsc(text) {

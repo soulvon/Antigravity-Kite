@@ -215,6 +215,97 @@ if (typeof mod.degradeFlat !== 'function') {
   assert('无内容档位跳过 → fallback', r3 === 'FALLBACK');
 }
 
+// ── 11. 网络失败不得判为账号「检测异常」（本机代理抖动导致 fetch failed 假告警）──
+let usageMod = null;
+try {
+  usageMod = require2(path.join(root, 'out', 'usageService.js'));
+} catch (e) {
+  console.error(`  FAIL  out/usageService.js 加载失败: ${e.message}`);
+  failures++;
+}
+if (!usageMod || typeof usageMod.classifyAccountError !== 'function') {
+  fail('classifyAccountError 存在', '旧产物无此导出或加载失败');
+} else {
+  const cls = usageMod.classifyAccountError;
+  assert('fetch failed → unreachable（不是 unknown）',
+    cls('fetch failed') === 'unreachable', cls('fetch failed'));
+  assert('连接重置 / 超时 / DNS 失败 → unreachable',
+    ['connect ECONNRESET 1.2.3.4:443', 'fetch failed | cause: UND_ERR_CONNECT_TIMEOUT',
+     'getaddrinfo ENOTFOUND cloudcode-pa.googleapis.com', 'This operation was aborted']
+      .every(s => cls(s) === 'unreachable'),
+    ['connect ECONNRESET 1.2.3.4:443', 'fetch failed | cause: UND_ERR_CONNECT_TIMEOUT',
+     'getaddrinfo ENOTFOUND cloudcode-pa.googleapis.com', 'This operation was aborted']
+      .map(s => `${s}→${cls(s)}`).join(' ; '));
+  assert('ToS 封禁 / 401 不被网络规则吞掉',
+    cls('HTTP 403: violation of Terms of Service') === 'banned' && cls('HTTP 401: auth_expired') === 'auth_invalid');
+  assert('服务端 5xx 仍是 unknown（账号检测异常）',
+    cls('HTTP 503: upstream unavailable') === 'unknown', cls('HTTP 503: upstream unavailable'));
+  assert('错误详情展开 error.cause（不再只剩 fetch failed）', (() => {
+    const e = new TypeError('fetch failed');
+    e.cause = { code: 'ECONNRESET', message: 'connect ECONNRESET 142.250.1.1:443' };
+    const s = usageMod.describeError(e);
+    return /fetch failed \| cause: ECONNRESET/.test(s) && /connect ECONNRESET/.test(s);
+  })(), usageMod.describeError ? 'cause 未展开' : 'describeError 未导出');
+}
+assert('网络异常 → cloud-offline 图标且不亮底', (() => {
+  const m = mod.pickHealthMark({ status: 'unreachable', checkedAt: '' });
+  return m.bg === undefined && m.icon === '$(cloud-offline)';
+})(), JSON.stringify(mod.pickHealthMark({ status: 'unreachable', checkedAt: '' })));
+assert('QuickPick 排序：网络异常号不与可用号混同（额度再高也靠后）', (() => {
+  const mk2 = (email, extra = {}) => ({ email, ...extra });
+  const q = (min) => ({ minRemainingPercent: min, models: [] });
+  const pool2 = [
+    mk2('avail@x.com'),
+    mk2('bad@x.com', { health: { status: 'banned', checkedAt: '' } }),
+    mk2('net@x.com', { health: { status: 'unreachable', checkedAt: '' } }),
+  ];
+  const quotas = { 'avail@x.com': q(5), 'net@x.com': q(100), 'bad@x.com': q(100) };
+  const got2 = mod.sortPoolForQuickPick(pool2, (e) => quotas[e], '').map(a => a.email);
+  return JSON.stringify(got2) === JSON.stringify(['avail@x.com', 'net@x.com', 'bad@x.com']);
+})());
+
+// ── 12. 刷新收敛 + 缓存展示（事故：30s 私有定时器叠加；刷新失败时被误读成数据出问题）──
+const statusBarSrc = fs.readFileSync(path.join(root, 'src', 'statusBar.ts'), 'utf8');
+const extSrc = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf8');
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+
+assert('状态栏不再自建 30s 网络刷新定时器（全池刷新唯一权威）',
+  !/refreshSeconds/.test(statusBarSrc) && !/_startRefreshTimer/.test(statusBarSrc) && !/_refreshTimer/.test(statusBarSrc),
+  '仍存在私有网络刷新定时器');
+assert('状态栏可读取按号刷新失败明细（缓存标记数据源）',
+  /getUsageError/.test(statusBarSrc), 'StatusBarDeps 未注入 getUsageError');
+assert('账号级告警仍顶栏；网络/未知/正常都不顶掉额度', (() => {
+  const m = mod.pickHealthMark;
+  return m({ status: 'banned', checkedAt: '' }).banner === true
+    && m({ status: 'auth_invalid', checkedAt: '' }).banner === true
+    && m({ status: 'unknown', checkedAt: '' }).banner === false
+    && m({ status: 'unreachable', checkedAt: '' }).banner === false
+    && m({ status: 'ok', checkedAt: '' }).banner === false
+    && m(undefined).banner === false;
+})(), JSON.stringify(['banned', 'auth_invalid', 'unknown', 'unreachable', 'ok'].map(s => [s, mod.pickHealthMark({ status: s, checkedAt: '' }).banner])));
+assert('设置里不再暴露已失效的 30s 刷新间隔',
+  !('antigravityKite.statusBar.refreshSeconds' in pkg.contributes.configuration.properties),
+  '配置仍暴露 refreshSeconds');
+assert('设置面板不再读写已删除的刷新间隔字段',
+  !/statusBarRefresh|setStatusRefresh/.test(extSrc), '设置面板仍引用旧字段');
+assert('宿主维护按号失败明细并注入刷新在跑闸',
+  /usageErrors/.test(extSrc) && /refreshAllInFlight/.test(extSrc), '缺少失败明细或并发闸');
+assert('侧栏卡片在刷新失败时渲染缓存标记',
+  /quota-cache-note/.test(extSrc) && /tl\('quotaCached'/.test(extSrc), '缓存标记未接入卡片');
+assert('命令面板全池刷新也走同一把并发闸',
+  /async function refreshAllUsageInteractive[\s\S]{0,500}refreshAllInFlight/.test(extSrc),
+  '手动全池刷新仍可与后台刷新叠罗汉');
+assert('侧栏「刷新全部」走并发闸且跳过时仍收口旋转态',
+  /private async _refreshAllUsage\(\)[\s\S]{0,900}refreshAllInFlight/.test(extSrc)
+  && /private async _refreshAllUsage\(\)[\s\S]{0,900}refreshDone/.test(extSrc),
+  '跳过时未收口 spinner 或缺少闸');
+const i18nSrc = fs.readFileSync(path.join(root, 'src', 'i18n.ts'), 'utf8');
+assert('缓存失败说明是「当前数据更新于 X」而非裸时间',
+  /当前数据更新于/.test(i18nSrc), 'tooltip 文案仍读作「显示 14:32 的缓存数据」');
+const cssSrc = fs.readFileSync(path.join(root, 'resources', 'webview', 'main.css'), 'utf8');
+const noteCss = cssSrc.slice(cssSrc.indexOf('.quota-cache-note'), cssSrc.indexOf('.quota-cache-note') + 380);
+assert('缓存标记不被卡片 flex 拉成整行', /align-self:\s*flex-start/.test(noteCss));
+
 console.log(failures === 0
   ? '[check_status_bar] 全部通过 ✔'
   : `[check_status_bar] ${failures} 项失败 ✘`);

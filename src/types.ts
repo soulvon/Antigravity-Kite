@@ -20,10 +20,35 @@ export interface StoredAccount {
   health?: AccountHealth;
 }
 
+/** 多开窗口配置 */
+export interface MultiWindowConfig {
+  id: string;
+  name: string;
+  userDataDir: string;
+  bindEmail: string;
+  assignedTag?: string;
+  createdAt: number;
+  lastPid?: number;
+  source?: 'cockpit';
+}
+
+/** 多开窗口视图（带实时运行状态与当前窗口判定） */
+export interface MultiWindowView extends MultiWindowConfig {
+  running: boolean;
+  current: boolean;
+  isRunning: boolean;
+  isCurrent: boolean;
+  isDefault: boolean;
+  currentEmail?: string;
+}
+
 /** 账号健康状态：封禁检测结论（读失败 = unknown，绝不当 ok） */
 export interface AccountHealth {
-  /** ok=服务正常 / banned=违反服务条款被封 / auth_invalid=凭据失效需重登 / unknown=检测失败原因不明 */
-  status: 'ok' | 'banned' | 'auth_invalid' | 'unknown';
+  /**
+   * ok=服务正常 / banned=违反服务条款被封 / auth_invalid=凭据失效需重登 /
+   * unknown=收到响应但无法定性（如 5xx、license 403）/ unreachable=本地网络失败，探针没发出去，不是账号结论
+   */
+  status: 'ok' | 'banned' | 'auth_invalid' | 'unknown' | 'unreachable';
   /** 最近一次检测时间（ISO） */
   checkedAt: string;
   /** 检测失败时的原始错误摘要（悬停可见） */

@@ -7529,3 +7529,580 @@ body.vscode-light .grid-plan-chip {
     border-radius: 6px;
     box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
 }
+
+
+/* 缓存标记与失败提示条 */
+.quota-cache-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    align-self: flex-start;
+    font-size: 10.5px;
+    color: var(--muted);
+    opacity: 0.85;
+    margin-top: 3px;
+    line-height: 1.3;
+}
+.quota-cache-note .cache-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #f59e0b;
+    flex-shrink: 0;
+}
+
+/* ═══════ Multi-Window Concurrency Drawer & Cards ═══════ */
+/* 外层包裹虚线框：完整包裹 +新建 按钮与下方多开卡片，恢复正统 Kite 独立多开区域 */
+.mw-expand-drawer {
+    margin: 8px 0 12px 0;
+    padding: 10px 10px 12px 10px !important;
+    background: transparent !important;
+    border: 1px dashed rgba(255, 255, 255, 0.16) !important;
+    border-radius: 8px;
+    box-sizing: border-box;
+}
+
+body.vscode-light .mw-expand-drawer {
+    border: 1px dashed #cbd5e1 !important;
+    background: transparent !important;
+}
+
+.mw-drawer-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+    min-height: 24px;
+    width: 100%;
+}
+
+.mw-drawer-tip {
+    font-size: 11px;
+    color: #94a3b8;
+    font-weight: 500;
+    user-select: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-left: 2px;
+}
+
+body.vscode-light .mw-drawer-tip {
+    color: #64748b;
+}
+
+.mw-drawer-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+/* 顶部实体按钮：彻底告别半透明，采用饱满实色按键 */
+.inst-top-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    height: 24px;
+    padding: 0 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 4px;
+    background: #2b2b2b;
+    border: 1px solid #3c3c3c;
+    color: #cccccc;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    transition: all 0.15s ease;
+}
+
+.inst-top-btn:hover {
+    background: #383838;
+    border-color: #555555;
+    color: #ffffff;
+}
+
+.inst-top-btn:active {
+    transform: scale(0.97);
+}
+
+body.vscode-light .inst-top-btn {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+    color: #334155;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+body.vscode-light .inst-top-btn:hover {
+    background: #e2e8f0;
+    border-color: #94a3b8;
+    color: #0f172a;
+}
+
+/* + 新建按钮：实心翡翠绿实体大按键，纯白文字，拒绝半透明水洗感 */
+.inst-top-btn.primary {
+    background: #10b981 !important;
+    border: 1px solid #059669 !important;
+    color: #ffffff !important;
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.inst-top-btn.primary:hover {
+    background: #059669 !important;
+    border-color: #047857 !important;
+}
+
+.inst-top-btn.primary:active {
+    transform: scale(0.97);
+}
+
+.inst-top-btn.icon-only {
+    width: 24px;
+    padding: 0;
+}
+
+.inst-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+
+.inst-empty {
+    text-align: center;
+    padding: 16px 8px;
+    font-size: 12px;
+    color: var(--muted);
+}
+
+/* 彻底禁用任何圆点或伪元素修饰，还原纯粹平整卡片 */
+.inst-card::before,
+.mw-expand-drawer .inst-card::before {
+    display: none !important;
+    content: none !important;
+}
+
+/* 恢复正统 VS Code 实体质感卡片：实心底板，拒绝任何半透明发虚，黑白两套主题均顶级耐看 */
+.mw-expand-drawer .inst-card {
+    position: relative;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    justify-content: flex-start !important;
+    gap: 6px;
+    padding: 10px 14px !important;
+    border-radius: 6px;
+    width: 100% !important;
+    box-sizing: border-box !important;
+    text-align: left !important;
+    cursor: pointer;
+    background: #252526 !important;
+    border: 1px solid #3c3c3c !important;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25) !important;
+    transition: all 0.18s ease;
+}
+
+.mw-expand-drawer .inst-card:hover {
+    border-color: #555555 !important;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35) !important;
+    transform: translateY(-1px);
+}
+
+/* 浅色模式：实体纯白卡片，高级浅灰微边框，自然微阴影 */
+body.vscode-light .mw-expand-drawer .inst-card {
+    background: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03) !important;
+}
+
+body.vscode-light .mw-expand-drawer .inst-card:hover {
+    border-color: #cbd5e1 !important;
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08) !important;
+    transform: translateY(-1px);
+}
+
+/* 当前主窗口卡片：暗色模式（实心 #252526 + 精炼纯正翠绿微边框） */
+.mw-expand-drawer .inst-card.current {
+    background: #252526 !important;
+    border: 1px solid #10b981 !important;
+    box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+}
+
+body.vscode-dark .mw-expand-drawer .inst-card.current {
+    background: #252526 !important;
+    border: 1px solid #10b981 !important;
+    box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* 当前主窗口卡片：浅色模式（实体白底 + 纯正翠绿收边，告别刺眼荧光与半透明） */
+body.vscode-light .mw-expand-drawer .inst-card.current {
+    background: #ffffff !important;
+    border: 1px solid #10b981 !important;
+    box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.25), 0 2px 6px rgba(16, 185, 129, 0.1) !important;
+}
+
+/* 选中高亮状态：双层精细翡翠聚焦线圈 */
+.mw-expand-drawer .inst-card.is-selected {
+    border-color: #10b981 !important;
+    box-shadow: 0 0 0 1.5px #10b981, 0 3px 10px rgba(0, 0, 0, 0.35) !important;
+}
+
+body.vscode-light .mw-expand-drawer .inst-card.is-selected {
+    border-color: #10b981 !important;
+    box-shadow: 0 0 0 1.5px #10b981, 0 2px 6px rgba(16, 185, 129, 0.15) !important;
+}
+
+/* 头部：窗口名靠左 + 右上角状态与主操作按钮靠右，两端平衡 */
+.mw-expand-drawer .inst-card-header {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    gap: 8px;
+    min-width: 0;
+}
+
+.mw-expand-drawer .inst-card-title-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+    text-align: left;
+}
+
+.mw-expand-drawer .inst-card-name {
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--fg);
+    text-align: left;
+}
+
+/* 右上角操作区：状态胶囊 + 跳转 + 启动/停止 */
+.mw-expand-drawer .inst-card-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+/* 状态胶囊 */
+.mw-expand-drawer .inst-card-state {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    letter-spacing: 0.02em;
+    line-height: 1.3;
+    flex-shrink: 0;
+}
+
+.mw-expand-drawer .inst-card-state.current {
+    color: #ffffff;
+    background: #10b981;
+    border: none;
+    box-shadow: 0 1px 4px rgba(16, 185, 129, 0.35);
+}
+
+.mw-expand-drawer .inst-card-state.running {
+    color: #10b981;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.mw-expand-drawer .inst-card-state.stopped {
+    color: var(--muted);
+    background: rgba(128, 128, 128, 0.1);
+    border: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+.mw-expand-drawer .inst-card-state.starting {
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.mw-expand-drawer .inst-card-state.stopping {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+/* 卡片主体：账号行靠左对齐 */
+.mw-expand-drawer .inst-card-body {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    justify-content: flex-start !important;
+    width: 100% !important;
+    gap: 4px;
+    min-width: 0;
+    text-align: left !important;
+}
+
+.mw-expand-drawer .inst-card-email {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 6px;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    width: 100%;
+    text-align: left;
+}
+
+.mw-expand-drawer .inst-email-text {
+    color: var(--fg);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11.5px;
+    opacity: 0.95;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mw-expand-drawer .inst-email-empty {
+    color: var(--muted);
+    opacity: 0.65;
+    font-size: 11.5px;
+}
+
+.mw-expand-drawer .inst-email-sep {
+    color: var(--muted);
+    opacity: 0.45;
+}
+
+.mw-expand-drawer .inst-smart-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--ac-emerald, #10b981);
+    flex-shrink: 0;
+}
+
+.mw-expand-drawer .inst-smart-icon {
+    opacity: 0.9;
+}
+
+.mw-expand-drawer .inst-email-tag-current {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(16, 185, 129, 0.12);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    font-weight: 500;
+    flex-shrink: 0;
+}
+
+/* 卡片底部：左侧分组靠左，右下角独立排布编辑/删除操作区靠右 */
+.mw-expand-drawer .inst-card-footer {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    gap: 8px;
+    margin-top: 2px;
+    min-width: 0;
+}
+
+.mw-expand-drawer .inst-card-footer-left {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+    text-align: left !important;
+}
+
+.mw-expand-drawer .inst-tag-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(139, 92, 246, 0.1);
+    color: #a78bfa;
+    border: 1px solid rgba(139, 92, 246, 0.25);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 140px;
+}
+
+.mw-expand-drawer .inst-tag-none {
+    color: var(--muted);
+    opacity: 0.55;
+    font-size: 11px;
+}
+
+/* 右下角操作区：编辑和删除（绝对靠右对齐） */
+.mw-expand-drawer .inst-card-footer-right {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 5px;
+    margin-left: auto !important;
+    flex-shrink: 0;
+}
+
+/* 按钮基础样式：启动/停止/跳转 */
+.mw-expand-drawer .inst-card-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 22px;
+    padding: 0 7px;
+    font-size: 11px;
+    font-weight: 500;
+    border-radius: 4px;
+    border: 1px solid var(--card-border, rgba(255, 255, 255, 0.12));
+    background: var(--input-bg, rgba(255, 255, 255, 0.05));
+    color: var(--fg);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.mw-expand-drawer .inst-card-btn.start {
+    color: var(--ac-emerald, #10b981);
+    border-color: rgba(16, 185, 129, 0.35);
+    background: rgba(16, 185, 129, 0.08);
+}
+.mw-expand-drawer .inst-card-btn.start:hover {
+    background: rgba(16, 185, 129, 0.18);
+    border-color: rgba(16, 185, 129, 0.6);
+}
+
+.mw-expand-drawer .inst-card-btn.stop {
+    color: #ef4444;
+    border-color: rgba(239, 68, 68, 0.35);
+    background: rgba(239, 68, 68, 0.08);
+}
+.mw-expand-drawer .inst-card-btn.stop:hover {
+    background: rgba(239, 68, 68, 0.18);
+    border-color: rgba(239, 68, 68, 0.6);
+}
+
+/* 醒目的跳转置顶按钮 */
+.mw-expand-drawer .inst-card-btn.focus {
+    color: #0284c7;
+    border-color: rgba(56, 189, 248, 0.4);
+    background: rgba(56, 189, 248, 0.1);
+    font-weight: 600;
+}
+.mw-expand-drawer .inst-card-btn.focus:hover {
+    background: #0284c7;
+    color: #ffffff;
+    border-color: #0284c7;
+}
+body.vscode-dark .mw-expand-drawer .inst-card-btn.focus {
+    color: #38bdf8;
+    border-color: rgba(56, 189, 248, 0.35);
+    background: rgba(56, 189, 248, 0.12);
+}
+body.vscode-dark .mw-expand-drawer .inst-card-btn.focus:hover {
+    background: #0ea5e9;
+    color: #ffffff;
+    border-color: #0ea5e9;
+}
+
+/* 右下角编辑和删除的小图标按钮 */
+.inst-card-action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border-radius: 4px;
+    border: 1px solid var(--card-border, rgba(255, 255, 255, 0.12));
+    background: var(--input-bg, rgba(255, 255, 255, 0.05));
+    color: var(--fg);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.inst-card-action-btn:hover {
+    background: var(--hover-bg, rgba(255, 255, 255, 0.12));
+    border-color: var(--card-border-hover, rgba(255, 255, 255, 0.28));
+}
+
+.inst-card-action-btn.danger:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.12);
+    border-color: rgba(239, 68, 68, 0.35);
+}
+
+.inst-card-action-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+/* 多开按钮等待与加载中状态（符合「反馈分三层，点击后 100ms 内必须有视觉变化」规范） */
+.mw-expand-drawer .inst-card-btn.is-loading {
+    cursor: wait !important;
+    opacity: 0.8 !important;
+    pointer-events: none !important;
+}
+
+.mw-expand-drawer .inst-card-btn .btn-mini-spinner,
+.modal-box .primary .btn-mini-spinner,
+.mw-cockpit-loading .btn-mini-spinner {
+    width: 9px;
+    height: 9px;
+    border: 1.8px solid rgba(255, 255, 255, 0.35);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 4px;
+    vertical-align: -1px;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+}
+
+/* 弹窗提交按钮：点击即进入加载态，等待宿主终态回报才恢复 */
+.modal-box .primary.is-loading {
+    cursor: wait !important;
+    opacity: 0.85 !important;
+    pointer-events: none !important;
+}
+
+.modal-box .primary:disabled,
+.mw-expand-drawer .inst-top-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Cockpit 列表加载骨架：占位撑开，不塌陷不白屏 */
+.mw-cockpit-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 64px;
+    font-size: 12px;
+    color: var(--muted);
+}
+
+.inst-top-btn.is-spinning svg {
+    animation: spin 0.8s linear infinite;
+}
+
+/* 账号卡片联动高亮态 */
+.grid-card.is-card-linked {
+    border-color: var(--ac-emerald, #10b981) !important;
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.35);
+}

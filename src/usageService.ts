@@ -623,11 +623,26 @@ export async function fetchUsageBatch(
 
 const TOS_BAN_PATTERN = /tos_violation|violation of terms of service|disabled in this account/i;
 const AUTH_FAIL_PATTERN = /auth_expired|invalid_grant|invalid_credentials|unauthenticated|http 401\b|no access token/i;
+/**
+ * 本地网络/代理层失败签名。这类错误说明探针根本没拿到服务端响应，
+ * 不能归类为账号健康结论——否则本机代理抖动会在底栏显示「检测异常」。
+ */
+const NETWORK_FAIL_PATTERN = /fetch failed|und_err_|econnreset|econnrefused|etimedout|enotfound|eai_again|epipe|ehostunreach|enetunreach|socket hang up|network (error|unavailable|unreachable)|proxy|tls|ssl|certificate|timeout|timed out|aborted|abort/i;
 
-/** 从错误文本归类健康状态：读失败 = unknown，绝不当 ok */
+/** 展开 undici 的 error.cause，避免 detail 只剩无信息量的 "fetch failed" */
+export function describeError(e: unknown): string {
+  const err = e instanceof Error ? e : new Error(String(e));
+  const cause = (err as Error & { cause?: { code?: string; message?: string } }).cause;
+  if (!cause) return err.message;
+  const parts = [cause.code, cause.message].filter(Boolean).join(' ');
+  return parts ? `${err.message} | cause: ${parts}` : err.message;
+}
+
+/** 从错误文本归类健康状态：网络失败=unreachable（不是账号结论）；读失败绝不当 ok */
 export function classifyAccountError(message: string): AccountHealth['status'] {
   if (TOS_BAN_PATTERN.test(message)) return 'banned';
   if (AUTH_FAIL_PATTERN.test(message)) return 'auth_invalid';
+  if (NETWORK_FAIL_PATTERN.test(message)) return 'unreachable';
   return 'unknown';
 }
 
@@ -677,7 +692,8 @@ async function probeGenerateContent(
  * 单账号健康探针（两步，≈2s/号）：
  * 1) loadCodeAssist 拿 project + 抓凭据失效（401 在这里现形）
  * 2) generateContent 1-token 推理——封禁（ToS）唯一现形点
- * 分类：200/429=ok（429 是没量不是封）、403 ToS=banned、401=auth_invalid、其余=unknown。
+ * 分类：200/429=ok（429 是没量不是封）、403 ToS=banned、401=auth_invalid、
+ *       网络/代理失败=unreachable（探针没发出去，不是账号结论）、其余响应无法定性=unknown。
  */
 export async function checkAccountHealth(account: StoredAccount): Promise<AccountHealth> {
   const checkedAt = new Date().toISOString();
@@ -719,7 +735,7 @@ export async function checkAccountHealth(account: StoredAccount): Promise<Accoun
     // 其余（license 403 / 5xx / 异常码）不装懂
     return fail('unknown', combined);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = describeError(e);
     return { status: classifyAccountError(msg), checkedAt, detail: msg.slice(0, 300) };
   }
 }

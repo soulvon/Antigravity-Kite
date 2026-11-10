@@ -8,11 +8,12 @@ import * as os from 'os';
 import * as path from 'path';
 import * as cp from 'child_process';
 import { getAppDataDir } from './platformPaths';
+import { logWarn } from './logger';
 
 const isWindows = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
 
-function getDefaultUserDataDir(): string {
+export function getDefaultUserDataDir(): string {
   const candidates = [
     path.join(getAppDataDir(), 'Antigravity IDE'),
     path.join(getAppDataDir(), 'Antigravity IDE - Next'),
@@ -23,14 +24,14 @@ function getDefaultUserDataDir(): string {
   return candidates[0];
 }
 
-function normalizePath(p: string): string {
+export function normalizePath(p: string): string {
   const trimmed = p.trim();
   if (isWindows) return trimmed.toLowerCase().replace(/\//g, '\\').replace(/\\+$/, '');
   return trimmed.replace(/\\+/g, '/').replace(/\/+$/, '');
 }
 
 /** 当前窗口的 user-data-dir（非默认数据目录启动时会带 --user-data-dir 参数） */
-function getCurrentUserDataDir(): string {
+export function getCurrentUserDataDir(): string {
   const args = process.argv;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--user-data-dir' && args[i + 1]) return args[i + 1];
@@ -146,13 +147,45 @@ async function detectExeUnix(): Promise<string | null> {
 
 let _processCache: { entries: Array<[number, string | null]>; ts: number } | null = null;
 
-async function getRunningEntries(): Promise<Array<[number, string | null]>> {
-  if (_processCache && Date.now() - _processCache.ts < 3000) {
+/** 主动失效进程缓存（多开启停后调用，消除 3s 缓存盲区） */
+export function invalidateProcessCache(): void {
+  _processCache = null;
+}
+
+export async function getRunningEntries(forceFresh = false): Promise<Array<[number, string | null]>> {
+  if (!forceFresh && _processCache && Date.now() - _processCache.ts < 3000) {
     return _processCache.entries;
   }
   const entries = isWindows ? await getRunningEntriesWindows() : await getRunningEntriesUnix();
   _processCache = { entries, ts: Date.now() };
   return entries;
+}
+
+/**
+ * 从完整命令行解析 --user-data-dir。
+ * 必须支持「后面还跟着工作区路径」的形态：
+ *   "...exe" --user-data-dir C:\...\mw_xxx "e:\project\foo"
+ * 旧正则要求路径后紧跟 -- 或行尾，会把多开实例误判成主窗口。
+ */
+export function parseUserDataDir(cmd: string): string {
+  const m = cmd.match(/--user-data-dir[= ]+(?:"([^"]+)"|'([^']+)'|(\S+))/i);
+  const dir = m ? (m[1] || m[2] || m[3] || '').trim() : '';
+  return dir || getDefaultUserDataDir();
+}
+
+/**
+ * IDE 主进程判定。只排除 --type= 是不够的：tsserver / typingsInstaller / jsonServer
+ * 同样带 exe 名且没有 --type=，会被当成窗口主进程 —— 停止多开时会误杀语言服务。
+ */
+export function isIdeMainProcessCmd(cmd: string): boolean {
+  if (/--type=/i.test(cmd)) return false;
+  if (/[\\/]resources[\\/]app[\\/]extensions[\\/]/i.test(cmd)) return false;
+  if (/\.js["']?(?:\s|$)/i.test(cmd)) return false;
+  // Chromium 内部参数：只做精确匹配，避免用户工作区路径含 plugin/gpu 这类词时误伤主进程
+  if (/--node-ipc\b/i.test(cmd)) return false;
+  if (/--clientprocessid=/i.test(cmd)) return false;
+  if (/[\\/]crashpad[\\/]/i.test(cmd)) return false;
+  return true;
 }
 
 async function getRunningEntriesWindows(): Promise<Array<[number, string | null]>> {
@@ -172,30 +205,34 @@ async function getRunningEntriesWindows(): Promise<Array<[number, string | null]
         if (!pidMatch) continue;
         const pid = parseInt(pidMatch[1], 10);
         const cmd = cmdMatch ? cmdMatch[1] : '';
-        if (cmd.includes('--type=')) continue;
-        const m = cmd.match(/--user-data-dir[= ]+["']?([^"']+?)["']?(?:\s+--|\s*$)/i);
-        entries.push([pid, m ? m[1].trim() : getDefaultUserDataDir()]);
+        if (!isIdeMainProcessCmd(cmd)) continue;
+        entries.push([pid, parseUserDataDir(cmd)]);
       }
       if (entries.length > 0) return entries;
     }
-  } catch {}
+  } catch (e) {
+    // Win11 已移除 wmic，这里失败属预期，但必须留痕以便区分「没进程」与「查询失败」
+    logWarn('ideRuntime.enum.wmic', e);
+  }
 
   // PowerShell 回退
   try {
     const psCmd = `Get-CimInstance Win32_Process -Filter "name='Antigravity IDE.exe' or name='Antigravity.exe'" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`;
     const stdout = await runPowerShellAsync(psCmd, 10000);
     if (stdout && stdout.trim()) {
-      const parsed = JSON.parse(stdout);
+      // PowerShell 输出可能带 BOM，直接 JSON.parse 会抛错并被吞掉，导致枚举结果为空
+      const parsed = JSON.parse(stdout.trim().replace(/^\uFEFF/, ''));
       const list = Array.isArray(parsed) ? parsed : [parsed];
       for (const p of list) {
         const pid = Number(p.ProcessId);
         const cmd: string = p.CommandLine || '';
-        if (!pid || cmd.includes('--type=')) continue;
-        const m = cmd.match(/--user-data-dir[= ]+["']?([^"']+?)["']?(?:\s+--|\s*$)/i);
-        entries.push([pid, m ? m[1].trim() : getDefaultUserDataDir()]);
+        if (!pid || !isIdeMainProcessCmd(cmd)) continue;
+        entries.push([pid, parseUserDataDir(cmd)]);
       }
     }
-  } catch {}
+  } catch (e) {
+    logWarn('ideRuntime.enum.powershell', e);
+  }
 
   return entries;
 }
@@ -206,7 +243,7 @@ async function getRunningEntriesUnix(): Promise<Array<[number, string | null]>> 
     const stdout = await runShellAsync('ps aux', 5000);
     if (!stdout) return entries;
     for (const line of stdout.split('\n')) {
-      if (!/antigravity/i.test(line) || /grep/i.test(line) || /--type=/i.test(line)) continue;
+      if (!/antigravity/i.test(line) || /grep/i.test(line)) continue;
       const parts = line.trim().split(/\s+/);
       const pid = parseInt(parts[1], 10);
       if (!pid || isNaN(pid)) continue;
@@ -214,8 +251,9 @@ async function getRunningEntriesUnix(): Promise<Array<[number, string | null]>> 
       try { cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' '); } catch {
         cmdline = parts.slice(10).join(' ');
       }
-      const m = cmdline.match(/--user-data-dir[= ]+["']?([^"'\0]+?)["']?(?:\s+--|\s*$)/i);
-      entries.push([pid, m ? m[1].trim() : getDefaultUserDataDir()]);
+      const normalized = cmdline.replace(/\0/g, ' ').trim();
+      if (!isIdeMainProcessCmd(normalized)) continue;
+      entries.push([pid, parseUserDataDir(normalized)]);
     }
   } catch {}
   return entries;
@@ -474,7 +512,7 @@ export async function killAgyEngine(): Promise<{ killed: number; error?: string;
 
 // ─── Shell 工具 ──────────────────────────────────────────
 
-function runShellAsync(cmd: string, timeoutMs: number): Promise<string | null> {
+export function runShellAsync(cmd: string, timeoutMs: number): Promise<string | null> {
   return new Promise((resolve) => {
     try {
       cp.exec(cmd, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true }, (err, stdout) => resolve(err ? null : stdout));
@@ -482,7 +520,7 @@ function runShellAsync(cmd: string, timeoutMs: number): Promise<string | null> {
   });
 }
 
-function runPowerShellAsync(script: string, timeoutMs: number): Promise<string | null> {
+export function runPowerShellAsync(script: string, timeoutMs: number): Promise<string | null> {
   return new Promise((resolve) => {
     try {
       const encoded = Buffer.from(script, 'utf16le').toString('base64');

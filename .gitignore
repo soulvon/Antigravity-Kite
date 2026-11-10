@@ -28,6 +28,7 @@ spec/
 tmp/
 
 .codebuddy/
+.agents/
 devloop.project.json
 x.identifier
 

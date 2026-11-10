@@ -8,7 +8,8 @@
  * 模式收敛（对标结论）：
  * - 默认单段聚合，详情下沉 tooltip / QuickPick（Copilot 官方、Gravity Orchestrator、BuddyRelay 同款）
  * - 变色取"最吃紧"一档：min(各窗口) 决定，<30 警告底 / <10 错误底（社区阈值收敛区）
- * - 健康态上栏：封禁=🚫 红底、登录失效=🔑 橙底、检测异常=❓ 不亮底（额度色点 🟢🟡🟠🔴）
+ * - 健康态上栏：封禁=🚫 红底、登录失效=🔑 橙底（账号级结论才顶栏）；检测异常/网络异常只进 tooltip，
+ *   额度数据照常显示；刷新失败补 $(history) 标记（额度色点 🟢🟡🟠🔴）
  *   （元数据端点对封禁隐身，额度满格 ≠ 健康——v1.1.14 实测定案）
  * - 点击弹混合菜单：账号按最紧额度降序（最优号在顶，BoyGR 模式）+ 快捷操作区（BuddyRelay 模式）
  * - 数据管线合一：不再自建定时抓取，走 extension.ts 的共享 usageCache + 统一刷新管线（deps 注入）
@@ -42,17 +43,21 @@ export function validateStyle(v: string): StatusBarStyle {
 /**
  * 健康态 → 底栏标记。异常才亮牌：ok 与未检测返回空标记。
  * bg 用官方语义色（error/warning background 是官方告警条款的合理使用：额度监控类的危险档）。
+ * banner=true 是账号级结论（封禁/登录失效），才允许顶掉额度段；
+ * unknown/unreachable 只是「这次没测成」，必须继续显示已缓存的额度数据。
  */
-export function pickHealthMark(health?: AccountHealth): { icon: string; bg: 'error' | 'warning' | undefined } {
+export function pickHealthMark(health?: AccountHealth): { icon: string; bg: 'error' | 'warning' | undefined; banner: boolean } {
   switch (health?.status) {
     case 'banned':
-      return { icon: '🚫', bg: 'error' };
+      return { icon: '🚫', bg: 'error', banner: true };
     case 'auth_invalid':
-      return { icon: '🔑', bg: 'warning' };
+      return { icon: '🔑', bg: 'warning', banner: true };
     case 'unknown':
-      return { icon: '❓', bg: undefined };
+      return { icon: '❓', bg: undefined, banner: false };
+    case 'unreachable':
+      return { icon: '$(cloud-offline)', bg: undefined, banner: false };
     default:
-      return { icon: '', bg: undefined };
+      return { icon: '', bg: undefined, banner: false };
   }
 }
 
@@ -134,7 +139,7 @@ export function formatFamilySegments(models: ModelQuota[], families?: Set<string
   return segments.join(' · ');
 }
 
-/** 邮箱脱敏（与 webview 端 maskEmail 同一逻辑的宿主侧实现）：soulvon2501@gmail.com → so***1@*** */
+/** 邮箱脱敏（与 webview 端 maskEmail 同一逻辑的宿主侧实现）：user@example.com → us***r@*** */
 export function maskEmailStr(email: string): string {
   if (!email) return '';
   const at = email.indexOf('@');
@@ -200,7 +205,7 @@ export function degradeFlat(
 
 /**
  * QuickPick 账号排序（切号场景最顺手：想切的号永远在上面）：
- * 当前号 → 可用（按最紧额度降序）→ 检测异常 → 封禁/登录失效 → 禁用垫底
+ * 当前号 → 可用（按最紧额度降序）→ 检测异常/网络异常 → 封禁/登录失效 → 禁用垫底
  */
 export function sortPoolForQuickPick(
   accounts: StoredAccount[],
@@ -212,7 +217,7 @@ export function sortPoolForQuickPick(
     if (a.email.toLowerCase() === currentEmail.toLowerCase()) return 0;
     const h = a.health?.status;
     if (h === 'banned' || h === 'auth_invalid') return 3;
-    if (h === 'unknown') return 2;
+    if (h === 'unknown' || h === 'unreachable') return 2;
     return 1;
   };
   return [...accounts].sort((a, b) => {
@@ -254,6 +259,8 @@ export interface StatusBarDeps {
   openSettings?: () => void;
   /** 隐私模式开关（globalState 权威源，G22：隐私不得局限在 webview 闭包） */
   getPrivacy?: () => boolean;
+  /** 指定账号最近一次刷新失败明细：非空表示当前展示的是缓存快照 */
+  getUsageError?: (email: string) => string | undefined;
 }
 
 /** 配额条分档色（BuddyRelay 药丸同源：ok 翡翠/warn 橙黄/danger 红） */
@@ -282,7 +289,6 @@ export class StatusBarManager implements vscode.Disposable {
   private _disposables: vscode.Disposable[] = [];
   private _currentAlignment: vscode.StatusBarAlignment = vscode.StatusBarAlignment.Right;
 
-  private _refreshTimer: NodeJS.Timeout | null = null;
   private _redrawTimer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -318,11 +324,10 @@ export class StatusBarManager implements vscode.Disposable {
       })
     );
 
-    // 订阅状态栏设置变化，即时生效
+    // 订阅状态栏设置变化，即时重绘（网络刷新只在宿主侧按统一周期跑）
     this._disposables.push(
       vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('antigravityKite.statusBar')) {
-          this._startRefreshTimer();
           this.update();
         }
       })
@@ -336,7 +341,6 @@ export class StatusBarManager implements vscode.Disposable {
     this._disposables.push({ dispose: () => { if (this._redrawTimer) { clearInterval(this._redrawTimer); this._redrawTimer = null; } } });
 
     this.update();
-    this._startRefreshTimer();
   }
 
   /**
@@ -369,23 +373,6 @@ export class StatusBarManager implements vscode.Disposable {
     return VALID_POSITIONS.includes(v as StatusBarPosition) ? (v as StatusBarPosition) : 'right';
   }
 
-  private _getRefreshSeconds(): number {
-    const n = this._sbCfg<number>('refreshSeconds', 30);
-    return Number.isFinite(n) ? Math.min(600, Math.max(10, Math.floor(n))) : 30;
-  }
-
-  /** 当前号短周期增量刷新：走统一管线（抓取→缓存→tracker→健康归类→分发），不自建 fetch */
-  private _startRefreshTimer(): void {
-    if (this._refreshTimer) clearInterval(this._refreshTimer);
-    this._refreshTimer = setInterval(() => {
-      const cur = this._ctx.globalState.get<string>('currentEmail');
-      if (!cur || !this._deps.refreshCurrent) return;
-      void this._deps.refreshCurrent(cur).catch(err => {
-        // 管线内部已归类健康并推送卡片；这里只留痕防定时器静默失败
-        console.warn('[StatusBar] 当前号刷新失败:', err instanceof Error ? err.message : String(err));
-      });
-    }, this._getRefreshSeconds() * 1000);
-  }
 
   /** 按配置重建两个状态栏项的对齐方向（对齐仅创建时可指定，需重建 item） */
   private _ensureAlignment(position: StatusBarPosition): void {
@@ -448,8 +435,9 @@ export class StatusBarManager implements vscode.Disposable {
     const privacy = this._deps.getPrivacy?.() ?? false;
     const short = curEmail ? displayName(curEmail, privacy) : t('sbNotLoggedIn');
 
-    // 健康优先于额度：封禁号额度照样满格（元数据端点对封禁隐身），必须由健康定调
+    // 账号级健康结论（封禁/登录失效）才定调整段；探测失败不顶掉已缓存的额度数据
     const health = pickHealthMark(account?.health);
+    const healthIcon = health.banner ? health.icon : '';
 
     // 内容开关 x 池过滤：models 先过"池过滤"再过"模型额度开关"；
     // min 不再信预聚合值（那是全池的），按过滤后窗口重算——关掉的池不参与"最紧额度"
@@ -473,7 +461,7 @@ export class StatusBarManager implements vscode.Disposable {
 
     // 聚合段：账号 / 额度 / 积分 / 健康四块的合成器（内容开关全在这里收口）
     const smartText = (): string | null => {
-      if (health.icon) return `${health.icon} ${short} ${this._healthShortLabel(account?.health)}`.trim();
+      if (health.banner) return `${health.icon} ${short} ${this._healthShortLabel(account?.health)}`.trim();
       const parts: string[] = [];
       if (showAccount) parts.push(`$(account) ${short}${tierStr}`);
       if (hasQuota) parts.push(`${quotaIcon} ${min}%${resetStr ? ' ' + resetStr : ''}`);
@@ -485,18 +473,18 @@ export class StatusBarManager implements vscode.Disposable {
     if (rawUsage && models.length > 0) {
       switch (style) {
         case 'dot':
-          // 仅图标：健康异常用健康图标；额度开关关掉后无内容可显
-          text = health.icon || (hasQuota ? quotaIcon : null);
+          // 仅图标：账号级告警用健康图标；额度开关关掉后无内容可显
+          text = healthIcon || (hasQuota ? quotaIcon : null);
           break;
         case 'percent':
           text = hasQuota ? `${min}%` : null;
           break;
         case 'compact':
-          text = hasQuota ? `${health.icon || quotaIcon} ${min}%${resetStr ? ' ' + resetStr : ''}` : null;
+          text = hasQuota ? `${healthIcon || quotaIcon} ${min}%${resetStr ? ' ' + resetStr : ''}` : null;
           break;
         case 'dual':
           text = hasQuota
-            ? `${health.icon || quotaIcon} ${min}%${resetStr ? ' ' + resetStr : ''}${creditsStr ? ' | ' + creditsStr : ''}`
+            ? `${healthIcon || quotaIcon} ${min}%${resetStr ? ' ' + resetStr : ''}${creditsStr ? ' | ' + creditsStr : ''}`
             : (creditsStr || null);
           break;
         case 'smart':
@@ -504,7 +492,7 @@ export class StatusBarManager implements vscode.Disposable {
           break;
         case 'labeled':
         case 'full':
-          text = this._flatText(style, models, rawUsage, short, showAccount, showModels, showCredits, health.icon, quotaIcon, tierStr, resetStr);
+          text = this._flatText(style, models, rawUsage, short, showAccount, showModels, showCredits, healthIcon, quotaIcon, tierStr, resetStr);
           break;
       }
     }
@@ -518,6 +506,11 @@ export class StatusBarManager implements vscode.Disposable {
       }
     }
 
+    // 刷新失败不清缓存：额度数字照常显示，只补一个历史图标，原因放 tooltip
+    if (!health.banner && this._deps.getUsageError?.(curEmail)) {
+      text = `${text} $(history)`;
+    }
+
     this._main.text = text;
     this._main.tooltip = this._buildTooltip(curEmail, rawUsage);
     this._main.show();
@@ -528,6 +521,7 @@ export class StatusBarManager implements vscode.Disposable {
       case 'banned': return t('sbHealthBanned');
       case 'auth_invalid': return t('sbHealthAuthInvalid');
       case 'unknown': return t('sbHealthUnknown');
+      case 'unreachable': return t('sbHealthUnreachable');
       default: return '';
     }
   }
@@ -631,6 +625,11 @@ export class StatusBarManager implements vscode.Disposable {
       if (usage.updatedAt) {
         md.appendMarkdown(`_${t('sbUpdated')} ${new Date(usage.updatedAt).toLocaleTimeString()}_\n\n`);
       }
+      const cacheError = this._deps.getUsageError?.(email);
+      if (cacheError) {
+        const at = usage.updatedAt ? new Date(usage.updatedAt).toLocaleTimeString() : t('ui.unknown');
+        md.appendMarkdown(`$(history) **${t('sbCached')}** —— ${t('sbRefreshFailedTip', at, cacheError.replace(/\|/g, '/'))}\n\n`);
+      }
     } else {
       md.appendMarkdown(`_${t('sbNoQuotaData')}_\n\n`);
     }
@@ -711,6 +710,7 @@ export class StatusBarManager implements vscode.Disposable {
       if (a.health?.status === 'banned') details.push(t('sbHealthBanned'));
       else if (a.health?.status === 'auth_invalid') details.push(t('sbHealthAuthInvalid'));
       else if (a.health?.status === 'unknown') details.push(t('sbHealthUnknown'));
+      else if (a.health?.status === 'unreachable') details.push(t('sbHealthUnreachable'));
       if (usage && usage.models.length > 0) {
         details.push(usage.models.map(m => `${formatWindowShort(m)} ${m.remainingPercent}%`).join(' · '));
         if (usage.availableAICredits !== undefined && usage.availableAICredits !== null) {
@@ -852,10 +852,6 @@ export class StatusBarManager implements vscode.Disposable {
   }
 
   dispose(): void {
-    if (this._refreshTimer) {
-      clearInterval(this._refreshTimer);
-      this._refreshTimer = null;
-    }
     this._main.dispose();
     this._pool.dispose();
     for (const d of this._disposables) {
