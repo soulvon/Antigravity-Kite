@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as cp from 'child_process';
 import { getAppDataDir } from './platformPaths';
 import { logWarn } from './logger';
+import { t } from './i18n';
 
 const isWindows = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
@@ -397,7 +398,9 @@ async function listAllProcesses(): Promise<ProcSnapshot[]> {
   const out: ProcSnapshot[] = [];
   if (stdout && stdout.trim()) {
     try {
-      const parsed = JSON.parse(stdout);
+      // PowerShell 输出可能带 BOM，直接 JSON.parse 会抛错并被吞掉，导致枚举结果为空
+      const cleaned = stdout.trim().replace(/^\uFEFF/, '');
+      const parsed = JSON.parse(cleaned);
       const list = Array.isArray(parsed) ? parsed : [parsed];
       for (const p of list) {
         const pid = Number(p.ProcessId);
@@ -409,10 +412,18 @@ async function listAllProcesses(): Promise<ProcSnapshot[]> {
           cmd: String(p.CommandLine || ''),
         });
       }
-    } catch { /* 解析失败由调用方兜底 */ }
+    } catch (e) {
+      logWarn('agy.enum.parse', {
+        stage: 'powershell-json',
+        message: e instanceof Error ? e.message : String(e),
+        bytes: stdout.length,
+      });
+    }
+  } else {
+    logWarn('agy.enum.parse', { stage: 'powershell-empty', reason: 'runPowerShellAsync 返回空（命令失败或无输出）' });
   }
   if (out.length === 0) {
-    // wmic 回退
+    // wmic 回退（Win11 起可能已移除，失败必须留痕，不能把「读失败」当成「没有进程」）
     const stdout2 = await runShellAsync(
       'wmic process get Name,ProcessId,ParentProcessId,CommandLine /FORMAT:CSV',
       15000
@@ -426,9 +437,52 @@ async function listAllProcesses(): Promise<ProcSnapshot[]> {
         if (!pid) continue;
         out.push({ name: m[2], pid, ppid: parseInt(m[3], 10), cmd: m[1] || '' });
       }
+    } else {
+      logWarn('agy.enum.wmic', { reason: 'wmic 回退无输出或执行失败', empty: stdout2 === null });
     }
   }
   return out;
+}
+
+interface AgyPidProbe {
+  /** ok=false 表示命令本身失败、结果未知；绝不可与「确实没有 agy 进程」混淆 */
+  ok: boolean;
+  pids: number[];
+  reason?: string;
+}
+
+/**
+ * 独立 agy PID 校验：Windows 走 tasklist、POSIX 走 ps，不派生 PowerShell。
+ * 主枚举（listAllProcesses）依赖 powershell -EncodedCommand，实测在部分环境会被拒；
+ * 这条独立通道保证「agy 在跑却枚举不到」时仍能真正杀掉引擎、让 IDE 用新凭据重建。
+ */
+async function listAgyPids(): Promise<AgyPidProbe> {
+  const pids: number[] = [];
+  if (process.platform === 'win32') {
+    const stdout = await runShellAsync('tasklist /FI "IMAGENAME eq agy.exe" /FO CSV /NH', 8000);
+    if (stdout === null) {
+      logWarn('agy.enum.tasklist', { reason: 'tasklist 执行失败' });
+      return { ok: false, pids, reason: 'tasklist 执行失败' };
+    }
+    if (/INFO:\s*No tasks are running/i.test(stdout)) {
+      return { ok: true, pids };
+    }
+    for (const line of stdout.split(/\r?\n/)) {
+      const m = line.match(/^"?agy\.exe"?\s*,\s*"?(\d+)"?/i);
+      if (m) pids.push(Number(m[1]));
+    }
+    return { ok: true, pids };
+  }
+  const stdout = await runShellAsync('ps -eo pid=,comm=', 8000);
+  if (stdout === null) {
+    logWarn('agy.enum.tasklist', { reason: 'ps 执行失败' });
+    return { ok: false, pids, reason: 'ps 执行失败' };
+  }
+  for (const line of stdout.split(/\r?\n/)) {
+    const m = line.trim().match(/^(\d+)\s+(\S+)$/);
+    if (m && /(^|\/)agy$/.test(m[2])) pids.push(Number(m[1]));
+  }
+  return { ok: true, pids };
 }
 
 function isIdeMainProcess(p: ProcSnapshot): boolean {
@@ -448,6 +502,9 @@ function isIdeMainProcess(p: ProcSnapshot): boolean {
  * 被杀后 IDE 按需以新凭据重建引擎——agent 面板无感切号的机制。
  */
 export async function killAgyEngine(): Promise<{ killed: number; error?: string; agyWasRunning: boolean }> {
+  // 0) 独立校验先行：tasklist/ps 不依赖 PowerShell，主枚举失败时仍能拿到真实 agy PID
+  const probe = await listAgyPids();
+
   // 1) 全量进程快照（一次 PowerShell 拿 Name/PID/PPID/CommandLine）
   const all = await listAllProcesses();
 
@@ -484,28 +541,49 @@ export async function killAgyEngine(): Promise<{ killed: number; error?: string;
 
   // 4) 后代里的 agy 引擎（Windows: agy.exe；POSIX: agy，按平台匹配名称与路径分隔符）
   const agyNameRe = isWindows ? /(^|\\)agy\.exe$/i : /(^|\/)agy$/i;
-  let agyPids = all.filter((p) => agyNameRe.test(p.name) && descendants.has(p.pid)).map((p) => p.pid);
+  const treeAgy = all.filter((p) => agyNameRe.test(p.name) && descendants.has(p.pid)).map((p) => p.pid);
+  const enumAgy = all.filter((p) => agyNameRe.test(p.name)).map((p) => p.pid);
 
-  // 5) 兜底：树内没找到但系统里有 agy（单实例场景安全）
-  const allAgy = all.filter((p) => agyNameRe.test(p.name)).map((p) => p.pid);
-  const agyWasRunning = allAgy.length > 0;
-  if (agyPids.length === 0 && allAgy.length > 0) {
-    agyPids = allAgy;
+  // 5) 主枚举与独立校验必须对齐：出现差异说明 PowerShell 快照不可信，留痕供排障
+  if (probe.ok) {
+    const enumSet = new Set(enumAgy);
+    const probeSet = new Set(probe.pids);
+    const onlyIndependent = probe.pids.filter((pid) => !enumSet.has(pid));
+    const onlyEnum = enumAgy.filter((pid) => !probeSet.has(pid));
+    if (onlyIndependent.length > 0 || onlyEnum.length > 0) {
+      logWarn('agy.enum.mismatch', { stage: 'process-enum', onlyIndependent, onlyEnum });
+    }
+  }
+  if (probe.ok === false) {
+    // 读失败 = 未知：绝不当成「没有进程」静默走完切号
+    return { killed: 0, agyWasRunning: false, error: t('agyReloadEnumFail', probe.reason || '') };
   }
 
+  // 6) 合并三路结果：树内命中优先，独立校验补齐主枚举漏掉的进程
+  const agyPids = Array.from(new Set([...treeAgy, ...enumAgy, ...probe.pids]));
+  const agyWasRunning = agyPids.length > 0;
+
   if (agyPids.length === 0) {
-    // agy 本就没运行：不算错误，下次面板拉起时自动用新凭据
-    return { killed: 0, agyWasRunning: false };
+    // agy 确实未运行：模型列表不会随本次切号重建，必须显式告知，不能静默当成功
+    logWarn('agy.reload.no-engine', { reason: '切号时 agy 引擎未运行' });
+    return { killed: 0, agyWasRunning: false, error: t('agyReloadNoEngine') };
   }
 
   let killed = 0;
   for (const pid of agyPids) {
     if (isWindows) {
-      await runShellAsync(`taskkill /PID ${pid} /T /F`, 5000);
+      const out = await runShellAsync(`taskkill /PID ${pid} /T /F`, 5000);
+      if (out === null) {
+        logWarn('agy.reload.taskkill', { pid, reason: 'taskkill 执行失败' });
+        continue;
+      }
     } else {
       try { process.kill(pid, 'SIGKILL'); } catch { /* 已退出即目标态 */ }
     }
     killed += 1;
+  }
+  if (killed === 0) {
+    return { killed: 0, agyWasRunning, error: t('agyReloadEnumFail', 'agy 进程终止失败') };
   }
   return { killed, agyWasRunning };
 }
@@ -527,8 +605,22 @@ export function runPowerShellAsync(script: string, timeoutMs: number): Promise<s
       cp.exec(
         `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`,
         { encoding: 'utf8', timeout: timeoutMs, windowsHide: true },
-        (err, stdout) => resolve(err ? null : stdout)
+        (err, stdout) => {
+          if (err) {
+            // 失败必须留痕：上层据此区分「读失败」与「确实没有进程」
+            logWarn('powershell.exec.failed', { stage: script.slice(0, 80), message: err.message });
+            resolve(null);
+            return;
+          }
+          resolve(stdout);
+        }
       );
-    } catch { resolve(null); }
+    } catch (e) {
+      logWarn('powershell.exec.threw', {
+        stage: script.slice(0, 80),
+        message: e instanceof Error ? e.message : String(e),
+      });
+      resolve(null);
+    }
   });
 }

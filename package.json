@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -237,7 +237,7 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_webview_hardening.mjs && node scripts/check_platform_gates.mjs && node scripts/check_decl_suppressor.mjs && node scripts/check_status_bar.mjs && node scripts/check_mw_feedback.mjs && node scripts/check_mw_launch.mjs",
+    "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_agy_reload.mjs && node scripts/check_webview_hardening.mjs && node scripts/check_platform_gates.mjs && node scripts/check_decl_suppressor.mjs && node scripts/check_status_bar.mjs && node scripts/check_mw_feedback.mjs && node scripts/check_mw_launch.mjs",
     "watch": "tsc -watch -p ./",
     "package": "node ./scripts/update-version.js && npm run compile && vsce package --skip-license",
     "check:release": "node scripts/check_release_readiness.mjs"

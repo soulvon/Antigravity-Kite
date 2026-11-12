@@ -1090,12 +1090,15 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
             if (gs.error) notes.push(t('switchGeminiFail', gs.error));
             if (agyReload.error) notes.push(agyReload.error);
             if (hot.success && !identity.ok) notes.push(t('switchMenuAlignLater'));
-            if (notes.length === 0) {
+            // 任何一条降级说明（含 agy 引擎未重载）都必须是 warning，
+            // 否则单条失败会被下面的 success 分支包装成「切号成功」的假象
+            const degraded = notes.length > 0;
+            if (!degraded) {
               notes.push(t('switchDone', account.email));
             }
             this._view?.webview.postMessage({
               type: 'toast',
-              status: notes.length === 1 ? 'success' : 'warning',
+              status: degraded ? 'warning' : 'success',
               message: notes.join('；')
             });
           }

@@ -163,6 +163,14 @@ const S: Record<string, [string, string]> = {
     'Quick switch done: agent/quota switched to ',
   ],
   switchCancelled: ['切号已取消：', 'Switch cancelled: '],
+  agyReloadNoEngine: [
+    '本次切号时 agy 引擎未运行，模型列表将在下次打开 agent 面板后刷新',
+    'The agy engine was not running during this switch; the model list will refresh the next time the agent panel opens',
+  ],
+  agyReloadEnumFail: [
+    '进程检测或终止失败，agy 引擎可能未重载：{0}',
+    'Process detection or termination failed; the agy engine may not have reloaded: {0}',
+  ],
 
   // ── 切号重启反馈 ──
   restartIncomplete: [
