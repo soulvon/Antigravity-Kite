@@ -5,14 +5,15 @@
 
 import * as vscode from 'vscode';
 import { StoredAccount } from './types';
-import { ensureFreshToken, refreshAccessToken } from './usageService';
+import { computeTokenFingerprint, refreshAccessToken } from './usageService';
 import * as accountStore from './accountStore';
 import { createUserStatusPayloadBase64 } from './ideStateDb';
 import { t } from './i18n';
 import { logInfo } from './logger';
 
 const SEAMLESS_TIMEOUT_MS = 8000;
-const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+const VERIFIED_TOKEN_MIN_REMAINING_MS = 15 * 60 * 1000;
+const VERIFIED_TOKEN_MAX_AGE_MS = 45 * 60 * 1000;
 
 interface OAuthTokenInfoPayload {
   accessToken: string;
@@ -30,9 +31,6 @@ interface OAuthPreferencesApi {
 interface AntigravityVsCodeApi {
   antigravityUnifiedStateSync?: {
     OAuthPreferences?: OAuthPreferencesApi;
-    UserStatus?: {
-      clearUserStatus?(): Promise<void> | Thenable<void>;
-    };
   };
   antigravityAuth?: OAuthPreferencesApi;
 }
@@ -117,12 +115,30 @@ function parseExpiryMs(expiresAt?: string): number | null {
   return Number.isNaN(expiryMs) ? null : expiryMs;
 }
 
-function shouldRefreshForSwitch(account: StoredAccount): boolean {
-  const expiryMs = parseExpiryMs(account.expiresAt);
-  if (!expiryMs) {
-    return true;
+/**
+ * 判断是否可安全复用本地 accessToken（省去 ~1s Google OAuth 往返）。
+ * 严格五重守卫：必须有 RT + AT、未被封/失效、SHA256 指纹与 Kite 刷出记录精确一致（防外部低 scope token 混入）、
+ * 距校验不超过 45 分钟、且距过期仍有 >15 分钟余量。
+ */
+export function canReuseVerifiedSwitchToken(account: StoredAccount, nowMs = Date.now()): boolean {
+  if (!account.accessToken || !account.refreshToken || !account.verifiedAtHash || !account.verifiedAt) {
+    return false;
   }
-  return expiryMs - Date.now() < TOKEN_REFRESH_BUFFER_MS;
+  const health = account.health?.status;
+  if (health === 'auth_invalid' || health === 'banned') {
+    return false;
+  }
+  if (computeTokenFingerprint(account.accessToken) !== account.verifiedAtHash) {
+    return false;
+  }
+  if (nowMs - account.verifiedAt >= VERIFIED_TOKEN_MAX_AGE_MS || nowMs < account.verifiedAt) {
+    return false;
+  }
+  const expiryMs = parseExpiryMs(account.expiresAt);
+  if (!expiryMs || expiryMs - nowMs <= VERIFIED_TOKEN_MIN_REMAINING_MS) {
+    return false;
+  }
+  return true;
 }
 
 export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: true; token: PreparedSwitchToken } | { ok: false; message: string }> {
@@ -130,11 +146,25 @@ export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: 
     return { ok: false, message: t('errNoRefreshToken') };
   }
 
+  // 快路径：刚由 Kite 自身用 RT 刷出且仍在充裕有效期内的 AT，直接零网络复用
+  if (canReuseVerifiedSwitchToken(account)) {
+    const expiryMs = parseExpiryMs(account.expiresAt)!;
+    return {
+      ok: true,
+      token: {
+        accessToken: account.accessToken,
+        refreshToken: account.refreshToken,
+        expiryDateSeconds: Math.floor(expiryMs / 1000),
+        refreshed: false,
+        idToken: account.idToken,
+      },
+    };
+  }
+
   const beforeAccessToken = account.accessToken || '';
 
-  // 关键：切号必须「强制刷新」——号池缓存的 AT 可能是其它工具换取、scope 不含
-  // agent 所需的 aicode 权限（真机实证：403 ACCESS_TOKEN_SCOPE_INSUFFICIENT 导致
-  // agy 进程 process_exit_nonzero 崩溃）。用 RT 现场刷新出的 AT 才带正确授权范围。
+  // 首次/外部导入/临期时仍必须用 RT 现场刷新：号池缓存 AT 的 scope 可能不含 aicode 权限，
+  // 写入会导致 agy 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT 后崩溃。用 RT 现场刷新出的 AT 才带正确授权范围。
   // 刷新失败宁可取消切号，也不能写入权限不足的 token 把 agent 后端搞崩。
   let refreshedToken: Awaited<ReturnType<typeof refreshAccessToken>> = null;
   try {
@@ -151,7 +181,14 @@ export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: 
   }
 
   const newExpiry = new Date(Date.now() + 3600000).toISOString();
-  const updates: Partial<StoredAccount> = { accessToken: refreshedToken.accessToken, expiresAt: newExpiry };
+  const now = Date.now();
+  const fingerprint = computeTokenFingerprint(refreshedToken.accessToken);
+  const updates: Partial<StoredAccount> = {
+    accessToken: refreshedToken.accessToken,
+    expiresAt: newExpiry,
+    verifiedAtHash: fingerprint,
+    verifiedAt: now,
+  };
   if (refreshedToken.idToken) updates.idToken = refreshedToken.idToken;
   accountStore.update(account.email, updates);
 
@@ -283,21 +320,6 @@ export async function seamlessSwitch(account: StoredAccount, preparedExternal?: 
   }
 }
 
-/**
- * 登出语义：清空宿主 token 与身份（触发 session 移除与模型列表等缓存重置）
- */
-export async function clearHostAuth(): Promise<void> {
-  const api = (vscode as unknown as AntigravityVsCodeApi);
-  const tokenApi = getTokenApi();
-  if (tokenApi) {
-    await Promise.resolve(tokenApi.setOAuthTokenInfo(null));
-  }
-  const userStatus = api.antigravityUnifiedStateSync?.UserStatus;
-  if (userStatus && typeof userStatus.clearUserStatus === 'function') {
-    await Promise.resolve(userStatus.clearUserStatus());
-  }
-}
-
 interface UssSyncApi {
   pushUpdate?: (update: unknown) => Promise<void>;
   getUserStatus?: () => Promise<string>;
@@ -319,23 +341,36 @@ export async function pushLiveIdentityUpdate(email: string): Promise<{ ok: boole
     return { ok: false, error: t('errNoPushUpdate') };
   }
 
-  await uss.pushUpdate({
-    topicName: 'uss-userStatus',
-    appliedUpdate: {
-      key: 'userStatusSentinelKey',
-      newRow: {
-        value: createUserStatusPayloadBase64(email),
-        eTag: 0,
-      },
-    },
-  });
+  try {
+    await withTimeout(
+      Promise.resolve(
+        uss.pushUpdate({
+          topicName: 'uss-userStatus',
+          appliedUpdate: {
+            key: 'userStatusSentinelKey',
+            newRow: {
+              value: createUserStatusPayloadBase64(email),
+              eTag: 0,
+            },
+          },
+        }),
+      ),
+      3000,
+      'pushUpdate',
+    );
+  } catch (e) {
+    return { ok: false, error: `身份推送失败：${e instanceof Error ? e.message : String(e)}` };
+  }
 
-  // 读回校验（内置 getUserStatus 直读总线），失败必须暴露
+  // 读回校验（内置 getUserStatus 直读总线；50ms 短轮询最多 300ms），失败必须暴露
   if (typeof uss.getUserStatus === 'function') {
-    await new Promise((r) => setTimeout(r, 300));
     let current = '';
     try {
-      current = (await uss.getUserStatus()) || '';
+      for (let i = 0; i < 6; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        current = (await withTimeout(Promise.resolve(uss.getUserStatus()), 1500, 'getUserStatus')) || '';
+        if (current === email) break;
+      }
     } catch (e) {
       return { ok: false, error: `身份推送后读回失败：${e instanceof Error ? e.message : String(e)}` };
     }

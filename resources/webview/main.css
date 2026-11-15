@@ -1649,60 +1649,6 @@ details > summary::marker { display: none; content: ''; }
 .grid-tag-chip:hover { opacity: 0.8; }
 .grid-tag-chip.is-active { box-shadow: 0 0 0 1.5px rgba(255,255,255,0.4); }
 
-/* ── Tag Color Picker ── */
-.tag-color-picker {
-    background: var(--card-bg, #1e1e2e);
-    border: 1px solid var(--card-border, #333);
-    border-radius: 8px;
-    padding: 10px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-    min-width: 180px;
-}
-.tag-color-picker-title {
-    font-size: 11px;
-    color: var(--muted);
-    margin-bottom: 8px;
-    text-align: center;
-}
-.tag-color-picker-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    justify-content: center;
-    margin-bottom: 8px;
-}
-.tag-color-dot {
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    border: 2px solid transparent;
-    transition: transform 0.12s, border-color 0.12s;
-}
-.tag-color-dot:hover { transform: scale(1.2); }
-.tag-color-dot.is-active { border-color: #fff; transform: scale(1.15); }
-.tag-color-picker-custom {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    justify-content: center;
-    padding-top: 6px;
-    border-top: 1px solid var(--card-border, #333);
-}
-.tag-color-input {
-    width: 28px;
-    height: 28px;
-    border: none;
-    border-radius: 4px;
-    padding: 0;
-    background: none;
-}
-.tag-color-reset {
-    font-size: 16px;
-    color: var(--muted);
-    transition: color 0.15s;
-}
-.tag-color-reset:hover { color: var(--accent, #10b981); }
-
 /* Quotas */
 /* 同一行卡片被 grid 拉成等高：配额区吸收剩余高度并均分，避免条目少时底部留大片空白 */
 .grid-card-quotas {
@@ -6680,6 +6626,10 @@ body.vscode-light {
     transform: rotate(45deg) !important;
 }
 
+#confirmOverlay {
+    z-index: 1200;
+}
+
 #confirmOverlay .confirm-message {
     font-size: 12px !important;
     line-height: 1.6 !important;
@@ -8105,4 +8055,225 @@ body.vscode-dark .mw-expand-drawer .inst-card-btn.focus:hover {
 .grid-card.is-card-linked {
     border-color: var(--ac-emerald, #10b981) !important;
     box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.35);
+}
+
+/* ═══════ 克制降噪 UI 优化：单色标签 / 筛选条 / 分页行 / 等待进度态 / Toast 关闭 ═══════ */
+.grid-tag-chip {
+    background: color-mix(in srgb, var(--vscode-foreground) 7%, transparent) !important;
+    color: var(--muted) !important;
+    border: 1px solid var(--card-border) !important;
+    padding: 1px 6px !important;
+    border-radius: 999px !important;
+    font-size: 10px !important;
+    line-height: 1.4 !important;
+    cursor: pointer;
+    max-width: 96px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.grid-tag-chip:hover {
+    border-color: var(--card-border-hover) !important;
+    color: var(--vscode-foreground) !important;
+    opacity: 1 !important;
+}
+.grid-tag-chip.is-active {
+    background: color-mix(in srgb, var(--ac-emerald, #10b981) 14%, transparent) !important;
+    border-color: color-mix(in srgb, var(--ac-emerald, #10b981) 45%, transparent) !important;
+    color: var(--ac-emerald, #10b981) !important;
+    box-shadow: none !important;
+}
+.grid-tag-more {
+    font-size: 10px;
+    color: var(--muted);
+    padding: 0 4px;
+    line-height: 1.4;
+}
+
+.tag-edit-chip {
+    background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+    border: 1px solid var(--card-border-hover);
+    color: var(--vscode-foreground);
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    cursor: default;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+.tag-edit-remove {
+    cursor: pointer;
+    opacity: 0.65;
+    font-size: 13px;
+    line-height: 1;
+}
+.tag-edit-opt {
+    background: transparent;
+    border: 1px solid var(--card-border);
+    color: var(--muted);
+    padding: 2px 7px 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    user-select: none;
+}
+.tag-edit-opt.is-selected {
+    background: color-mix(in srgb, var(--ac-emerald, #10b981) 14%, transparent);
+    border-color: color-mix(in srgb, var(--ac-emerald, #10b981) 48%, transparent);
+    color: var(--ac-emerald, #10b981);
+}
+.tag-edit-opt-del {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    margin: 0 -2px 0 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: inherit;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.55;
+    transition: color 0.12s, background 0.12s, opacity 0.12s;
+}
+.tag-edit-opt-del:hover {
+    opacity: 1;
+    color: var(--gh-red, #f85149);
+    background: color-mix(in srgb, var(--gh-red, #f85149) 14%, transparent);
+}
+
+.active-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+    margin: 4px 0 6px;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+    border: 1px solid var(--card-border);
+    font-size: 10.5px;
+}
+.active-filter-label {
+    color: var(--muted);
+    font-size: 10px;
+    margin-right: 2px;
+}
+.active-filter-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+    border: 1px solid var(--card-border);
+    color: var(--vscode-foreground);
+    font-size: 10.5px;
+    cursor: pointer;
+}
+.active-filter-pill:hover {
+    border-color: var(--card-border-hover);
+}
+.active-filter-pill .pill-x {
+    opacity: 0.65;
+    font-size: 12px;
+    line-height: 1;
+}
+.active-filter-clear {
+    margin-left: auto;
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 10.5px;
+    cursor: pointer;
+    padding: 1px 4px;
+}
+.active-filter-clear:hover {
+    color: var(--vscode-foreground);
+}
+
+.auth-wait-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0 8px;
+    padding: 7px 10px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--ac-blue, #3b82f6) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--ac-blue, #3b82f6) 28%, transparent);
+    font-size: 11px;
+    color: var(--vscode-foreground);
+}
+.auth-wait-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid color-mix(in srgb, var(--ac-blue, #3b82f6) 25%, transparent);
+    border-top-color: var(--ac-blue, #3b82f6);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+}
+.auth-wait-text {
+    flex: 1;
+    min-width: 0;
+}
+.auth-wait-sec {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 10.5px;
+    color: var(--muted);
+}
+
+#refreshAllBtn.has-progress {
+    width: auto !important;
+    min-width: 26px !important;
+    padding: 0 7px !important;
+    gap: 4px !important;
+}
+.refresh-progress-badge {
+    font-size: 10px;
+    font-weight: 600;
+    font-family: var(--vscode-editor-font-family, monospace);
+    line-height: 1;
+}
+
+.pagination-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+}
+.pagination-row .pagination {
+    margin-top: 0 !important;
+    margin-left: auto;
+}
+
+.grid-switch-btn:disabled:not(.is-loading) {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.toast-close {
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 2px;
+    cursor: pointer;
+    opacity: 0.7;
+}
+.toast-close:hover {
+    opacity: 1;
+    color: var(--vscode-foreground);
 }

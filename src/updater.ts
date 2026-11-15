@@ -61,30 +61,37 @@ function fetchGitHubApi(url: string, token: string): Promise<any> {
       headers['Authorization'] = `token ${token}`;
     }
 
+    let settled = false;
+    const finishOk = (val: any) => { if (!settled) { settled = true; resolve(val); } };
+    const finishErr = (err: unknown) => { if (!settled) { settled = true; reject(err); } };
+
     const req = protocol.get(url, { headers }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => data += chunk);
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
       res.on('end', () => {
+        req.setTimeout(0);
+        const data = Buffer.concat(chunks).toString('utf8');
         if (res.statusCode === 200) {
           try {
-            resolve(JSON.parse(data));
+            finishOk(JSON.parse(data));
           } catch (e) {
-            reject(new Error('JSON parse failed'));
+            finishErr(new Error('JSON parse failed'));
           }
         } else if (res.statusCode === 404) {
-          reject(new Error('Repository or release not found'));
+          finishErr(new Error('Repository or release not found'));
         } else if (res.statusCode === 401) {
-          reject(new Error('Invalid GitHub token or insufficient permissions'));
+          finishErr(new Error('Invalid GitHub token or insufficient permissions'));
         } else {
-          reject(new Error(`GitHub API error: ${res.statusCode}`));
+          finishErr(new Error(`GitHub API error: ${res.statusCode}`));
         }
       });
+      res.on('error', finishErr);
     });
 
-    req.on('error', reject);
+    req.on('error', finishErr);
     req.setTimeout(10000, () => {
       req.destroy();
-      reject(new Error('Request timeout'));
+      finishErr(new Error('Request timeout'));
     });
   });
 }
@@ -107,16 +114,23 @@ function downloadFile(url: string, token: string, destPath: string, maxRedirects
       headers['Authorization'] = `token ${token}`;
     }
 
+    let settled = false;
+    const finishOk = () => { if (!settled) { settled = true; resolve(); } };
+    const finishErr = (err: unknown) => { if (!settled) { settled = true; reject(err); } };
+
     const req = protocol.get(url, { headers }, (res) => {
-      // 处理重定向
+      // 处理重定向：跳转前取消当前请求的 socket timeout 回调
       if (res.statusCode && [301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        req.setTimeout(0);
         res.resume(); // 消费响应体
-        downloadFile(res.headers.location, token, destPath, maxRedirects - 1).then(resolve, reject);
+        downloadFile(res.headers.location, token, destPath, maxRedirects - 1).then(finishOk, finishErr);
         return;
       }
 
       if (res.statusCode !== 200) {
-        reject(new Error(`Download failed: ${res.statusCode}`));
+        req.setTimeout(0);
+        res.resume();
+        finishErr(new Error(`Download failed: ${res.statusCode}`));
         return;
       }
 
@@ -124,20 +138,24 @@ function downloadFile(url: string, token: string, destPath: string, maxRedirects
       res.pipe(file);
 
       file.on('finish', () => {
-        file.close();
-        resolve();
+        req.setTimeout(0);
+        file.close(() => finishOk());
       });
 
-      file.on('error', (err) => {
+      const failStream = (err: unknown) => {
+        req.setTimeout(0);
+        file.destroy();
         fs.unlink(destPath, () => {});
-        reject(err);
-      });
+        finishErr(err);
+      };
+      res.on('error', failStream);
+      file.on('error', failStream);
     });
 
-    req.on('error', reject);
+    req.on('error', finishErr);
     req.setTimeout(60000, () => {
       req.destroy();
-      reject(new Error('Download timeout'));
+      finishErr(new Error('Download timeout'));
     });
   });
 }

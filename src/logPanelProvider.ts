@@ -31,7 +31,7 @@ export function openLogPanel(
   );
 
   const webview = _panel.webview;
-  const ext = vscode.extensions.getExtension('antigravity-kite');
+  const ext = vscode.extensions.getExtension('soulvon.antigravity-kite') || vscode.extensions.getExtension('antigravity-kite');
   const ver = ext?.packageJSON?.version || '0.0.0';
   const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'webview', 'log-panel.css'));
   const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'webview', 'log-panel.js'));

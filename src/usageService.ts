@@ -3,10 +3,16 @@
  * 调用 Cloud Code API 获取账号配额信息
  */
 
+import * as crypto from 'crypto';
 import * as https from 'https';
 import { StoredAccount, UsageSnapshot, AccountHealth } from './types';
 import * as accountStore from './accountStore';
 import { t } from './i18n';
+
+/** 计算 accessToken 短指纹（仅用于绑定验证来源，绝不明文落盘） */
+export function computeTokenFingerprint(accessToken: string): string {
+  return crypto.createHash('sha256').update(accessToken).digest('hex').slice(0, 16);
+}
 
 const CLOUDCODE_DAILY_URL = 'https://daily-cloudcode-pa.googleapis.com';
 const CLOUDCODE_PROD_URL = 'https://cloudcode-pa.googleapis.com';
@@ -143,7 +149,9 @@ export async function refreshAccessToken(refreshToken: string): Promise<{ access
   });
 }
 
-/** 确保 token 有效，必要时刷新。minValidityMs：剩余有效期低于该值即刷新（切号链路要求 5 分钟） */
+const tokenRefreshInFlight = new Map<string, Promise<string | null>>();
+
+/** 确保 token 有效，必要时刷新（按邮箱并发去重）。minValidityMs：剩余有效期低于该值即刷新（切号链路要求 5 分钟） */
 export async function ensureFreshToken(account: StoredAccount, minValidityMs = 60000): Promise<string> {
   // 检查是否过期
   if (account.expiresAt) {
@@ -152,16 +160,41 @@ export async function ensureFreshToken(account: StoredAccount, minValidityMs = 6
       return account.accessToken; // 还有效
     }
   }
-  // 尝试刷新
+  // 尝试刷新（并发单飞去重，避免同一账号在刷新池/切号期间重复请求）
   if (account.refreshToken) {
-    const refreshed = await refreshAccessToken(account.refreshToken);
-    if (refreshed) {
-      // 更新存储
-      const newExpiry = new Date(Date.now() + 3600000).toISOString();
-      const updates: Partial<StoredAccount> = { accessToken: refreshed.accessToken, expiresAt: newExpiry };
-      if (refreshed.idToken) updates.idToken = refreshed.idToken;
-      accountStore.update(account.email, updates);
-      return refreshed.accessToken;
+    const key = account.email.toLowerCase();
+    let pending = tokenRefreshInFlight.get(key);
+    if (!pending) {
+      const refreshToken = account.refreshToken;
+      pending = (async () => {
+        const refreshed = await refreshAccessToken(refreshToken);
+        if (!refreshed) return null;
+        const newExpiry = new Date(Date.now() + 3600000).toISOString();
+        const now = Date.now();
+        const fingerprint = computeTokenFingerprint(refreshed.accessToken);
+        const updates: Partial<StoredAccount> = {
+          accessToken: refreshed.accessToken,
+          expiresAt: newExpiry,
+          verifiedAtHash: fingerprint,
+          verifiedAt: now,
+        };
+        if (refreshed.idToken) updates.idToken = refreshed.idToken;
+        account.accessToken = refreshed.accessToken;
+        account.expiresAt = newExpiry;
+        account.verifiedAtHash = fingerprint;
+        account.verifiedAt = now;
+        if (refreshed.idToken) account.idToken = refreshed.idToken;
+        accountStore.update(account.email, updates);
+        return refreshed.accessToken;
+      })().finally(() => {
+        tokenRefreshInFlight.delete(key);
+      });
+      tokenRefreshInFlight.set(key, pending);
+    }
+    const freshToken = await pending;
+    if (freshToken) {
+      account.accessToken = freshToken;
+      return freshToken;
     }
   }
   return account.accessToken; // 无法刷新，用旧的试试
@@ -408,6 +441,22 @@ function mapSummaryBucket(bucketId: string): { family: 'claude' | 'gemini' | 'ar
   return undefined;
 }
 
+/**
+ * 解析官方 remainingFraction 为百分比（0~100）：
+ * - 合法有限数值 [0, 1] → Math.round(fraction * 100)
+ * - Protobuf3 JSON 会省略零值字段，缺失 fraction 但存在有效 resetTime → 已耗尽（0%）
+ * - 既无合法 fraction 又无有效 resetTime → 返回 null（跳过该条目，避免虚报 100%）
+ */
+function resolveQuotaPercent(fraction: unknown, resetTime?: string): number | null {
+  if (typeof fraction === 'number' && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1) {
+    return Math.round(fraction * 100);
+  }
+  if (typeof resetTime === 'string' && resetTime.trim().length > 0 && Number.isFinite(Date.parse(resetTime))) {
+    return 0;
+  }
+  return null;
+}
+
 /** 从官方摘要构建窗口级配额（全中文标签：5h / 周额度；没有的数据不生成条目） */
 export function extractQuotaFromSummary(response: QuotaSummaryResponse): import('./types').ModelQuota[] {
   const modelQuotas: import('./types').ModelQuota[] = [];
@@ -420,10 +469,8 @@ export function extractQuotaFromSummary(response: QuotaSummaryResponse): import(
         unmapped.push(`${group.displayName || '?'}/${bucket.bucketId || '(no id)'}`);
         continue;
       }
-      const fraction = bucket.remainingFraction;
-      const percent = typeof fraction === 'number' && fraction >= 0 && fraction <= 1
-        ? Math.round(fraction * 100)
-        : 100;
+      const percent = resolveQuotaPercent(bucket.remainingFraction, bucket.resetTime);
+      if (percent === null) continue;
       const familyLabel = FAMILY_LABELS[mapped.family];
       modelQuotas.push({
         label: mapped.window === '5h' ? `${familyLabel} 5h` : `${familyLabel} 周额度`,
@@ -464,7 +511,7 @@ interface FamilyWindow {
  * - 窗口：resetTime 距今 < 24h 视为 5 小时窗，否则视为周窗
  * 每族每窗取最低百分比。
  */
-function extractQuotaFromModels(response: CloudCodeQuotaResponse['models']): UsageSnapshot {
+export function extractQuotaFromModels(response: CloudCodeQuotaResponse['models']): UsageSnapshot {
   const windows = new Map<string, FamilyWindow>();
 
   if (response) {
@@ -483,10 +530,8 @@ function extractQuotaFromModels(response: CloudCodeQuotaResponse['models']): Usa
       if (!isClaudeFamily && !isGeminiFamily) continue;
 
       const quota = model.quotaInfo;
-      const fraction = quota?.remainingFraction;
-      const percent = typeof fraction === 'number' && fraction >= 0 && fraction <= 1
-        ? Math.round(fraction * 100)
-        : 100;
+      const percent = resolveQuotaPercent(quota?.remainingFraction, quota?.resetTime);
+      if (percent === null) continue;
 
       const resetMs = quota?.resetTime ? Date.parse(quota.resetTime) : NaN;
       const window: '5h' | 'weekly' = Number.isFinite(resetMs) && (resetMs - Date.now()) > WEEKLY_WINDOW_MS ? 'weekly' : '5h';
@@ -527,7 +572,7 @@ function extractQuotaFromModels(response: CloudCodeQuotaResponse['models']): Usa
   }
 
   return {
-    minRemainingPercent: minPercent,
+    minRemainingPercent: modelQuotas.length > 0 ? minPercent : 0,
     models: modelQuotas,
     updatedAt: Date.now(),
   };
@@ -544,14 +589,15 @@ export async function fetchUsage(account: StoredAccount): Promise<UsageSnapshot>
   // 0. 确保 token 有效
   const accessToken = await ensureFreshToken(account);
 
-  // 1. 获取项目信息（projectId、tierId、availableAICredits）
+  // 1. 获取项目信息（projectId、tierId、availableAICredits）并缓存 projectId
   const projectInfo = await loadProjectInfo(accessToken);
+  if (projectInfo.projectId && projectInfo.projectId !== account.projectId) {
+    account.projectId = projectInfo.projectId;
+    accountStore.update(account.email, { projectId: projectInfo.projectId });
+  }
 
-  // 2. 获取配额模型（模型级数据，作为摘要失败时的可见降级来源）
-  const modelsResponse = await fetchAvailableModels(accessToken, projectInfo.projectId);
-
-  // 3. 优先取官方窗口级摘要（retrieveUserQuotaSummary，含 5h/Weekly 双窗真数据）；
-  //    摘要失败时退回模型级推断并显式标注错误，绝不静默吞掉失败
+  // 2. 优先取官方窗口级摘要（retrieveUserQuotaSummary，含 5h/Weekly 双窗真数据）；
+  //    仅当摘要失败时才拉取模型级推断并显式标注错误，避免正常路径浪费额外请求
   let snapshot: UsageSnapshot;
   try {
     const summary = await fetchQuotaSummary(accessToken, projectInfo.projectId);
@@ -567,6 +613,7 @@ export async function fetchUsage(account: StoredAccount): Promise<UsageSnapshot>
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     console.warn('[UsageService] 周限摘要获取失败，退回模型级推断:', reason);
+    const modelsResponse = await fetchAvailableModels(accessToken, projectInfo.projectId);
     snapshot = extractQuotaFromModels(modelsResponse.models);
     snapshot.loadError = t('errQuotaSummaryFallback') + reason;
   }
@@ -705,19 +752,25 @@ export async function checkAccountHealth(account: StoredAccount): Promise<Accoun
     }
     const accessToken = await ensureFreshToken(account);
 
-    // 1) project + 凭据层（401 在这里现形）
-    let projectId: string | undefined;
-    try {
-      const data = await loadCodeAssistRequest<LoadCodeAssistResponse>(
-        { metadata: getCloudCodeMetadata(), mode: 'FULL_ELIGIBILITY_CHECK' },
-        accessToken,
-      );
-      const proj = data.cloudaicompanionProject;
-      projectId = typeof proj === 'string' ? proj : proj?.id;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (/auth_expired|http 401/i.test(msg)) return fail('auth_invalid', msg);
-      // 元数据失败不致命：project 缺省走共享池，继续推理探测
+    // 1) project + 凭据层（优先复用缓存 projectId，缺失时探测并落库）
+    let projectId: string | undefined = account.projectId;
+    if (!projectId) {
+      try {
+        const data = await loadCodeAssistRequest<LoadCodeAssistResponse>(
+          { metadata: getCloudCodeMetadata(), mode: 'FULL_ELIGIBILITY_CHECK' },
+          accessToken,
+        );
+        const proj = data.cloudaicompanionProject;
+        projectId = typeof proj === 'string' ? proj : proj?.id;
+        if (projectId) {
+          account.projectId = projectId;
+          accountStore.update(account.email, { projectId });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/auth_expired|http 401/i.test(msg)) return fail('auth_invalid', msg);
+        // 元数据失败不致命：project 缺省走共享池，继续推理探测
+      }
     }
 
     // 2) 推理探测——封禁唯一现形点

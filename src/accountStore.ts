@@ -5,10 +5,14 @@ import { StoredAccount } from './types';
 
 import { migrateDataIfNeeded, getSharedStorageDir } from './storage';
 import { logInfo, logWarn, logError } from './logger';
+import { normalizeAccountTags, removeTagFromAccounts, sanitizeStoredAccounts } from './tagSanitizer';
 
 let _accounts: StoredAccount[] = [];
 let _storageDir: string = '';
 let _watcher: fs.FSWatcher | null = null;
+let _watchDebounceTimer: NodeJS.Timeout | null = null;
+let _lastSelfSaveAt = 0;
+const SELF_SAVE_IGNORE_MS = 150;
 const _onChangeCallbacks = new Set<() => void>();
 
 const ACCOUNTS_FILE = 'accounts.json';
@@ -24,13 +28,18 @@ export function init(context: vscode.ExtensionContext): void {
 
   load();
 
-  // 监听文件变化（多窗口同步）
+  // 监听文件变化（多窗口同步；忽略自身写入并防抖）
   try {
-    _watcher = fs.watch(_storageDir, (event, filename) => {
-      if (filename === ACCOUNTS_FILE) {
+    _watcher = fs.watch(_storageDir, (_event, filename) => {
+      if (filename !== ACCOUNTS_FILE) return;
+      if (Date.now() - _lastSelfSaveAt < SELF_SAVE_IGNORE_MS) return;
+      if (_watchDebounceTimer) clearTimeout(_watchDebounceTimer);
+      _watchDebounceTimer = setTimeout(() => {
+        _watchDebounceTimer = null;
+        if (Date.now() - _lastSelfSaveAt < SELF_SAVE_IGNORE_MS) return;
         load();
         notifyChange();
-      }
+      }, 80);
     });
     logInfo('accountStore.watch', { ok: true, dir: _storageDir });
   } catch (e) { logWarn('accountStore.watch', e); }
@@ -42,6 +51,10 @@ export function getStorageDirPath(): string {
 }
 
 export function dispose(): void {
+  if (_watchDebounceTimer) {
+    clearTimeout(_watchDebounceTimer);
+    _watchDebounceTimer = null;
+  }
   _watcher?.close();
   _watcher = null;
   _onChangeCallbacks.clear();
@@ -72,8 +85,13 @@ function load(): void {
     const exists = fs.existsSync(filePath);
     if (exists) {
       const data = fs.readFileSync(filePath, 'utf8');
-      _accounts = JSON.parse(data);
-      logInfo('accountStore.load', { file: filePath, exists, bytes: data.length, count: Array.isArray(_accounts) ? _accounts.length : 'not-array' });
+      const parsed = JSON.parse(data);
+      _accounts = Array.isArray(parsed) ? parsed : [];
+      const cleaned = sanitizeStoredAccounts(_accounts);
+      logInfo('accountStore.load', { file: filePath, exists, bytes: data.length, count: Array.isArray(parsed) ? _accounts.length : 'not-array', cleanedLegacyTags: cleaned });
+      if (cleaned > 0) {
+        save();
+      }
     } else {
       logWarn('accountStore.load', { file: filePath, exists, count: 0 });
     }
@@ -84,10 +102,15 @@ function load(): void {
 }
 
 function save(): void {
+  const filePath = getFilePath();
+  const tmpPath = `${filePath}.tmp.${process.pid}`;
   try {
-    const filePath = getFilePath();
-    fs.writeFileSync(filePath, JSON.stringify(_accounts, null, 2), 'utf8');
+    _lastSelfSaveAt = Date.now();
+    fs.writeFileSync(tmpPath, JSON.stringify(_accounts, null, 2), 'utf8');
+    fs.renameSync(tmpPath, filePath);
+    _lastSelfSaveAt = Date.now();
   } catch (err) {
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
     console.error('[accountStore] save failed:', err);
   }
 }
@@ -101,10 +124,12 @@ export function getByEmail(email: string): StoredAccount | undefined {
 }
 
 export function add(account: StoredAccount): boolean {
+  normalizeAccountTags(account, { stripLegacy: true });
   const existing = getByEmail(account.email);
   if (existing) {
     // 更新已有账号
     Object.assign(existing, account);
+    normalizeAccountTags(existing, { stripLegacy: true });
   } else {
     _accounts.push(account);
   }
@@ -126,10 +151,23 @@ export function update(email: string, updates: Partial<StoredAccount>): boolean 
   const account = getByEmail(email);
   if (account) {
     Object.assign(account, updates);
+    if ('tags' in updates || 'tag' in updates) {
+      normalizeAccountTags(account, { stripLegacy: false });
+    }
     save();
     return true;
   }
   return false;
+}
+
+/** 从所有账号中永久删除指定标签（原子写盘一次），返回受影响账号数 */
+export function removeTagEverywhere(tag: string): number {
+  const affected = removeTagFromAccounts(_accounts, tag);
+  if (affected > 0) {
+    save();
+    logInfo('accountStore.removeTagEverywhere', { tag: tag.trim(), affected });
+  }
+  return affected;
 }
 
 export function setDisabled(email: string, disabled: boolean): boolean {

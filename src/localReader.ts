@@ -41,14 +41,14 @@ async function readStateValue(dbPath: string, key: string): Promise<string> {
       }
     }
   }
-  throw new Error('SQLite engine not available in environment');
+  throw new Error(t('errSqliteUnavailable'));
 }
 
 // state.vscdb 路径（仅支持 Antigravity IDE 2.0）
 function getStateDbPath(): string {
   const platform = process.platform;
   const home = process.env.HOME || require('os').homedir();
-  
+
   if (platform === 'win32') {
     const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
     return path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
@@ -105,7 +105,7 @@ function findField(data: Buffer, targetField: number): Buffer | undefined {
       const wireType = tag & 7;
       const fieldNum = tag >> 3;
       offset = newOffset;
-      
+
       if (wireType === 2) {
         const [len, contentOffset] = readVarint(data, offset);
         if (fieldNum === targetField) {
@@ -127,19 +127,19 @@ function findField(data: Buffer, targetField: number): Buffer | undefined {
 function parseOAuthTokenInfo(data: Buffer): { accessToken?: string; refreshToken?: string } {
   const result: { accessToken?: string; refreshToken?: string } = {};
   let offset = 0;
-  
+
   while (offset < data.length) {
     try {
       const [tag, newOffset] = readVarint(data, offset);
       const wireType = tag & 7;
       const fieldNum = tag >> 3;
       offset = newOffset;
-      
+
       if (wireType === 2) {
         const [len, contentOffset] = readVarint(data, offset);
         const value = data.subarray(contentOffset, contentOffset + len);
         offset = contentOffset + len;
-        
+
         if (fieldNum === 1) result.accessToken = value.toString('utf8');
         else if (fieldNum === 3) result.refreshToken = value.toString('utf8');
       } else if (wireType === 0) {
@@ -157,13 +157,13 @@ function parseOAuthTokenInfo(data: Buffer): { accessToken?: string; refreshToken
 function decodeUnifiedStateEntry(stateValue: string): { sentinelKey: string; payload: Buffer } | null {
   try {
     const outerRaw = Buffer.from(stateValue.trim(), 'base64');
-    
+
     // 遍历查找包含 sentinel key 的条目
     let offset = 0;
     while (offset < outerRaw.length) {
       const inner = findField(outerRaw.subarray(offset), 1);
       if (!inner) break;
-      
+
       const sentinelKey = findField(inner, 1)?.toString('utf8');
       if (sentinelKey) {
         const inner2 = findField(inner, 2);
@@ -175,7 +175,7 @@ function decodeUnifiedStateEntry(stateValue: string): { sentinelKey: string; pay
           }
         }
       }
-      
+
       // 移动到下一个字段
       const [tag, newOffset] = readVarint(outerRaw, offset);
       const wireType = tag & 7;
@@ -205,10 +205,10 @@ function parseUserStatus(stateValue: string): { email?: string; name?: string } 
   if (!entry || entry.sentinelKey !== 'userStatusSentinelKey') {
     return {};
   }
-  
+
   const result: { email?: string; name?: string } = {};
   const fields = parseFields(entry.payload);
-  
+
   for (const field of fields) {
     if (field.wireType === 2 && Buffer.isBuffer(field.value)) {
       const str = field.value.toString('utf8');
@@ -216,7 +216,7 @@ function parseUserStatus(stateValue: string): { email?: string; name?: string } 
       if (field.fieldNum === 7 && str && str.includes('@')) result.email = str;
     }
   }
-  
+
   return result;
 }
 
@@ -240,11 +240,11 @@ async function readUserStatusFromDb(dbPath: string): Promise<{ email?: string; n
 async function getUserInfo(accessToken: string): Promise<{ email?: string; name?: string }> {
   return new Promise((resolve) => {
     const req = https.get(`${USERINFO_URL}?access_token=${accessToken}`, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
+      const chunks: Buffer[] = [];
+      res.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
       res.on('end', () => {
         try {
-          const json = JSON.parse(body);
+          const json = JSON.parse(Buffer.concat(chunks).toString('utf8'));
           resolve({ email: json.email, name: json.name });
         } catch { resolve({}); }
       });
@@ -276,11 +276,11 @@ async function refreshAccessToken(refreshToken: string): Promise<string | null> 
     };
 
     const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
+      const chunks: Buffer[] = [];
+      res.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
       res.on('end', () => {
         try {
-          const json = JSON.parse(body);
+          const json = JSON.parse(Buffer.concat(chunks).toString('utf8'));
           resolve(json.access_token || null);
         } catch { resolve(null); }
       });
@@ -306,7 +306,7 @@ export async function previewLocalAccount(existingEmails: string[]): Promise<{ e
   let accessToken: string | undefined;
   let refreshToken: string | undefined;
   let tokenExpired = false;
-  
+
   // 1. 读取 token
   try {
     const tokens = await readTokenFromDb(dbPath);
@@ -321,7 +321,7 @@ export async function previewLocalAccount(existingEmails: string[]): Promise<{ e
   if (accessToken) {
     userInfo = await getUserInfo(accessToken);
   }
-  
+
   // 3. 如果 accessToken 失效，尝试用 refreshToken 刷新
   if (!userInfo.email && refreshToken) {
     const newAccessToken = await refreshAccessToken(refreshToken);
@@ -357,8 +357,7 @@ export async function previewLocalAccount(existingEmails: string[]): Promise<{ e
     importMeta: {
       source: 'local',
       importedAt: new Date().toISOString()
-    },
-    tag: tokenExpired ? t('lrTagReauth') : undefined
+    }
   };
 
   const exists = existingEmails.some(e => e.toLowerCase() === userInfo.email!.toLowerCase());

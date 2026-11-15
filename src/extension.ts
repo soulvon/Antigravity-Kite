@@ -10,15 +10,15 @@ import { seamlessSwitch, prepareSwitchToken, pushLiveIdentityUpdate } from './se
 import { switchIdeStateIdentity, resolveIdeStateDbPathFromUserData } from './ideStateDb';
 import { readSwitchRestartResult, clearSwitchRestartResult, writeAgyActiveAccount } from './switchRestart';
 import { logInfo, logWarn, logError } from './logger';
-import { pokeGuard, startDeclarationSuppressor } from './declarationSuppressor';
+import { pokeGuard, startDeclarationSuppressor, stopDeclarationSuppressor } from './declarationSuppressor';
 import { ensureCdpGate, enableCdp } from './cdpGate';
 import { probeCdpPort } from './declarationSuppressor';
 import { t, localeBundle, getLang } from './i18n';
-import { swapIdeCredential, buildIdeCredentialBlob, syncGeminiAccountFiles } from './winCredential';
+import { swapIdeCredential, readIdeCredential, buildIdeCredentialBlob } from './winCredential';
 import { syncGeminiLocalCreds } from './geminiFiles';
 import { getSharedStorageDir } from './storage';
 import { StatusBarManager } from './statusBar';
-import { fetchUsage, checkAccountHealth, classifyAccountError } from './usageService';
+import { fetchUsage, checkAccountHealth, classifyAccountError, describeError } from './usageService';
 import { AccountHealth } from './types';
 import * as ideRuntime from './ideRuntime';
 import * as multiWindowMgr from './multiWindowManager';
@@ -208,6 +208,7 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
+  stopDeclarationSuppressor();
   accountStore.dispose();
   multiWindowMgr.dispose();
   usageTracker?.dispose();
@@ -250,7 +251,7 @@ async function refreshOneAccountUsage(
     if (!opts.batch) logPanel.pushLogPanelData(context, usageTracker);
     return snapshot;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = describeError(err);
     console.warn(`[Kite-Usage] 刷新账号 ${email} 额度失败:`, msg);
     usageErrors.set(email, msg);
     // 不清 usageCache：失败时继续展示上次成功快照，只在两端标注「缓存数据」
@@ -290,6 +291,24 @@ function persistHealthIfChanged(email: string, health: AccountHealth): void {
  * 与额度刷新分离——封禁只在推理端点现形，元数据 200 证明不了健康。
  */
 const HEALTH_PROBE_INTERVAL_MS = 60 * 60 * 1000;
+const POOL_CONCURRENCY = 3;
+
+/** 受控并发执行池（3 并发加快全池拉取与健康探针，同时避免突发 429） */
+async function runConcurrent<T>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  let idx = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (idx < items.length) {
+      const item = items[idx++];
+      await worker(item);
+    }
+  });
+  await Promise.all(workers);
+}
 
 async function backgroundProbeAllHealth(onlyStale = false) {
   console.log('[Kite-Health] 开始后台账号健康探测...');
@@ -300,7 +319,7 @@ async function backgroundProbeAllHealth(onlyStale = false) {
     const age = Date.parse(a.health.checkedAt);
     return a.health.status !== 'ok' || !Number.isFinite(age) || Date.now() - age > HEALTH_PROBE_INTERVAL_MS;
   });
-  for (const account of accounts) {
+  await runConcurrent(accounts, POOL_CONCURRENCY, async (account) => {
     try {
       const health = await checkAccountHealth(account);
       persistHealthIfChanged(account.email, health);
@@ -308,7 +327,7 @@ async function backgroundProbeAllHealth(onlyStale = false) {
       // checkAccountHealth 内部已兜底，这里只防意外抛出中断整轮
       console.warn(`[Kite-Health] 探测 ${account.email} 意外失败:`, e);
     }
-  }
+  });
   console.log('[Kite-Health] 后台账号健康探测完成。');
 }
 
@@ -322,9 +341,9 @@ async function backgroundRefreshAllUsage(context: vscode.ExtensionContext) {
     console.log('[Kite-Background] 正在执行后台静默全局额度刷新...');
     const accounts = accountStore.getAll().filter(a => !a.disabled);
     // 批量模式走统一管线（逐号分发底栏/侧栏，落盘与统计面板由本函数收口一次）
-    for (const account of accounts) {
+    await runConcurrent(accounts, POOL_CONCURRENCY, async (account) => {
       await refreshOneAccountUsage(account.email, context, { batch: true });
-    }
+    });
     saveUsageCache(context);
     logPanel.pushLogPanelData(context, usageTracker);
     console.log('[Kite-Background] 后台静默全局额度刷新完成。');
@@ -344,10 +363,10 @@ async function refreshAllUsageInteractive(context: vscode.ExtensionContext) {
   try {
     const accounts = accountStore.getAll().filter(a => !a.disabled);
     let successCount = 0;
-    for (const account of accounts) {
+    await runConcurrent(accounts, POOL_CONCURRENCY, async (account) => {
       const snap = await refreshOneAccountUsage(account.email, context, { batch: true });
       if (snap) successCount++;
-    }
+    });
     saveUsageCache(context);
     logPanel.pushLogPanelData(context, usageTracker);
     sidebarProvider?.refresh();
@@ -360,7 +379,7 @@ async function refreshAllUsageInteractive(context: vscode.ExtensionContext) {
 /** 切号防连点：调度成功后 IDE 会关闭，无需重置；调度失败时重置 */
 let switchInFlight = false;
 
-class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
+export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
   public static readonly viewType = 'antigravityKite.sidebar';
   private _view?: vscode.WebviewView;
   private _webviewReady = false;
@@ -636,7 +655,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         locale: cfg.get<string>('locale', 'auto'),
         statusBarEnabled: cfg.get<boolean>('statusBar.enabled', true),
         statusBarPosition: cfg.get<string>('statusBar.position', 'right'),
-        statusBarStyle: cfg.get<string>('statusBar.style', 'smart'),
+        statusBarStyle: cfg.get<string>('statusBar.style', 'full'),
         statusBarAccount: cfg.get<boolean>('statusBar.showAccount', true),
         statusBarModels: cfg.get<boolean>('statusBar.showModels', true),
         statusBarCredits: cfg.get<boolean>('statusBar.showCredits', true),
@@ -668,9 +687,9 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     await cfg.update('locale', nextLocale, target);
     await cfg.update('statusBar.enabled', s.statusBarEnabled !== false, target);
     const sbPosition = String(s.statusBarPosition ?? 'right');
-    const sbStyle = String(s.statusBarStyle ?? 'smart');
+    const sbStyle = String(s.statusBarStyle ?? 'full');
     await cfg.update('statusBar.position', sbPosition === 'left' ? 'left' : 'right', target);
-    await cfg.update('statusBar.style', ['smart', 'dot', 'percent', 'compact', 'dual', 'labeled', 'full'].includes(sbStyle) ? sbStyle : 'smart', target);
+    await cfg.update('statusBar.style', ['smart', 'dot', 'percent', 'compact', 'dual', 'labeled', 'full'].includes(sbStyle) ? sbStyle : 'full', target);
     await cfg.update('statusBar.showAccount', s.statusBarAccount !== false, target);
     await cfg.update('statusBar.showModels', s.statusBarModels !== false, target);
     await cfg.update('statusBar.showCredits', s.statusBarCredits !== false, target);
@@ -774,11 +793,18 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     refreshAllInFlight = true;
     try {
       const accounts = accountStore.getAll().filter(a => !a.disabled);
+      const total = accounts.length;
       let successCount = 0;
-      for (const account of accounts) {
+      let doneCount = 0;
+      if (total > 0) {
+        this._view?.webview.postMessage({ type: 'refreshProgress', done: 0, total });
+      }
+      await runConcurrent(accounts, POOL_CONCURRENCY, async (account) => {
         const snap = await refreshOneAccountUsage(account.email, this._context, { batch: true });
         if (snap) successCount++;
-      }
+        doneCount++;
+        this._view?.webview.postMessage({ type: 'refreshProgress', done: doneCount, total });
+      });
       const errorCount = accounts.length - successCount;
       saveUsageCache(this._context);
       this._pushAccounts();
@@ -811,6 +837,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     logInfo('msg.in', { type: (msg as { type?: string }).type, email: (msg as { email?: string }).email });
     switch (msg.type) {
       case 'oauthLogin':
+        this._view?.webview.postMessage({ type: 'authWait', action: 'oauth', active: true });
         try {
           const account = await startOAuth();
           accountStore.add(account);
@@ -820,10 +847,13 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
           this._refreshUsage(account.email);
         } catch (err) {
           notifyUi('error', t('loginFailed', err instanceof Error ? err.message : String(err)));
+        } finally {
+          this._view?.webview.postMessage({ type: 'authWait', action: 'oauth', active: false });
         }
         break;
 
       case 'importLocal':
+        this._view?.webview.postMessage({ type: 'authWait', action: 'local', active: true });
         try {
           const existingEmails = accountStore.getAll().map(a => a.email);
           const preview = await previewLocalAccount(existingEmails);
@@ -836,6 +866,8 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
           });
         } catch (err) {
           notifyUi('error', t('detectFailed', err instanceof Error ? err.message : String(err)));
+        } finally {
+          this._view?.webview.postMessage({ type: 'authWait', action: 'local', active: false });
         }
         break;
 
@@ -954,157 +986,155 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
             switchInFlight = true;
             logInfo('switch.start', { email: account.email });
 
-            // CDP 门控：首次切号探测调试端口；未开启则一次性引导（改快捷方式 + 重启）。
-            // 'relaunching' = IDE 正在重启，中止本次切号；ready/manual 均照常执行。
-            const gate = await ensureCdpGate(this._context);
-            logInfo('switch.gate', { result: gate });
-            if (gate === 'relaunching') {
-              switchInFlight = false;
-              break;
-            }
-
-            // token 准备：刷新失败（离线等）时回退号池存储值——IDE 启动后会用 RT 自刷新
-            // 切号必须用 RT 现场刷新出的 token（号池缓存 AT 的 scope 可能不含 aicode 权限，
-            // 写入会导致 agy 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT 后崩溃）。
-            // 刷新失败即取消切号——不做 stored-fallback，那是把 agent 搞崩的元凶。
-            let switchToken = {
-              accessToken: '',
-              refreshToken: '',
-              expiryDateSeconds: 0,
-              isGcpTos: false,
-              idToken: undefined as string | undefined,
-            };
-            const prepared = await prepareSwitchToken(account);
-            if (!prepared.ok) {
-              switchInFlight = false;
-              logWarn('switch.token.fail', { email: account.email, message: prepared.message });
-              this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('switchCancelled', prepared.message) });
-              this._view?.webview.postMessage({ type: 'switchResult', ok: false });
-              break;
-            }
-            switchToken = {
-              accessToken: prepared.token.accessToken,
-              refreshToken: prepared.token.refreshToken,
-              expiryDateSeconds: prepared.token.expiryDateSeconds,
-              isGcpTos: false,
-              idToken: prepared.token.idToken,
-            };
-            logInfo('switch.token', { source: 'refreshed', prepareOk: true });
-
-            // 构造目标凭据（AT 过期无妨：IDE 启动后用 RT 自刷新）
-            const expiryMs = switchToken.expiryDateSeconds > Math.floor(Date.now() / 1000)
-              ? switchToken.expiryDateSeconds * 1000
-              : Date.now() + 3600000;
-            const blob = buildIdeCredentialBlob({
-              email: account.email,
-              accessToken: switchToken.accessToken,
-              refreshToken: switchToken.refreshToken,
-              expiryMs,
-            });
-            logInfo('switch.cred.build', { email: account.email, expiryMs });
-
-            // ── 热切（不重启 IDE）——机制经真机实验证实 ──
-            // 1) 一次 PowerShell 完成「读旧 + 写新」：旧 blob 的 writer_id/auth_method 由脚本内部继承，
-            //    旧凭据回传后落盘成可回滚备份（省掉独立读凭据那一趟进程启动 + Add-Type 编译）
-            const cw = await swapIdeCredential(blob.blobBase64, 'antigravity');
-            logInfo('switch.hot.cred', { ok: cw.ok, error: cw.error });
-            if (!cw.ok) {
-              switchInFlight = false;
-              this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('switchCredFail', cw.error || '') });
-              this._view?.webview.postMessage({ type: 'switchResult', ok: false });
-              break;
-            }
-            if (cw.previous) {
-              try {
-                const backupPath = path.join(getSharedStorageDir(), 'credential-backup.json');
-                fs.writeFileSync(backupPath, JSON.stringify({
-                  savedAt: Date.now(),
-                  user: cw.previousUser,
-                  blob: cw.previous,
-                }, null, 2), 'utf8');
-                logInfo('switch.cred.backup', { path: backupPath, prevEmail: cw.previous.id_token_email });
-              } catch (e) {
-                logWarn('switch.cred.backup.write', e);
+            try {
+              // CDP 门控：首次切号探测调试端口；未开启则一次性引导（改快捷方式 + 重启）。
+              // 'relaunching' = IDE 正在重启，中止本次切号；ready/manual 均照常执行。
+              const gate = await ensureCdpGate(this._context);
+              logInfo('switch.gate', { result: gate });
+              if (gate === 'relaunching') {
+                this._view?.webview.postMessage({ type: 'switchResult', ok: false });
+                break;
               }
-            } else {
-              logWarn('switch.cred.backup.unavailable', { reason: 'previous blob missing' });
-            }
 
-            // 2) 状态库（agent/模型一致性）
-            const userDataDir = path.resolve(this._context.globalStorageUri.fsPath, '..', '..', '..');
-            const dbRes = switchIdeStateIdentity(account.email, {
-              accessToken: switchToken.accessToken,
-              refreshToken: switchToken.refreshToken,
-              expiryDateSeconds: switchToken.expiryDateSeconds,
-              isGcpTos: false,
-              idToken: switchToken.idToken,
-            }, { dbPath: resolveIdeStateDbPathFromUserData(userDataDir) });
-            logInfo('switch.hot.db', { dbWritten: dbRes.dbWritten, error: dbRes.error });
+              // 切号优先复用 Kite 自己以 RT 刷出且 SHA256 指纹未变的充裕有效期 token；
+              // 首次或外部导入号仍必须现场在线刷新，防缺失 aicode 权限导致 agy 403 崩溃。
+              // Phase A：并发准备 token、预热原生 agy 重载器，并在 Windows 下并发预读旧凭据（耗时藏进 OAuth 往返）
+              const [prepared, , preReadCred] = await Promise.all([
+                prepareSwitchToken(account),
+                ideRuntime.prepareAgyReload(),
+                process.platform === 'win32'
+                  ? readIdeCredential()
+                  : Promise.resolve(undefined),
+              ]);
+              if (!prepared.ok) {
+                logWarn('switch.token.fail', { email: account.email, message: prepared.message });
+                this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('switchCancelled', prepared.message) });
+                this._view?.webview.postMessage({ type: 'switchResult', ok: false });
+                break;
+              }
+              const switchToken = {
+                accessToken: prepared.token.accessToken,
+                refreshToken: prepared.token.refreshToken,
+                expiryDateSeconds: prepared.token.expiryDateSeconds,
+                isGcpTos: false,
+                idToken: prepared.token.idToken,
+              };
+              logInfo('switch.token', {
+                source: prepared.token.refreshed ? 'refreshed' : 'kite-cache',
+                prepareOk: true,
+              });
 
-            // 3) agy 指针 + gemini 账号文件
-            const agyPtr = writeAgyActiveAccount(account.email);
-            const gs = syncGeminiAccountFiles({
-              email: account.email,
-              accessToken: switchToken.accessToken,
-              refreshToken: switchToken.refreshToken,
-              expiryMs,
-            });
-            logInfo('switch.hot.files', { agyPtr: agyPtr.ok, gemini: gs.ok, error: agyPtr.error || gs.error });
+              const expiryMs = switchToken.expiryDateSeconds > Math.floor(Date.now() / 1000)
+                ? switchToken.expiryDateSeconds * 1000
+                : Date.now() + 3600000;
 
-            // 3.5) ~/.gemini 两处凭据文件同步（可关：AgyHop/Cockpit 用户自行管理时）
-            let geminiLocal: { ok: boolean; error?: string } = { ok: true };
-            if (vscode.workspace.getConfiguration('antigravityKite').get<boolean>('switch.syncGeminiFiles', true)) {
-              geminiLocal = syncGeminiLocalCreds({
-                email: account.email,
+              // ── 热切（不重启 IDE）──
+              // 1) Windows 凭据管理器写入（命中 Phase A 预读结果，只跑一次原生 write ~100ms）
+              if (process.platform === 'win32') {
+                const blob = buildIdeCredentialBlob({
+                  email: account.email,
+                  accessToken: switchToken.accessToken,
+                  refreshToken: switchToken.refreshToken,
+                  expiryMs,
+                });
+                logInfo('switch.cred.build', { email: account.email, expiryMs });
+                const cw = await swapIdeCredential(blob.blobBase64, 'antigravity', undefined, preReadCred);
+                logInfo('switch.hot.cred', { ok: cw.ok, error: cw.error });
+                if (!cw.ok) {
+                  this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('switchCredFail', cw.error || '') });
+                  this._view?.webview.postMessage({ type: 'switchResult', ok: false });
+                  break;
+                }
+                if (cw.previous) {
+                  try {
+                    const backupPath = path.join(getSharedStorageDir(), 'credential-backup.json');
+                    fs.writeFileSync(backupPath, JSON.stringify({
+                      savedAt: Date.now(),
+                      user: cw.previousUser,
+                      blob: cw.previous,
+                    }, null, 2), 'utf8');
+                    logInfo('switch.cred.backup', { path: backupPath, prevEmail: cw.previous.id_token_email });
+                  } catch (e) {
+                    logWarn('switch.cred.backup.write', e);
+                  }
+                } else {
+                  logWarn('switch.cred.backup.unavailable', { reason: 'previous blob missing' });
+                }
+              } else {
+                logInfo('switch.hot.cred.skip', { platform: process.platform });
+              }
+
+              // 2) 状态库（agent/模型一致性）
+              const userDataDir = path.resolve(this._context.globalStorageUri.fsPath, '..', '..', '..');
+              const dbRes = switchIdeStateIdentity(account.email, {
                 accessToken: switchToken.accessToken,
                 refreshToken: switchToken.refreshToken,
-                expiryMs,
+                expiryDateSeconds: switchToken.expiryDateSeconds,
+                isGcpTos: false,
+                idToken: switchToken.idToken,
+              }, { dbPath: resolveIdeStateDbPathFromUserData(userDataDir) });
+              logInfo('switch.hot.db', { dbWritten: dbRes.dbWritten, error: dbRes.error });
+
+              // 3) agy 指针 + ~/.gemini 凭据文件（受 switch.syncGeminiFiles 控制，原子写入）
+              const agyPtr = writeAgyActiveAccount(account.email);
+              let geminiLocal: { ok: boolean; error?: string } = { ok: true };
+              if (vscode.workspace.getConfiguration('antigravityKite').get<boolean>('switch.syncGeminiFiles', true)) {
+                geminiLocal = syncGeminiLocalCreds({
+                  email: account.email,
+                  accessToken: switchToken.accessToken,
+                  refreshToken: switchToken.refreshToken,
+                  expiryMs,
+                });
+              } else {
+                geminiLocal = { ok: true, error: 'skipped (setting off)' };
+              }
+              logInfo('switch.hot.files', { agyPtr: agyPtr.ok, gemini: geminiLocal.ok, error: agyPtr.error || geminiLocal.error });
+
+              // 4) 会话层 token 热切与 agent 引擎重启互不依赖：并行执行，省一段串行等待
+              const [hot, agyReload] = await Promise.all([
+                seamlessSwitch(account, prepared.token),
+                ideRuntime.killAgyEngine(),
+              ]);
+              logInfo('switch.hot.session', { success: hot.success, message: hot.message });
+              logInfo('switch.hot.agyReload', { killed: agyReload.killed, agyWasRunning: agyReload.agyWasRunning, error: agyReload.error });
+
+              // 5) 总线身份推送（依赖会话层已写入）
+              const identity = await pushLiveIdentityUpdate(account.email);
+              logInfo('switch.hot.identity', { ok: identity.ok, error: identity.error });
+
+              // 5.5) 弹窗守护立即补扫：agy 重建/换端口后的新表面马上进守护
+              pokeGuard();
+
+              await this._context.globalState.update('currentEmail', msg.email);
+              usageTracker.recordSwitch(msg.email);
+              this._pushAccounts();
+              this._view?.webview.postMessage({ type: 'switchResult', ok: true });
+              logPanel.pushLogPanelData(this._context, usageTracker);
+              this._refreshUsage(msg.email);
+
+              const notes: string[] = [];
+              if (!agyPtr.ok) notes.push(t('switchAgyPtrFail', agyPtr.error || ''));
+              if (!geminiLocal.ok && geminiLocal.error) notes.push(t('switchGeminiFail', geminiLocal.error));
+              if (agyReload.error) notes.push(agyReload.error);
+              if (hot.success && !identity.ok) notes.push(t('switchMenuAlignLater'));
+              // 任何一条降级说明（含 agy 引擎未重载）都必须是 warning
+              const degraded = notes.length > 0;
+              if (!degraded) {
+                notes.push(t('switchDone', account.email));
+              }
+              this._view?.webview.postMessage({
+                type: 'toast',
+                status: degraded ? 'warning' : 'success',
+                message: notes.join('；')
               });
-            } else {
-              geminiLocal = { ok: true, error: 'skipped (setting off)' };
+            } catch (err) {
+              const errMsg = describeError(err);
+              logError('switch.unexpected', { email: account.email, error: errMsg });
+              this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('switchCancelled', errMsg) });
+              this._view?.webview.postMessage({ type: 'switchResult', ok: false });
+            } finally {
+              switchInFlight = false;
             }
-            logInfo('switch.hot.gemini', { ok: geminiLocal.ok, error: geminiLocal.error });
-
-            // 4) 会话层 token 热切与 agent 引擎重启互不依赖：并行执行，省一段串行等待
-            const [hot, agyReload] = await Promise.all([
-              seamlessSwitch(account, prepared.token),
-              ideRuntime.killAgyEngine(),
-            ]);
-            logInfo('switch.hot.session', { success: hot.success, message: hot.message });
-            logInfo('switch.hot.agyReload', { killed: agyReload.killed, agyWasRunning: agyReload.agyWasRunning, error: agyReload.error });
-
-            // 5) 总线身份推送（依赖会话层已写入）
-            const identity = await pushLiveIdentityUpdate(account.email);
-            logInfo('switch.hot.identity', { ok: identity.ok, error: identity.error });
-
-            // 5.5) 弹窗守护立即补扫：agy 重建/换端口后的新表面马上进守护，
-            // 弹窗一出现即被处理，不再依赖心跳自然轮询的数秒空窗
-            pokeGuard();
-
-            await this._context.globalState.update('currentEmail', msg.email);
-            usageTracker.recordSwitch(msg.email);
-            this._pushAccounts();
-            this._view?.webview.postMessage({ type: 'switchResult', ok: true });
-            logPanel.pushLogPanelData(this._context, usageTracker);
-            this._refreshUsage(msg.email);
-            switchInFlight = false;
-
-            const notes: string[] = [];
-            if (!agyPtr.ok) notes.push(t('switchAgyPtrFail', agyPtr.error || ''));
-            if (gs.error) notes.push(t('switchGeminiFail', gs.error));
-            if (agyReload.error) notes.push(agyReload.error);
-            if (hot.success && !identity.ok) notes.push(t('switchMenuAlignLater'));
-            // 任何一条降级说明（含 agy 引擎未重载）都必须是 warning，
-            // 否则单条失败会被下面的 success 分支包装成「切号成功」的假象
-            const degraded = notes.length > 0;
-            if (!degraded) {
-              notes.push(t('switchDone', account.email));
-            }
-            this._view?.webview.postMessage({
-              type: 'toast',
-              status: degraded ? 'warning' : 'success',
-              message: notes.join('；')
-            });
           }
         }
         break;
@@ -1199,6 +1229,25 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
           this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('tagsUpdated', msg.emails.length) });
         }
         break;
+
+      case 'deleteTag': {
+        const tag = typeof msg.tag === 'string' ? msg.tag.trim() : '';
+        if (tag) {
+          const affected = accountStore.removeTagEverywhere(tag);
+          const clearedWindows = multiWindowMgr.clearAssignedTag(tag);
+          const savedColors = this._context.globalState.get<Record<string, string>>('tagColors');
+          if (savedColors && Object.prototype.hasOwnProperty.call(savedColors, tag)) {
+            const nextColors = { ...savedColors };
+            delete nextColors[tag];
+            this._context.globalState.update('tagColors', nextColors);
+            this._view?.webview.postMessage({ type: 'tagColorsSync', colors: nextColors });
+          }
+          this._pushAccounts();
+          if (clearedWindows > 0) await this.pushMultiWindows();
+          this._view?.webview.postMessage({ type: 'toast', status: 'success', message: t('tagDeleted', tag, affected) });
+        }
+        break;
+      }
 
       case 'batchDelete':
         if (Array.isArray(msg.emails)) {
@@ -1388,7 +1437,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data: blob:; script-src ${webview.cspSource} 'unsafe-inline'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource} data:;">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="${cssUri}?v=${Date.now()}">
+<link rel="stylesheet" href="${cssUri}">
 </head>
 <body>
 <div class="app">
@@ -1442,7 +1491,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         </div>
         <select class="group-select" id="sortSelect" data-i18n-title="sortBy" title="排序方式">
           <option value="default" data-i18n="sortDefault">默认排序</option>
-          <option value="recommend" data-i18n="sortRecommend">推荐</option>
+          <option value="recommend" selected data-i18n="sortRecommend">推荐</option>
           <option value="email" data-i18n="sortEmail">邮箱 A-Z</option>
           <option value="time" data-i18n="sortTime">导入时间</option>
         </select>
@@ -1454,6 +1503,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         </button>
         <button class="toolbar-icon-btn" id="refreshAllBtn" data-i18n-title="refreshAll" title="刷新全部">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+          <span class="refresh-progress-badge" id="refreshProgressBadge" hidden></span>
         </button>
         <button class="toolbar-icon-btn" id="exportAccountsBtn" data-i18n-title="exportAll" title="导出账号设置">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -1462,12 +1512,6 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
           <svg class="privacy-eye" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
         </button>
         <div style="flex:1"></div>
-        <select class="page-size-select" id="pageSizeSelect" data-i18n-title="pageSize" title="每页显示">
-          <option value="10" data-i18n="pageSize10">10/页</option>
-          <option value="20" selected data-i18n="pageSize20">20/页</option>
-          <option value="50" data-i18n="pageSize50">50/页</option>
-          <option value="0" data-i18n="showAll">全部</option>
-        </select>
         <button class="group-select-mode-btn" id="selectModeBtn" data-i18n-title="selectModeTitle" title="多选模式">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
           <span data-i18n="selectMode">多选</span>
@@ -1536,9 +1580,19 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         </div>
       </div>
       <!-- 账号网格 -->
+      <div class="active-filter-bar" id="activeFilterBar" hidden></div>
+      <div class="auth-wait-bar" id="authWaitBar" hidden></div>
       <div id="accountGrid" class="account-grid"></div>
       <!-- 分页 -->
-      <div id="pagination" class="pagination"></div>
+      <div class="pagination-row" id="paginationRow" hidden>
+        <select class="page-size-select" id="pageSizeSelect" data-i18n-title="pageSize" title="每页显示">
+          <option value="10" data-i18n="pageSize10">10/页</option>
+          <option value="20" selected data-i18n="pageSize20">20/页</option>
+          <option value="50" data-i18n="pageSize50">50/页</option>
+          <option value="0" data-i18n="showAll">全部</option>
+        </select>
+        <div id="pagination" class="pagination"></div>
+      </div>
       <div id="emptyState" class="empty-card">
         <div class="empty-title" data-i18n="emptyTitle">还没有账号</div>
         <div class="empty-sub" data-i18n="emptySub">点击上方「添加账号」按钮</div>
@@ -1562,7 +1616,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
         <button id="tagEditAddBtn" style="flex:0 0 auto;padding:5px 14px;font-size:12px;white-space:nowrap;border-radius:6px;border:1px solid var(--accent,#10b981);background:var(--accent,#10b981);color:#fff;cursor:pointer" data-i18n="add">添加</button>
       </div>
       <div style="margin-top:8px">
-        <label style="font-size:11px;opacity:0.7" data-i18n="existingTags">已有标签（点击添加/移除）</label>
+        <label style="font-size:11px;opacity:0.7" data-i18n="existingTags">已有标签（点击选中/取消，× 永久删除）</label>
         <div id="tagEditExisting" class="tag-edit-existing" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;max-height:120px;overflow-y:auto"></div>
       </div>
       <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
@@ -1781,7 +1835,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
             <span class="v2-param-unit" data-i18n="unitMin">分钟</span>
           </div>
         </div>
-        <div class="settings-hint" data-i18n="quotaPoolHint">驱动号池卡片、统计面板与底栏的全量刷新（保存即时生效）。底栏"当前号"另有短周期增量刷新，在状态栏组单独配置。</div>
+        <div class="settings-hint" data-i18n="quotaPoolHint">驱动号池卡片、统计面板与底栏的全量刷新（修改即时生效）。底栏“当前号”另有短周期增量刷新，在状态栏组单独配置。</div>
       </div>
 
       <div class="settings-group">
@@ -1839,8 +1893,8 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
     <div class="modal-footer">
       <button class="modal-cancel-btn" id="settingsReset" type="button" data-i18n="resetDefaults">恢复默认</button>
       <div style="display:flex;gap:8px;">
-        <button class="modal-cancel-btn" id="settingsCancel" type="button" data-i18n="cancel">取消</button>
-        <button class="primary" id="settingsSave" type="button" style="min-width:80px;" data-i18n="saveSettings">保存设置</button>
+        <button class="modal-cancel-btn" id="settingsCancel" type="button" data-i18n="cancel" hidden>取消</button>
+        <button class="primary" id="settingsSave" type="button" style="min-width:80px;" data-i18n="closeSettings">关闭</button>
       </div>
     </div>
   </div>
@@ -1890,7 +1944,8 @@ let currentEmail = '';
 let searchTerm = '';
 let activeFilter = 'all'; // all, active, disabled
 let filterTags = new Set(); // 多选标签过滤
-let sortBy = 'default';
+let sortBy = 'recommend';
+let sortDir = 'desc';
 let pageSize = 20;
 let currentPage = 1;
 let privacyMode = false;
@@ -1907,8 +1962,37 @@ let selectedMultiWindowId = null;
 // ── 标签颜色系统 ──
 const TAG_PALETTE = ['#8b5cf6','#3b82f6','#10b981','#f59e0b','#ef4444','#ec4899','#06b6d4','#84cc16','#f97316','#6366f1'];
 try { tagColors = JSON.parse(localStorage.getItem('kite-tag-colors') || '{}'); } catch(e) { tagColors = {}; }
-// 恢复过滤器状态
-try { const st = vscode.getState() || {}; if (st._filterTags) filterTags = new Set(st._filterTags); } catch {}
+// 恢复过滤器与视图排序/分页偏好
+try {
+  const st = vscode.getState() || {};
+  if (st._filterTags) filterTags = new Set(st._filterTags);
+  if (st._sortBy && ['default', 'recommend', 'email', 'time'].includes(st._sortBy)) sortBy = st._sortBy;
+  if (st._sortDir === 'asc' || st._sortDir === 'desc') sortDir = st._sortDir;
+  if (typeof st._pageSize === 'number' && [0, 10, 20, 50].includes(st._pageSize)) pageSize = st._pageSize;
+} catch {}
+
+function persistViewPrefs() {
+  try {
+    const st = vscode.getState() || {};
+    st._sortBy = sortBy;
+    st._sortDir = sortDir;
+    st._pageSize = pageSize;
+    vscode.setState(st);
+  } catch {}
+}
+function applySortDirIcon() {
+  const btn = document.getElementById('sortDirectionBtn');
+  if (!btn) return;
+  const wrap = btn.querySelector('svg');
+  if (wrap) wrap.style.transform = sortDir === 'asc' ? 'rotate(180deg)' : 'rotate(0deg)';
+}
+(function syncInitialViewPrefs() {
+  const sEl = document.getElementById('sortSelect');
+  if (sEl) sEl.value = sortBy;
+  const pEl = document.getElementById('pageSizeSelect');
+  if (pEl) pEl.value = String(pageSize);
+  applySortDirIcon();
+})();
 
 function saveTagColors() {
   try { localStorage.setItem('kite-tag-colors', JSON.stringify(tagColors)); } catch(e) {}
@@ -1966,8 +2050,8 @@ function formatResetTime(isoTime) {
 }
 
 function pctClass(pct) {
-  if (pct <= 10) return 'is-danger';
-  if (pct <= 30) return 'is-warn';
+  if (pct < 10) return 'is-danger';
+  if (pct < 30) return 'is-warn';
   if (pct < 50) return 'is-info';
   return 'is-ok';
 }
@@ -2085,6 +2169,7 @@ document.getElementById('searchClear').onclick = () => {
 document.getElementById('sortSelect').onchange = (e) => {
   sortBy = e.target.value;
   currentPage = 1;
+  persistViewPrefs();
   renderAccounts();
 };
 
@@ -2092,6 +2177,7 @@ document.getElementById('sortSelect').onchange = (e) => {
 document.getElementById('pageSizeSelect').onchange = (e) => {
   pageSize = parseInt(e.target.value) || 0;
   currentPage = 1;
+  persistViewPrefs();
   renderAccounts();
 };
 
@@ -2134,15 +2220,11 @@ const _exportBtn = document.getElementById('exportAccountsBtn');
 if (_exportBtn) _exportBtn.onclick = () => vscode.postMessage({ type: 'exportAccounts' });
 
 // 排序方向
-let sortDir = 'desc';
 const _sortDirBtn = document.getElementById('sortDirectionBtn');
 if (_sortDirBtn) _sortDirBtn.onclick = () => {
   sortDir = sortDir === 'desc' ? 'asc' : 'desc';
-  const svg = _sortDirBtn.querySelector('svg polyline');
-  if (svg) {
-    const wrap = _sortDirBtn.querySelector('svg');
-    if (wrap) wrap.style.transform = sortDir === 'asc' ? 'rotate(180deg)' : 'rotate(0deg)';
-  }
+  applySortDirIcon();
+  persistViewPrefs();
   currentPage = 1;
   renderAccounts();
 };
@@ -2217,17 +2299,97 @@ if (_filterTrigger && _filterDropdown) {
     renderAccounts();
   });
 }
-if (_filterClearBtn) _filterClearBtn.onclick = () => {
-  // 清空全部筛选条件
+function clearAllFilters() {
+  searchTerm = '';
+  const searchEl = document.getElementById('searchInput');
+  if (searchEl) searchEl.value = '';
+  const clearEl = document.getElementById('searchClear');
+  if (clearEl) clearEl.hidden = true;
   activeFilter = 'all';
   filterTags.clear();
   filterPlans.clear();
+  persistTagFilters();
+  renderFilterDropdown();
+  updateFilterTriggerLabel();
+  currentPage = 1;
+  renderAccounts();
+}
+function toggleTagFilter(tag) {
+  if (!tag) return;
+  if (filterTags.has(tag)) filterTags.delete(tag);
+  else filterTags.add(tag);
+  persistTagFilters();
+  currentPage = 1;
+  updateFilterTriggerLabel();
+  renderAccounts();
+}
+function renderActiveFilterBar() {
+  const bar = document.getElementById('activeFilterBar');
+  if (!bar) return;
+  const pills = [];
+  if (searchTerm) {
+    pills.push('<button type="button" class="active-filter-pill" data-clear="search">' + escHtml(searchTerm) + '<span class="pill-x">×</span></button>');
+  }
+  if (activeFilter !== 'all') {
+    const statusTxt = activeFilter === 'active' ? tl('active') : tl('disabled');
+    pills.push('<button type="button" class="active-filter-pill" data-clear="status">' + escHtml(statusTxt) + '<span class="pill-x">×</span></button>');
+  }
+  filterPlans.forEach(p => {
+    pills.push('<button type="button" class="active-filter-pill" data-clear="plan" data-val="' + attrEsc(p) + '">' + escHtml(planTierLabel(p)) + '<span class="pill-x">×</span></button>');
+  });
+  filterTags.forEach(t => {
+    pills.push('<button type="button" class="active-filter-pill" data-clear="tag" data-val="' + attrEsc(t) + '">' + escHtml(t) + '<span class="pill-x">×</span></button>');
+  });
+  if (pills.length === 0) {
+    bar.hidden = true;
+    bar.innerHTML = '';
+    return;
+  }
+  bar.hidden = false;
+  bar.innerHTML = '<span class="active-filter-label">' + escHtml(tl('activeFilters')) + '</span>'
+    + pills.join('')
+    + '<button type="button" class="active-filter-clear" id="activeFilterClearBtn">' + escHtml(tl('clearFilterShort')) + '</button>';
+  bar.querySelectorAll('.active-filter-pill').forEach(btn => {
+    btn.onclick = () => {
+      const kind = btn.dataset.clear;
+      const val = btn.dataset.val;
+      if (kind === 'search') {
+        searchTerm = '';
+        const searchEl = document.getElementById('searchInput');
+        if (searchEl) searchEl.value = '';
+        const clearEl = document.getElementById('searchClear');
+        if (clearEl) clearEl.hidden = true;
+      } else if (kind === 'status') {
+        activeFilter = 'all';
+      } else if (kind === 'plan' && val) {
+        filterPlans.delete(val);
+      } else if (kind === 'tag' && val) {
+        filterTags.delete(val);
+        persistTagFilters();
+      }
+      currentPage = 1;
+      renderFilterDropdown();
+      updateFilterTriggerLabel();
+      renderAccounts();
+    };
+  });
+  const clearAllBtn = document.getElementById('activeFilterClearBtn');
+  if (clearAllBtn) clearAllBtn.onclick = clearAllFilters;
+}
+if (_filterClearBtn) _filterClearBtn.onclick = () => {
+  // 清空全部筛选条件（同步持久化标签过滤态）
+  activeFilter = 'all';
+  filterTags.clear();
+  filterPlans.clear();
+  persistTagFilters();
   renderFilterDropdown();
   updateFilterTriggerLabel();
   currentPage = 1;
   renderAccounts();
   if (_filterDropdown) _filterDropdown.hidden = true;
 };
+// 若从 vscode.getState() 恢复了标签过滤态，首刷时即对齐筛选按钮计数显示
+updateFilterTriggerLabel();
 
 // ── 多选模式 ──
 document.getElementById('selectModeBtn').onclick = () => {
@@ -2247,9 +2409,16 @@ function updateBatchCount() {
   if (allCb) allCb.checked = visible.length > 0 && visible.every(a => selectedEmails.has(a.email));
 }
 
+function accountMatchesSearch(a, term) {
+  if (!term) return true;
+  if ((a.email || '').toLowerCase().includes(term)) return true;
+  if ((a.name || '').toLowerCase().includes(term)) return true;
+  return getAccTags(a).some(t => t.toLowerCase().includes(term));
+}
+
 function getVisibleAccounts() {
   let list = accounts.slice();
-  if (searchTerm) list = list.filter(a => a.email.toLowerCase().includes(searchTerm));
+  if (searchTerm) list = list.filter(a => accountMatchesSearch(a, searchTerm));
   if (activeFilter === 'active') list = list.filter(a => !a.disabled);
   else if (activeFilter === 'disabled') list = list.filter(a => a.disabled);
   if (filterTags.size > 0) {
@@ -2329,39 +2498,6 @@ if (_batchCancelBtn) _batchCancelBtn.onclick = () => {
   renderAccounts();
 };
 
-// ── 标签颜色选择器 ──
-function openTagColorPicker(tag, anchorEl) {
-  const existing = document.getElementById('tagColorPicker');
-  if (existing) existing.remove();
-  const picker = document.createElement('div');
-  picker.id = 'tagColorPicker';
-  picker.className = 'tag-color-picker';
-  const currentColor = getTagColor(tag);
-  picker.innerHTML = '<div class="tag-color-picker-title">' + tl('tagColorTitle', tag) + '</div>'
-    + '<div class="tag-color-picker-grid">'
-    + TAG_PALETTE.map(c => '<span class="tag-color-dot' + (c === currentColor ? ' is-active' : '') + '" data-color="' + c + '" style="background:' + c + '"></span>').join('')
-    + '</div>'
-    + '<div class="tag-color-picker-custom"><input type="color" class="tag-color-input" value="' + currentColor + '"><span class="tag-color-reset" title="' + tl('colorResetTitle') + '">↺</span></div>';
-  const rect = anchorEl.getBoundingClientRect();
-  picker.style.position = 'fixed';
-  picker.style.left = rect.left + 'px';
-  picker.style.top = (rect.bottom + 4) + 'px';
-  picker.style.zIndex = '9999';
-  document.body.appendChild(picker);
-  function applyColorChange() { renderAccounts(); }
-  picker.querySelectorAll('.tag-color-dot').forEach(dot => {
-    dot.addEventListener('click', () => { tagColors[tag] = dot.dataset.color; saveTagColors(); picker.remove(); applyColorChange(); });
-  });
-  const colorInput = picker.querySelector('.tag-color-input');
-  colorInput.addEventListener('input', () => { tagColors[tag] = colorInput.value; saveTagColors(); applyColorChange(); });
-  picker.querySelector('.tag-color-reset').addEventListener('click', () => { delete tagColors[tag]; saveTagColors(); picker.remove(); applyColorChange(); });
-  setTimeout(() => {
-    document.addEventListener('click', function closePicker(e) {
-      if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener('click', closePicker); }
-    });
-  }, 0);
-}
-
 // ── 标签编辑弹窗 ──
 function openTagEditModal(email) {
   tagEditMode = 'edit';
@@ -2397,31 +2533,67 @@ function renderTagEditUI() {
     selectedEl.innerHTML = '<span style="color:var(--muted);font-size:11px">' + tl('noTags') + '</span>';
   } else {
     selectedEl.innerHTML = tagEditPendingTags.map(t => {
-      const tc = getTagColor(t);
-      return '<span class="tag-edit-chip" style="background:' + tc + '18;border:1px solid ' + tc + '60;color:' + tc + ';padding:2px 10px;border-radius:10px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:4px" data-tag="' + escHtml(t) + '"><span class="tag-edit-color-dot" data-tag="' + escHtml(t) + '" style="width:10px;height:10px;border-radius:50%;background:' + tc + ';cursor:pointer;flex-shrink:0;border:2px solid #fff;box-shadow:0 0 0 1px ' + tc + '" title="' + tl('changeColor') + '"></span>' + escHtml(t) + ' <span style="opacity:0.5;font-size:13px;margin-left:2px" class="tag-edit-remove">×</span></span>';
+      return '<span class="tag-edit-chip" data-tag="' + attrEsc(t) + '">' + escHtml(t) + '<span class="tag-edit-remove">×</span></span>';
     }).join('');
   }
   selectedEl.querySelectorAll('.tag-edit-chip').forEach(chip => {
     const removeBtn = chip.querySelector('.tag-edit-remove');
     if (removeBtn) removeBtn.addEventListener('click', (e) => { e.stopPropagation(); tagEditPendingTags = tagEditPendingTags.filter(x => x !== chip.dataset.tag); renderTagEditUI(); });
-    const colorDot = chip.querySelector('.tag-edit-color-dot');
-    if (colorDot) colorDot.addEventListener('click', (e) => { e.stopPropagation(); openTagColorPicker(colorDot.dataset.tag, colorDot); });
   });
   const allTags = getTagList();
   const pending = new Set(tagEditPendingTags);
   existingEl.innerHTML = allTags.map(t => {
-    const tc = getTagColor(t);
     const selected = pending.has(t);
-    return '<span class="tag-edit-opt" style="padding:2px 8px;border-radius:10px;font-size:11px;cursor:pointer;display:inline-flex;align-items:center;gap:4px;border:1px solid ' + tc + '60;background:' + (selected ? tc : tc + '20') + ';color:' + (selected ? '#fff' : tc) + '" data-tag="' + escHtml(t) + '"><span class="tag-edit-color-dot" data-tag="' + escHtml(t) + '" style="width:10px;height:10px;border-radius:50%;background:' + (selected ? '#fff' : tc) + ';cursor:pointer;flex-shrink:0;border:1px solid ' + (selected ? '#fff8' : tc + '80') + '" title="' + tl('changeColor') + '"></span>' + escHtml(t) + '</span>';
+    return '<span class="tag-edit-opt' + (selected ? ' is-selected' : '') + '" data-tag="' + attrEsc(t) + '" role="button" tabindex="0">'
+      + '<span class="tag-edit-opt-label">' + escHtml(t) + '</span>'
+      + '<button type="button" class="tag-edit-opt-del" data-tag="' + attrEsc(t) + '" title="' + attrEsc(tl('deleteTagTitle')) + '" aria-label="' + attrEsc(tl('deleteTagTitle')) + '">×</button>'
+      + '</span>';
   }).join('') || '<span style="color:var(--muted);font-size:11px">' + tl('noTags') + '</span>';
   existingEl.querySelectorAll('.tag-edit-opt').forEach(opt => {
-    const colorDot = opt.querySelector('.tag-edit-color-dot');
-    if (colorDot) colorDot.addEventListener('click', (e) => { e.stopPropagation(); openTagColorPicker(colorDot.dataset.tag, colorDot); });
-    opt.addEventListener('click', () => {
+    const toggleOpt = () => {
       const t = opt.dataset.tag;
       if (tagEditPendingTags.includes(t)) tagEditPendingTags = tagEditPendingTags.filter(x => x !== t);
       else tagEditPendingTags.push(t);
       renderTagEditUI();
+    };
+    opt.addEventListener('click', toggleOpt);
+    opt.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggleOpt();
+      }
+    });
+  });
+  existingEl.querySelectorAll('.tag-edit-opt-del').forEach(delBtn => {
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tag = delBtn.dataset.tag;
+      if (!tag) return;
+      const affected = accounts.filter(a => getAccTags(a).includes(tag)).length;
+      showConfirm(tl('confirmDeleteTag', tag, affected), {
+        title: tl('deleteTagTitle'),
+        okText: tl('deleteTagBtn'),
+        onConfirm: () => {
+          tagEditPendingTags = tagEditPendingTags.filter(x => x !== tag);
+          if (filterTags.has(tag)) {
+            filterTags.delete(tag);
+            persistTagFilters();
+            renderFilterDropdown();
+            updateFilterTriggerLabel();
+          }
+          if (tagColors && Object.prototype.hasOwnProperty.call(tagColors, tag)) {
+            delete tagColors[tag];
+            saveTagColors();
+          }
+          accounts.forEach(a => {
+            if (Array.isArray(a.tags)) a.tags = a.tags.filter(x => x !== tag);
+            if (a.tag === tag) delete a.tag;
+          });
+          renderTagEditUI();
+          renderAccounts();
+          vscode.postMessage({ type: 'deleteTag', tag });
+        }
+      });
     });
   });
 }
@@ -2431,10 +2603,6 @@ function addTagFromInput() {
   const newTag = input.value.trim();
   if (!newTag) return;
   if (!tagEditPendingTags.includes(newTag)) {
-    if (!tagColors[newTag] && !getTagList().includes(newTag)) {
-      tagColors[newTag] = TAG_PALETTE[Math.floor(Math.random() * TAG_PALETTE.length)];
-      saveTagColors();
-    }
     tagEditPendingTags.push(newTag);
     renderTagEditUI();
   }
@@ -2505,6 +2673,21 @@ window.addEventListener('message', e => {
       }
       try { const st = vscode.getState() || {}; st._privacy = privacyMode; vscode.setState(st); } catch (e) {}
     }
+    // 同步清理已不在账号池中存在的筛选标签（例如自愈或全局删除后）
+    const validTagSet = new Set(getTagList());
+    let filterTagChanged = false;
+    for (const ft of [...filterTags]) {
+      if (!validTagSet.has(ft)) { filterTags.delete(ft); filterTagChanged = true; }
+    }
+    if (filterTagChanged) {
+      persistTagFilters();
+      renderFilterDropdown();
+      updateFilterTriggerLabel();
+    }
+    const tagEditOv = document.getElementById('tagEditOverlay');
+    if (tagEditOv && !tagEditOv.hidden) {
+      renderTagEditUI();
+    }
     renderAccounts();
     renderMultiWindows();
     updateSummary();
@@ -2563,16 +2746,34 @@ window.addEventListener('message', e => {
     // 底栏 QuickPick"打开设置"入口：聚焦侧栏后弹出设置模态框
     openSettingsModal();
   }
+  if (msg.type === 'authWait') {
+    setAuthWaitBar(msg.action, !!msg.active);
+  }
   if (msg.type === 'switchResult') {
-    switchingEmail = null;
+    clearSwitchingState();
     renderAccounts();
   }
   if (msg.type === 'cdpStatus') {
     renderCdpStatus(msg);
   }
+  if (msg.type === 'refreshProgress') {
+    const badge = document.getElementById('refreshProgressBadge');
+    const btn = document.getElementById('refreshAllBtn');
+    const total = Number(msg.total) || 0;
+    const done = Number(msg.done) || 0;
+    if (badge && btn && total > 0) {
+      badge.textContent = done + '/' + total;
+      badge.hidden = false;
+      btn.classList.add('has-progress');
+    }
+  }
   if (msg.type === 'refreshDone') {
     if (msg.scope === 'all') {
       setRefreshSpinning(REFRESH_SPIN_SELECTOR, false);
+      const badge = document.getElementById('refreshProgressBadge');
+      const btn = document.getElementById('refreshAllBtn');
+      if (badge) { badge.hidden = true; badge.textContent = ''; }
+      if (btn) btn.classList.remove('has-progress');
     } else {
       stopRefreshSpin(document.getElementById('refreshAllBtn'));
       // 用 dataset 比较而不是拼选择器：邮箱里的特殊字符不会破坏 CSS 选择器
@@ -2647,7 +2848,33 @@ const TOAST_ICONS = {
   warning: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="6.5"/><line x1="8" y1="5" x2="8" y2="9" stroke-linecap="round"/><circle cx="8" cy="11.5" r="0.6" fill="currentColor" stroke="none"/></svg>',
   info: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="6.5"/><line x1="8" y1="11.5" x2="8" y2="7.5" stroke-linecap="round"/><circle cx="8" cy="4.8" r="0.6" fill="currentColor" stroke="none"/></svg>'
 };
-function showToast(message, type = 'info', duration = 3000, raw = false) {
+let authWaitTimer = null;
+let authWaitStartedAt = 0;
+function setAuthWaitBar(action, active) {
+  const bar = document.getElementById('authWaitBar');
+  if (!bar) return;
+  if (authWaitTimer) { clearInterval(authWaitTimer); authWaitTimer = null; }
+  if (!active) {
+    authWaitStartedAt = 0;
+    bar.hidden = true;
+    bar.innerHTML = '';
+    return;
+  }
+  authWaitStartedAt = Date.now();
+  const label = action === 'oauth' ? tl('oauthWaiting') : tl('detectingLocal');
+  const render = () => {
+    const sec = Math.max(0, Math.floor((Date.now() - authWaitStartedAt) / 1000));
+    bar.innerHTML = '<span class="auth-wait-spinner"></span><span class="auth-wait-text">' + escHtml(label) + '</span><span class="auth-wait-sec">' + sec + 's</span>';
+  };
+  bar.hidden = false;
+  render();
+  authWaitTimer = setInterval(render, 1000);
+}
+
+function showToast(message, type = 'info', duration, raw = false) {
+  const effectiveDuration = (duration === undefined || duration === null)
+    ? (type === 'error' ? 10000 : (type === 'warning' ? 6000 : 3000))
+    : duration;
   let container = document.getElementById('toastContainer');
   if (!container) {
     container = document.createElement('div');
@@ -2655,7 +2882,7 @@ function showToast(message, type = 'info', duration = 3000, raw = false) {
     container.className = 'toast-container';
     document.body.appendChild(container);
   }
-  // 失败提示保护期：未过期的 error toast 不被后续自动刷新顶掉，新提示追加显示
+  // 失败/警告提示保护期：未过期的 toast 不被后续自动刷新顶掉，新提示追加显示
   const existing = container.querySelector('.toast');
   if (existing) {
     const until = Number(existing.dataset.protectUntil || 0);
@@ -2669,19 +2896,27 @@ function showToast(message, type = 'info', duration = 3000, raw = false) {
     : '<span class="toast-icon">' + (TOAST_ICONS[type] || TOAST_ICONS.info) + '</span>';
   // 默认转义：错误文案可能来自服务端返回的 HTML 片段；raw=true 仅用于调用方自建的排版片段
   const body = raw ? String(message) : escHtml(String(message));
-  toast.innerHTML = icon + '<span class="toast-msg">' + body + '</span>';
-  if (duration >= MW_ERROR_TOAST_MS) {
-    toast.dataset.protectUntil = String(Date.now() + duration);
+  toast.innerHTML = icon + '<span class="toast-msg">' + body + '</span><button type="button" class="toast-close" aria-label="Close">×</button>';
+  if (effectiveDuration > 0 && (type === 'error' || type === 'warning' || effectiveDuration >= MW_ERROR_TOAST_MS)) {
+    toast.dataset.protectUntil = String(Date.now() + effectiveDuration);
+  }
+  let hideTimer = null;
+  const closeBtn = toast.querySelector('.toast-close');
+  if (closeBtn) {
+    closeBtn.onclick = () => {
+      if (hideTimer) clearTimeout(hideTimer);
+      toast.remove();
+    };
   }
   container.appendChild(toast);
 
   requestAnimationFrame(() => toast.classList.add('show'));
 
-  if (duration > 0) {
-    setTimeout(() => {
+  if (effectiveDuration > 0) {
+    hideTimer = setTimeout(() => {
       toast.classList.remove('show');
       setTimeout(() => toast.remove(), 300);
-    }, duration);
+    }, effectiveDuration);
   }
   return toast;
 }
@@ -3356,7 +3591,7 @@ function fillSettingsForm(s) {
   set('setLocale', s.locale || 'auto');
   chk('setStatusEnabled', s.statusBarEnabled !== false);
   set('setStatusPosition', s.statusBarPosition || 'right');
-  set('setStatusStyle', s.statusBarStyle || 'smart');
+  set('setStatusStyle', s.statusBarStyle || 'full');
   chk('setStatusAccount', s.statusBarAccount !== false);
   chk('setStatusModels', s.statusBarModels !== false);
   chk('setStatusCredits', s.statusBarCredits !== false);
@@ -3469,7 +3704,7 @@ function renderCdpStatus(s) {
       locale: val('setLocale') || 'auto',
       statusBarEnabled: on('setStatusEnabled'),
       statusBarPosition: val('setStatusPosition') || 'right',
-      statusBarStyle: val('setStatusStyle') || 'smart',
+      statusBarStyle: val('setStatusStyle') || 'full',
       statusBarAccount: on('setStatusAccount'),
       statusBarModels: on('setStatusModels'),
       statusBarCredits: on('setStatusCredits'),
@@ -3596,7 +3831,7 @@ function renderCdpStatus(s) {
       locale: 'auto',
       statusBarEnabled: true,
       statusBarPosition: 'right',
-      statusBarStyle: 'smart',
+      statusBarStyle: 'full',
       statusBarAccount: true,
       statusBarModels: true,
       statusBarCredits: true,
@@ -3609,10 +3844,10 @@ function renderCdpStatus(s) {
     pushSettings(true);
   };
 
-  // 设置已实时落盘，保存按钮只做收尾确认与关闭
+  // 设置已实时落盘，主按钮静默同步一次后直接关闭
   const saveBtn = document.getElementById('settingsSave');
   if (saveBtn) saveBtn.onclick = () => {
-    pushSettings(false);
+    pushSettings(true);
     closeSettingsModal();
   };
 })();
@@ -3734,34 +3969,10 @@ function updateSummary() {
 function renderAccounts() {
   const grid = document.getElementById('accountGrid');
   const empty = document.getElementById('emptyState');
-  
-  let filtered = accounts;
-  
-  // 搜索过滤
-  if (searchTerm) {
-    filtered = filtered.filter(a => a.email.toLowerCase().includes(searchTerm));
-  }
-  
-  // 状态过滤
-  if (activeFilter === 'active') {
-    filtered = filtered.filter(a => !a.disabled);
-  } else if (activeFilter === 'disabled') {
-    filtered = filtered.filter(a => a.disabled);
-  }
-  
-  // 标签过滤（多选）
-  if (filterTags.size > 0) {
-    filtered = filtered.filter(a => {
-      const at = getAccTags(a);
-      if (at.length > 0) return at.some(t => filterTags.has(t));
-      return filterTags.has(tl('untagged'));
-    });
-  }
 
-  // 套餐过滤
-  if (filterPlans.size > 0) {
-    filtered = filtered.filter(a => filterPlans.has(((a.usage && a.usage.tierId) || tl('unknown')).toUpperCase()));
-  }
+  renderActiveFilterBar();
+  let filtered = getVisibleAccounts();
+  const hasActiveFilters = Boolean(searchTerm || activeFilter !== 'all' || filterTags.size > 0 || filterPlans.size > 0);
 
   // 排序
   filtered = filtered.slice().sort((a, b) => {
@@ -3802,7 +4013,7 @@ function renderAccounts() {
   if (totalFiltered === 0) {
     grid.innerHTML = '';
     empty.style.display = 'block';
-    empty.querySelector('.empty-title').textContent = searchTerm ? tl('noMatchTitle') : tl('emptyTitle');
+    empty.querySelector('.empty-title').textContent = hasActiveFilters ? tl('noMatchTitle') : tl('emptyTitle');
     renderPagination(0, 0);
     return;
   }
@@ -3900,6 +4111,14 @@ function renderAccounts() {
     }
 
     const boundWin = multiWindows.find(w => (w.isRunning ?? w.running) && !(w.isCurrent ?? w.current) && (w.bindEmail === rawEmail || (w.bindEmail === '__auto__' && w.currentEmail === rawEmail)));
+    const accTags = getAccTags(a);
+    const visibleTags = accTags.slice(0, 2);
+    const extraTagCount = accTags.length - visibleTags.length;
+    const cardTagsHtml = visibleTags.map(t => {
+      const safeTagAttr = attrEsc(t);
+      const isFiltered = filterTags.has(t);
+      return '<button type="button" class="grid-tag-chip' + (isFiltered ? ' is-active' : '') + '" data-tag="' + safeTagAttr + '" onclick="event.stopPropagation();toggleTagFilter(this.dataset.tag)" title="' + safeTagAttr + '">' + escHtml(t) + '</button>';
+    }).join('') + (extraTagCount > 0 ? '<span class="grid-tag-more" title="' + attrEsc(accTags.slice(2).join(', ')) + '">+' + extraTagCount + '</span>' : '');
     const sig = cardSig(a);
     const html = '<div class="grid-card ' + (isCurrent ? 'is-active' : '') + ' ' + (isDisabled ? 'is-disabled' : '') + (a.health && a.health.status === 'banned' ? ' is-banned' : '') + (selectMode ? ' is-select-mode' : '') + '" data-email="' + safeEmail + '" data-sig="' + sig + '">'
       + (selectMode ? '<div class="grid-check-col"><input type="checkbox" class="grid-check-input" data-email="' + safeEmail + '" ' + (selectedEmails.has(rawEmail) ? 'checked' : '') + '></div>' : '')
@@ -3911,6 +4130,7 @@ function renderAccounts() {
       + '</div>'
       + '<div class="grid-card-meta">'
         + '<span class="grid-plan-chip ' + tierClass + '">' + planChipIcon(tierClass) + tierLabel + '</span>'
+        + cardTagsHtml
       + '</div>'
       + '<div class="grid-card-quotas">' + quotasHtml + '</div>'
       + '<div class="grid-card-actions">'
@@ -3919,8 +4139,10 @@ function renderAccounts() {
           : (boundWin
             ? '<button class="grid-switch-btn is-focus" onclick="focusMultiWindow(\\x27' + boundWin.id + '\\x27)" title="' + attrEsc(boundWin.name) + '">' + escHtml(tl('mwFocus')) + '</button>'
             : (switchingEmail === rawEmail
-              ? '<button class="grid-switch-btn is-loading" disabled><span class="btn-spinner"></span>' + tl('switching') + '</button>'
-              : '<button class="grid-switch-btn" onclick="setCurrent(\\x27' + safeEmail + '\\x27)">' + tl('switch') + '</button>')))
+              ? '<button class="grid-switch-btn is-loading" disabled><span class="btn-spinner"></span><span class="switch-elapsed">' + escHtml(tl('switchingElapsed', Math.max(0, Math.floor((Date.now() - switchingStartedAt) / 1000)))) + '</span></button>'
+              : (switchingEmail
+                ? '<button class="grid-switch-btn" disabled title="' + attrEsc(tl('switching')) + '">' + tl('switch') + '</button>'
+                : '<button class="grid-switch-btn" onclick="setCurrent(\\x27' + safeEmail + '\\x27)">' + tl('switch') + '</button>'))))
         + healthPillHtml(a, safeEmail)
         + '<div class="grid-actions-right">'
           + '<button class="icon-btn" onclick="openTagEditModal(\\x27' + safeEmail + '\\x27)" title="' + tl('editTagsT') + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>'
@@ -3948,7 +4170,7 @@ function cardSig(a) {
     a.email === currentEmail ? '1' : '0',
     bw ? (bw.id + ':' + bw.name) : '',
     privacyMode ? '1' : '0',
-    switchingEmail === a.email ? '1' : '0',
+    switchingEmail === a.email ? 'self' : (switchingEmail ? 'busy' : 'idle'),
     selectedEmails.has(a.email) ? '1' : '0',
     selectMode ? '1' : '0',
     u.tierId || '',
@@ -3958,6 +4180,7 @@ function cardSig(a) {
     healthCheckingEmail === a.email ? '1' : '0',
     models,
     getAccTags(a).join('|'),
+    [...filterTags].sort().join(','),
     JSON.stringify(tagColors || {}),
     a.name || '',
     (a.importMeta && a.importMeta.importedAt) || '',
@@ -3985,7 +4208,9 @@ function applyCards(cards) {
 }
 
 function renderPagination(total, totalPages) {
+  const pgRow = document.getElementById('paginationRow');
   const pg = document.getElementById('pagination');
+  if (pgRow) pgRow.hidden = total <= 0;
   if (!pg || pageSize === 0 || totalPages <= 1) {
     if (pg) pg.innerHTML = '';
     return;
@@ -4016,9 +4241,34 @@ function goPage(page) {
 }
 
 let switchingEmail = null; // 正在切换的账号（按钮加载态）
+let switchingStartedAt = 0;
+let switchingTimer = null;
+let switchingTimeoutId = null;
+function clearSwitchingState() {
+  if (switchingTimer) { clearInterval(switchingTimer); switchingTimer = null; }
+  if (switchingTimeoutId) { clearTimeout(switchingTimeoutId); switchingTimeoutId = null; }
+  switchingEmail = null;
+  switchingStartedAt = 0;
+}
 function setCurrent(email) {
+  if (switchingEmail) return;
+  clearSwitchingState();
   switchingEmail = email;
+  switchingStartedAt = Date.now();
   renderAccounts();
+  switchingTimer = setInterval(() => {
+    const el = document.querySelector('.grid-switch-btn.is-loading .switch-elapsed');
+    if (el && switchingStartedAt) {
+      const sec = Math.max(0, Math.floor((Date.now() - switchingStartedAt) / 1000));
+      el.textContent = tl('switchingElapsed', sec);
+    }
+  }, 1000);
+  switchingTimeoutId = setTimeout(() => {
+    if (!switchingEmail) return;
+    clearSwitchingState();
+    renderAccounts();
+    showToast(tl('switchTimeout', 30), 'error');
+  }, 30000);
   vscode.postMessage({ type: 'setCurrentAccount', email });
 }
 function removeAccount(email) {

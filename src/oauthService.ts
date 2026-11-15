@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as crypto from 'crypto';
 import * as http from 'http';
 import * as https from 'https';
 import { StoredAccount } from './types';
@@ -22,12 +23,7 @@ const CALLBACK_PORT_RANGE = 100;
 const OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
 
 function randomState(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = '';
-  for (let i = 0; i < 32; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
+  return crypto.randomBytes(24).toString('hex');
 }
 
 function httpsPost(url: string, data: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
@@ -81,10 +77,19 @@ function successHtml(): string {
 <body><div class="box"><h1>${t('oauthSuccessTitle')}</h1><p>${t('oauthSuccessDesc')}</p></div></body></html>`;
 }
 
-function failHtml(message: string): string {
+function escapeHtml(s: string): string {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export function failHtml(message: string): string {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${t('oauthFailTitle')}</title>
 <style>body{font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#1a1a2e;color:#eee}.box{max-width:400px;padding:24px;border-radius:12px;background:#16213e;text-align:center}h1{color:#ef4444;margin:0 0 10px;font-size:24px}p{margin:0;opacity:.85}</style></head>
-<body><div class="box"><h1>${t('oauthFailTitle')}</h1><p>${message}</p></div></body></html>`;
+<body><div class="box"><h1>${t('oauthFailTitle')}</h1><p>${escapeHtml(message)}</p></div></body></html>`;
 }
 
 async function findAvailablePort(): Promise<number> {
@@ -112,10 +117,26 @@ export async function startOAuth(): Promise<StoredAccount> {
   return new Promise((resolve, reject) => {
     let server: http.Server | null = null;
     let timer: NodeJS.Timeout | null = null;
+    let settled = false;
 
     const cleanup = () => {
       if (timer) clearTimeout(timer);
+      timer = null;
       try { server?.close(); } catch {}
+    };
+
+    const finishOk = (acc: StoredAccount) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(acc);
+    };
+
+    const finishErr = (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
     };
 
     server = http.createServer(async (req, res) => {
@@ -130,27 +151,24 @@ export async function startOAuth(): Promise<StoredAccount> {
       const code = url.searchParams.get('code') || '';
       const error = url.searchParams.get('error') || '';
 
+      // 杂波请求或错误 state：只回 400 并继续监听，不中止正在等待真实回调的会话
       if (gotState !== state) {
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(failHtml(t('oauthStateMismatch')));
-        cleanup();
-        reject(new Error(t('oauthStateMismatch')));
         return;
       }
 
       if (error) {
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(failHtml(error));
-        cleanup();
-        reject(new Error(t('errOauthError', error)));
+        finishErr(new Error(t('errOauthError', error)));
         return;
       }
 
       if (!code) {
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(failHtml(t('errOauthNoCode')));
-        cleanup();
-        reject(new Error(t('errOauthCallbackNoCode')));
+        finishErr(new Error(t('errOauthCallbackNoCode')));
         return;
       }
 
@@ -199,9 +217,8 @@ export async function startOAuth(): Promise<StoredAccount> {
 
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(successHtml());
-        cleanup();
 
-        resolve({
+        finishOk({
           email,
           accessToken,
           refreshToken,
@@ -217,8 +234,7 @@ export async function startOAuth(): Promise<StoredAccount> {
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(failHtml(err instanceof Error ? err.message : String(err)));
-        cleanup();
-        reject(err);
+        finishErr(err);
       }
     });
 
@@ -234,16 +250,14 @@ export async function startOAuth(): Promise<StoredAccount> {
       }).toString();
 
       timer = setTimeout(() => {
-        cleanup();
-        reject(new Error(t('oauthTimeout')));
+        finishErr(new Error(t('oauthTimeout')));
       }, OAUTH_TIMEOUT_MS);
 
       await vscode.env.openExternal(vscode.Uri.parse(authUrl));
     });
 
     server.on('error', (err) => {
-      cleanup();
-      reject(err);
+      finishErr(err);
     });
   });
 }

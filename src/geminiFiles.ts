@@ -46,6 +46,17 @@ function backupOnce(file: string, tag: string): void {
   }
 }
 
+function atomicWriteJson(filePath: string, data: unknown): void {
+  const tmpPath = `${filePath}.tmp.${process.pid}`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
+    fs.renameSync(tmpPath, filePath);
+  } catch (e) {
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
+    throw e;
+  }
+}
+
 /**
  * 同步 ~/.gemini 的两处凭据文件到目标账号。
  * 两处必须同时更新，否则 agent 面板会判定为账号变更并弹出安全声明。
@@ -68,10 +79,10 @@ export function syncGeminiLocalCreds(creds: GeminiLocalCreds): { ok: boolean; er
     if (creds.refreshToken) cred.refresh_token = creds.refreshToken;
     cred.token_type = 'Bearer';
     cred.expiry_date = creds.expiryMs;
-    // 兼容第三方写入的字段（Cockpit 等）：一并对齐，避免文件内部自相矛盾
+    // 兼容第三方写入的字段（Cockpit 等）：一律对齐，避免文件内部自相矛盾
     if ('antigravity_cockpit_active_email' in cred) cred.antigravity_cockpit_active_email = creds.email;
-    if ('id_token_email' in cred) cred.id_token_email = creds.email;
-    fs.writeFileSync(credFile, JSON.stringify(cred, null, 2), 'utf8');
+    cred.id_token_email = creds.email;
+    atomicWriteJson(credFile, cred);
 
     // 2) google_accounts.json：active 指向目标账号，历史列表保留
     const accFile = path.join(dir, 'google_accounts.json');
@@ -84,7 +95,7 @@ export function syncGeminiLocalCreds(creds: GeminiLocalCreds): { ok: boolean; er
     acc.active = creds.email;
     if (!oldList.includes(creds.email)) oldList.push(creds.email);
     acc.old = oldList;
-    fs.writeFileSync(accFile, JSON.stringify(acc, null, 2), 'utf8');
+    atomicWriteJson(accFile, acc);
 
     logInfo('geminiFiles.sync', { email: creds.email, expiryMs: creds.expiryMs, dir });
     return { ok: true };

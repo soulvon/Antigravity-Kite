@@ -80,16 +80,53 @@ function readVarint(buf: Buffer, offset: number): { value: number; next: number 
   let off = offset;
   let b: number;
   do {
+    if (off >= buf.length) {
+      throw new Error('Protobuf varint truncated');
+    }
     b = buf[off++];
     result += (b & 0x7f) * Math.pow(2, shift);
     shift += 7;
+    if (shift > 56) {
+      throw new Error('Protobuf varint overflow');
+    }
   } while (b & 0x80);
   return { value: result, next: off };
 }
 
 function readLenDelim(buf: Buffer, offset: number): { bytes: Buffer; next: number } {
   const { value: len, next } = readVarint(buf, offset);
+  if (!Number.isSafeInteger(len) || len < 0 || next + len > buf.length) {
+    throw new Error('Protobuf length-delimited field out of bounds');
+  }
   return { bytes: buf.subarray(next, next + len), next: next + len };
+}
+
+function decodeRowBase64(rowBytes: Buffer): string {
+  let rp = 0;
+  while (rp < rowBytes.length) {
+    const rt = readVarint(rowBytes, rp);
+    rp = rt.next;
+    const fieldNum = rt.value >> 3;
+    const wireType = rt.value & 7;
+    if (wireType === 2) {
+      const rv = readLenDelim(rowBytes, rp);
+      rp = rv.next;
+      if (fieldNum === 1) {
+        return rv.bytes.toString('utf8');
+      }
+    } else if (wireType === 0) {
+      rp = readVarint(rowBytes, rp).next;
+    } else if (wireType === 5) {
+      if (rp + 4 > rowBytes.length) break;
+      rp += 4;
+    } else if (wireType === 1) {
+      if (rp + 8 > rowBytes.length) break;
+      rp += 8;
+    } else {
+      break;
+    }
+  }
+  return '';
 }
 
 function decodeTopicEntries(blob: Buffer): TopicEntry[] {
@@ -114,8 +151,9 @@ function decodeTopicEntries(blob: Buffer): TopicEntry[] {
         p = v.next;
       } else if ((t.value >> 3) === 2 && (t.value & 7) === 2) {
         const v = readLenDelim(entry, p);
-        payloadB64 = v.bytes.toString('utf8');
         p = v.next;
+        // Row 是 Protobuf 消息，field 1 才是 base64 字符串（旧实现直接 toString 会把 2 字节 varint 高位 0x41 'A' 混入 base64）
+        payloadB64 = decodeRowBase64(v.bytes);
       } else {
         break;
       }
@@ -183,7 +221,7 @@ export function createUserStatusPayloadBase64(email: string): string {
  * 字段级更新 UserStatus：只替换 email 字段（当前 IDE 实测为 2），其余字段原样保留。
  * 全量替换成 minimal 会抹掉套餐权益（IDE 模型列表因此丢失 Gemini 系），严禁。
  */
-function updateUserStatusEmail(payload: Buffer, email: string): Buffer {
+export function updateUserStatusEmail(payload: Buffer, email: string): Buffer {
   const parts: Buffer[] = [];
   let off = 0;
   let emailFieldFound = false;
@@ -207,17 +245,24 @@ function updateUserStatusEmail(payload: Buffer, email: string): Buffer {
       off = v.next;
       parts.push(payload.subarray(fieldStart, off));
     } else if (wireType === 5) {
+      if (off + 4 > payload.length) {
+        throw new Error('Protobuf fixed32 truncated');
+      }
       off += 4;
       parts.push(payload.subarray(fieldStart, off));
     } else if (wireType === 1) {
+      if (off + 8 > payload.length) {
+        throw new Error('Protobuf fixed64 truncated');
+      }
       off += 8;
       parts.push(payload.subarray(fieldStart, off));
     } else {
-      break;
+      // 拒绝在未知 wireType 上静默退化成 minimal（会抹掉原有套餐权益字段）
+      throw new Error(`Unsupported UserStatus protobuf wireType: ${wireType}`);
     }
   }
   if (!emailFieldFound) {
-    return createMinimalUserStatus(email);
+    parts.push(encodeStringField(2, email));
   }
   return Buffer.concat(parts);
 }
@@ -311,6 +356,7 @@ export function switchIdeStateIdentity(
   }
 
   let db: any;
+  let inTx = false;
   try {
     db = new sqlite.DatabaseSync(dbPath);
     db.exec('PRAGMA busy_timeout = 3000');
@@ -321,12 +367,10 @@ export function switchIdeStateIdentity(
       return { dbWritten: false, dbPath, error: t('errStateDbNoOauth') };
     }
 
-    // 1) oauthToken topic：保留其他条目，替换 oauthTokenInfoSentinelKey
+    // 先在内存中完成两条 payload 解析与编码；任何 protobuf 解析失败都不触库
     const blob = Buffer.from(probe.value, 'base64');
     const newBlob = replaceTopicEntry(blob, OAUTH_SENTINEL, createOAuthInfo(token));
-    upsertItem(db, OAUTH_TOKEN_KEY, newBlob.toString('base64'));
 
-    // 2) userStatus topic：字段级更新身份 email，保留 planStatus 等套餐权益字段
     const statusRow = db.prepare(`SELECT value FROM ItemTable WHERE key = '${USER_STATUS_KEY}'`).get();
     const existingStatusBlob = statusRow && statusRow.value
       ? Buffer.from(String(statusRow.value), 'base64')
@@ -343,6 +387,15 @@ export function switchIdeStateIdentity(
     }
     const statusEntry = createTopicEntry(USER_STATUS_SENTINEL, statusPayload);
     const statusB64 = statusEntry.toString('base64');
+
+    // 事务原子落盘
+    db.exec('BEGIN IMMEDIATE');
+    inTx = true;
+
+    // 1) oauthToken topic：保留其他条目，替换 oauthTokenInfoSentinelKey
+    upsertItem(db, OAUTH_TOKEN_KEY, newBlob.toString('base64'));
+
+    // 2) userStatus topic：字段级更新身份 email，保留 planStatus 等套餐权益字段
     upsertItem(db, USER_STATUS_KEY, statusB64);
 
     // 3) 官方对齐的两项：引导标记 + 清理旧会话 UserID 缓存
@@ -360,6 +413,9 @@ export function switchIdeStateIdentity(
     upsertItem(db, 'jetski.onboarding.lastLoginUsername', email);
     upsertItem(db, 'jetski.onboarding.lastLoginIsGcpTos', 'false');
 
+    db.exec('COMMIT');
+    inTx = false;
+
     // 写入确认：整串读回比对（payload 由本模块构造，字节级一致即写入成功）
     const back = db.prepare(`SELECT value FROM ItemTable WHERE key = '${USER_STATUS_KEY}'`).get();
     if (!back || String(back.value) !== statusB64) {
@@ -367,6 +423,9 @@ export function switchIdeStateIdentity(
     }
     return { dbWritten: true, dbPath };
   } catch (e) {
+    if (inTx && db) {
+      try { db.exec('ROLLBACK'); } catch { /* 事务回滚兜底 */ }
+    }
     return { dbWritten: false, dbPath, error: e instanceof Error ? e.message : String(e) };
   } finally {
     try { db?.close(); } catch { /* 已关闭 */ }

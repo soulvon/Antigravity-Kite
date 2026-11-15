@@ -8,6 +8,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as cp from 'child_process';
 import { getAppDataDir } from './platformPaths';
+import { ensureWinNativeHelper, reloadWinAgyNative } from './winNativeHelper';
 import { logWarn } from './logger';
 import { t } from './i18n';
 
@@ -29,6 +30,16 @@ export function normalizePath(p: string): string {
   const trimmed = p.trim();
   if (isWindows) return trimmed.toLowerCase().replace(/\//g, '\\').replace(/\\+$/, '');
   return trimmed.replace(/\\+/g, '/').replace(/\/+$/, '');
+}
+
+let _effectiveUserDataDirOverride: string | null = null;
+
+export function setEffectiveCurrentUserDataDir(dir: string): void {
+  _effectiveUserDataDirOverride = dir && dir.trim() ? dir.trim() : null;
+}
+
+export function getEffectiveCurrentUserDataDir(): string {
+  return _effectiveUserDataDirOverride || getCurrentUserDataDir();
 }
 
 /** 当前窗口的 user-data-dir（非默认数据目录启动时会带 --user-data-dir 参数） */
@@ -99,9 +110,16 @@ async function detectExeWindows(): Promise<string | null> {
     if (c && fs.existsSync(c)) return c;
   }
 
-  // 3. 从正在运行的进程获取（支持两种进程名）
+  // 3. 从正在运行的进程获取（支持两种进程名；Win11 优先 PowerShell CIM，无结果再回退 wmic）
   const entries = await getRunningEntries();
   for (const [pid] of entries) {
+    const psOut = await runPowerShellAsync(
+      `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").ExecutablePath`,
+      3000
+    );
+    const psPath = psOut?.replace(/^\uFEFF/, '').trim();
+    if (psPath && fs.existsSync(psPath)) return psPath;
+
     const out = await runShellAsync(`wmic process where "ProcessId=${pid}" get ExecutablePath /FORMAT:LIST`, 3000);
     const match = out?.match(/ExecutablePath=(.+)/);
     const exePath = match?.[1]?.trim();
@@ -165,7 +183,7 @@ export async function getRunningEntries(forceFresh = false): Promise<Array<[numb
 /**
  * 从完整命令行解析 --user-data-dir。
  * 必须支持「后面还跟着工作区路径」的形态：
- *   "...exe" --user-data-dir C:\...\mw_xxx "e:\project\foo"
+ *   "...exe" --user-data-dir C:\...\mw_xxx "e:\project\demo"
  * 旧正则要求路径后紧跟 -- 或行尾，会把多开实例误判成主窗口。
  */
 export function parseUserDataDir(cmd: string): string {
@@ -256,7 +274,9 @@ async function getRunningEntriesUnix(): Promise<Array<[number, string | null]>> 
       if (!isIdeMainProcessCmd(normalized)) continue;
       entries.push([pid, parseUserDataDir(normalized)]);
     }
-  } catch {}
+  } catch (e) {
+    logWarn('ideRuntime.enumUnix', e);
+  }
   return entries;
 }
 
@@ -329,22 +349,21 @@ async function listIdeProcesses(): Promise<IdeProcessInfo[]> {
     const psCmd = `Get-CimInstance Win32_Process -Filter "name='Antigravity IDE.exe' or name='Antigravity.exe'" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`;
     const stdout = await runPowerShellAsync(psCmd, 10000);
     if (stdout && stdout.trim()) {
-      const parsed = JSON.parse(stdout);
+      const cleaned = stdout.replace(/^\uFEFF/, '').trim();
+      const parsed = JSON.parse(cleaned);
       const list = Array.isArray(parsed) ? parsed : [parsed];
       for (const p of list) {
         const pid = Number(p.ProcessId);
         if (pid) out.push({ pid, cmd: p.CommandLine || '' });
       }
     }
-  } catch { /* 枚举失败由调用方处理 */ }
+  } catch (e) { logWarn('ideRuntime.listIdeProcesses.fail', e); }
   return out;
 }
 
 function processMatchesCurrentWindow(cmd: string): boolean {
-  const currentDir = normalizePath(getCurrentUserDataDir());
-  const m = cmd.match(/--user-data-dir[= ]+["']?([^"']+?)["']?(?:\s+--|\s*$)/i);
-  const dir = m ? m[1].trim() : getDefaultUserDataDir();
-  return normalizePath(dir) === currentDir;
+  const currentDir = normalizePath(getEffectiveCurrentUserDataDir());
+  return normalizePath(parseUserDataDir(cmd)) === currentDir;
 }
 
 /**
@@ -366,32 +385,173 @@ export async function getCurrentLaunchInfo(): Promise<LaunchInfo> {
   return { pid, exePath: tokens[0] || null, args: tokens.slice(1) };
 }
 
-interface ProcSnapshot {
+export interface ProcSnapshot {
   name: string;
   pid: number;
   ppid: number;
   cmd: string;
 }
 
-async function listAllProcesses(): Promise<ProcSnapshot[]> {
-  if (!isWindows) {
-    // POSIX：ps -eo 快照，cmd 为完整命令行（含可执行路径），ppid 直接可得
+/**
+ * 解析 POSIX `ps -eo pid=,comm=` 输出提取 agy PID。
+ * macOS BSD ps 的 comm 输出完整可执行路径且路径可能含空格（如 /Applications/Antigravity IDE.app/.../agy），
+ * 严禁用 `\S+$` 匹配末段（否则含空格路径直接漏掉）。
+ */
+export function parseUnixAgyPidsFromPs(stdout: string): number[] {
+  const pids: number[] = [];
+  for (const line of stdout.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(.+)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const commPath = m[2].trim();
+    if (pid && /(^|\/)agy$/i.test(commPath)) {
+      pids.push(pid);
+    }
+  }
+  return pids;
+}
+
+/**
+ * 解析 POSIX `ps -eo pid=,ppid=,command=` 输出为进程快照。
+ * 先剥离首个 CLI 参数（' -'）之前的可执行路径再提取 agy / basename，防 macOS 带空格 .app 路径截断失真。
+ */
+export function parseUnixProcessesFromPs(stdout: string): ProcSnapshot[] {
+  const out: ProcSnapshot[] = [];
+  for (const line of stdout.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+    if (!m) continue;
+    const pid = parseInt(m[1], 10);
+    const ppid = parseInt(m[2], 10);
+    if (!pid) continue;
+    const cmd = m[3];
+    const exePart = cmd.split(/\s+-/, 1)[0].trim();
+    const agyMatch = exePart.match(/^(?:.*\/)?(agy)(?:\s|$)/i);
+    const name = agyMatch ? agyMatch[1] : (exePart.split('/').pop() || '');
+    out.push({ name, pid, ppid, cmd });
+  }
+  return out;
+}
+
+/** 解析 Linux /proc/<pid>/stat 单行（用 lastIndexOf(')') 兼容带空格或括号的 comm 名） */
+export function parseLinuxProcStat(pid: number, statText: string): { pid: number; ppid: number; name: string } | null {
+  const lp = statText.indexOf('(');
+  const rp = statText.lastIndexOf(')');
+  if (lp < 0 || rp <= lp) return null;
+  const name = statText.slice(lp + 1, rp);
+  const rest = statText.slice(rp + 2).trim().split(/\s+/);
+  if (rest.length < 2) return null;
+  const ppid = parseInt(rest[1], 10);
+  if (!Number.isFinite(ppid) || ppid < 0) return null;
+  return { pid, ppid, name };
+}
+
+/** Linux 零派生快路径：直接从 /proc 读进程树与必要命令行（无子进程，~10ms）；失败或受限返回 null 回退 ps */
+export function readLinuxProcTree(): ProcSnapshot[] | null {
+  try {
+    if (!fs.existsSync('/proc')) return null;
+    const entries = fs.readdirSync('/proc');
     const out: ProcSnapshot[] = [];
-    const stdout = await runShellAsync('ps -eo pid=,ppid=,command=', 15000);
-    if (stdout) {
-      for (const line of stdout.split('\n')) {
-        const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
-        if (!m) continue;
-        const pid = parseInt(m[1], 10);
-        const ppid = parseInt(m[2], 10);
-        if (!pid) continue;
-        const cmd = m[3];
-        // 进程名取可执行文件末段（真实 macOS/Linux 上 agy 引擎不带 .exe 后缀）
-        const name = cmd.split(/\s+/)[0].split('/').pop() || '';
-        out.push({ name, pid, ppid, cmd });
+    for (const ent of entries) {
+      if (!/^\d+$/.test(ent)) continue;
+      const pid = parseInt(ent, 10);
+      if (!pid) continue;
+      try {
+        const statText = fs.readFileSync(`/proc/${ent}/stat`, 'utf8');
+        const parsed = parseLinuxProcStat(pid, statText);
+        if (!parsed) continue;
+        let cmd = '';
+        // 仅对 IDE 主进程/助手/agy 按需读 cmdline，避免扫数百个无关系统进程耗时
+        if (/antigravity|electron|agy/i.test(parsed.name)) {
+          try {
+            cmd = fs.readFileSync(`/proc/${ent}/cmdline`, 'utf8').replace(/\0/g, ' ').trim();
+          } catch { /* 已退出或权限不足 */ }
+        }
+        out.push({ name: parsed.name, pid: parsed.pid, ppid: parsed.ppid, cmd });
+      } catch { /* 短生命周期进程中途退出属正常态 */ }
+    }
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 统一进程树定位算法：给定当前扩展宿主 selfPid，优先沿着同类 IDE 可执行名向上溯源到当前窗口主进程 rootPid，
+ * 再 BFS 向下收集全部后代中的 agy 引擎 PID（单窗口双 utility/双 agy 也能全数命中，且不误伤旁路实例）。
+ */
+export function resolveAgyPidsFromTree(
+  all: ProcSnapshot[],
+  selfPid: number,
+  windowsMode = isWindows,
+): { rootPid: number | null; treeAgy: number[]; allAgy: number[] } {
+  const byPid = new Map<number, ProcSnapshot>();
+  const children = new Map<number, number[]>();
+  const agyNameRe = windowsMode ? /(^|\\)agy\.exe$/i : /(^|\/)agy$/i;
+  const allAgy: number[] = [];
+
+  for (const p of all) {
+    byPid.set(p.pid, p);
+    const list = children.get(p.ppid) || [];
+    list.push(p.pid);
+    children.set(p.ppid, list);
+    if (agyNameRe.test(p.name)) allAgy.push(p.pid);
+  }
+
+  let rootPid: number | null = null;
+  const selfProc = selfPid > 0 ? byPid.get(selfPid) : undefined;
+  if (selfProc) {
+    let cur = selfPid;
+    const selfBase = selfProc.name.toLowerCase();
+    const seen = new Set<number>();
+    while (byPid.has(cur) && !seen.has(cur)) {
+      seen.add(cur);
+      const node = byPid.get(cur)!;
+      const parent = byPid.get(node.ppid);
+      if (!parent) break;
+      const pLower = parent.name.toLowerCase();
+      const sameFamily =
+        (selfBase.length > 0 && pLower === selfBase)
+        || /antigravity|electron/i.test(parent.name);
+      if (!sameFamily) break;
+      cur = parent.pid;
+    }
+    rootPid = cur;
+  }
+
+  if (rootPid === null) {
+    const mains = all.filter((p) => isIdeMainProcess(p));
+    const matched = mains.filter((p) => processMatchesCurrentWindow(p.cmd));
+    if (matched.length > 0) rootPid = matched[0].pid;
+    else if (mains.length === 1) rootPid = mains[0].pid;
+  }
+
+  const descendants = new Set<number>();
+  if (rootPid !== null) {
+    const queue = [rootPid];
+    while (queue.length > 0) {
+      const pid = queue.shift()!;
+      for (const child of children.get(pid) || []) {
+        if (!descendants.has(child)) {
+          descendants.add(child);
+          queue.push(child);
+        }
       }
     }
-    return out;
+  }
+
+  const treeAgy = allAgy.filter((pid) => descendants.has(pid));
+  return { rootPid, treeAgy, allAgy };
+}
+
+async function listAllProcesses(): Promise<ProcSnapshot[]> {
+  if (!isWindows) {
+    if (process.platform === 'linux') {
+      const fastProc = readLinuxProcTree();
+      if (fastProc && fastProc.length > 0) return fastProc;
+    }
+    // POSIX / macOS：ps -eo 快照，cmd 为完整命令行，ppid 直接可得
+    const stdout = await runShellAsync('ps -eo pid=,ppid=,command=', 15000);
+    return stdout ? parseUnixProcessesFromPs(stdout) : [];
   }
   const psCmd = `Get-CimInstance Win32_Process | Select-Object Name,ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress`;
   const stdout = await runPowerShellAsync(psCmd, 15000);
@@ -473,16 +633,21 @@ async function listAgyPids(): Promise<AgyPidProbe> {
     }
     return { ok: true, pids };
   }
+  if (process.platform === 'linux') {
+    const procTree = readLinuxProcTree();
+    if (procTree) {
+      for (const p of procTree) {
+        if (/^agy$/i.test(p.name)) pids.push(p.pid);
+      }
+      return { ok: true, pids };
+    }
+  }
   const stdout = await runShellAsync('ps -eo pid=,comm=', 8000);
   if (stdout === null) {
     logWarn('agy.enum.tasklist', { reason: 'ps 执行失败' });
     return { ok: false, pids, reason: 'ps 执行失败' };
   }
-  for (const line of stdout.split(/\r?\n/)) {
-    const m = line.trim().match(/^(\d+)\s+(\S+)$/);
-    if (m && /(^|\/)agy$/.test(m[2])) pids.push(Number(m[1]));
-  }
-  return { ok: true, pids };
+  return { ok: true, pids: parseUnixAgyPidsFromPs(stdout) };
 }
 
 function isIdeMainProcess(p: ProcSnapshot): boolean {
@@ -501,8 +666,35 @@ function isIdeMainProcess(p: ProcSnapshot): boolean {
  * 匹配必须沿进程树 BFS 收集全部后代，单层父子匹配会漏杀（0.8.34 真机实证）。
  * 被杀后 IDE 按需以新凭据重建引擎——agent 面板无感切号的机制。
  */
+/** Phase A 并发预热：Windows 提前确保原生 .exe 已编译就绪；POSIX 验证快通道就绪 */
+export async function prepareAgyReload(): Promise<void> {
+  if (isWindows) {
+    await ensureWinNativeHelper();
+  }
+}
+
+/**
+ * 杀掉当前窗口进程树下的 agy 引擎。
+ * Windows 优先走编译缓存的原生 .exe（Toolhelp32 一次完成「树定位 + 强杀」~134ms）；
+ * Linux 走零派生 /proc 读取 + SIGKILL（~15ms）；macOS 走修复空格路径的单次 ps + SIGKILL（~40ms）。
+ */
 export async function killAgyEngine(): Promise<{ killed: number; error?: string; agyWasRunning: boolean }> {
-  // 0) 独立校验先行：tasklist/ps 只需 ~60ms，失败立刻暴露，不浪费时间跑全量快照
+  // Windows 快路径：原生 .exe 一次性完成 CreateToolhelp32Snapshot + 祖先定位 + 树级强杀
+  if (isWindows) {
+    const winRes = await reloadWinAgyNative(process.pid);
+    if (winRes && !winRes.needsDisambiguate) {
+      if (winRes.allAgy.length === 0) {
+        logWarn('agy.reload.no-engine', { reason: '切号时 agy 引擎未运行 (native)' });
+        return { killed: 0, agyWasRunning: false, error: t('agyReloadNoEngine') };
+      }
+      if (winRes.killed.length > 0) {
+        return { killed: winRes.killed.length, agyWasRunning: true };
+      }
+      logWarn('agy.reload.nativeKillZero', { tree: winRes.treeAgy, failed: winRes.failed });
+    }
+  }
+
+  // 独立校验通道（Windows 无 csc.exe 或需 disambiguate 时，以及全部 macOS/Linux）
   const probe = await listAgyPids();
   if (probe.ok === false) {
     // 读失败 = 未知：绝不当成「没有进程」静默走完切号
@@ -511,51 +703,13 @@ export async function killAgyEngine(): Promise<{ killed: number; error?: string;
 
   let agyPids: number[] = [];
   if (probe.pids.length === 1) {
-    // 快路径（2026-11-16 分段实测：listAllProcesses 跑全系统 670+ 进程快照耗时 ~6.6s）：
-    // 全系统仅 1 个 agy 时，树内命中或旧兜底结果都是它，免去 PowerShell 全量快照；
-    // 只有 >= 2 个 agy 并存时才走进程树 BFS 精准隔离，防止误杀白底 Hub / 其他实例。
     agyPids = probe.pids;
   } else if (probe.pids.length >= 2) {
-    // 1) 全量进程快照（一次 PowerShell 拿 Name/PID/PPID/CommandLine）
     const all = await listAllProcesses();
-
-    // 2) 定位当前窗口主进程（无 --type= 且 user-data-dir 匹配；匹配不到则取唯一主进程兜底）
-    const mains = all.filter((p) => isIdeMainProcess(p));
-    let mainPid: number | null = null;
-    const matched = mains.filter((p) => processMatchesCurrentWindow(p.cmd));
-    if (matched.length > 0) {
-      mainPid = matched[0].pid;
-    } else if (mains.length === 1) {
-      mainPid = mains[0].pid;
-    }
-
-    // 3) BFS 收集主进程全部后代
-    const ppidMap = new Map<number, number[]>();
-    for (const p of all) {
-      const list = ppidMap.get(p.ppid) || [];
-      list.push(p.pid);
-      ppidMap.set(p.ppid, list);
-    }
-    const descendants = new Set<number>();
-    if (mainPid !== null) {
-      const queue = [mainPid];
-      while (queue.length > 0) {
-        const pid = queue.shift()!;
-        for (const child of ppidMap.get(pid) || []) {
-          if (!descendants.has(child)) {
-            descendants.add(child);
-            queue.push(child);
-          }
-        }
-      }
-    }
-
-    // 4) 后代里的 agy 引擎（Windows: agy.exe；POSIX: agy，按平台匹配名称与路径分隔符）
+    const resolved = resolveAgyPidsFromTree(all, process.pid, isWindows);
     const agyNameRe = isWindows ? /(^|\\)agy\.exe$/i : /(^|\/)agy$/i;
-    const treeAgy = all.filter((p) => agyNameRe.test(p.name) && descendants.has(p.pid)).map((p) => p.pid);
     const enumAgy = all.filter((p) => agyNameRe.test(p.name)).map((p) => p.pid);
 
-    // 5) 主枚举与独立校验必须对齐：出现差异说明 PowerShell 快照不可信，留痕供排障
     const enumSet = new Set(enumAgy);
     const probeSet = new Set(probe.pids);
     const onlyIndependent = probe.pids.filter((pid) => !enumSet.has(pid));
@@ -564,15 +718,13 @@ export async function killAgyEngine(): Promise<{ killed: number; error?: string;
       logWarn('agy.enum.mismatch', { stage: 'process-enum', onlyIndependent, onlyEnum });
     }
 
-    // 6) 树内命中优先：probe 是全系统扫描，无条件并入会误杀其他实例的 agy
-    const enumHit = treeAgy.length > 0 ? treeAgy : enumAgy;
+    const enumHit = resolved.treeAgy.length > 0 ? resolved.treeAgy : enumAgy;
     agyPids = enumHit.length > 0 ? enumHit : probe.pids;
   }
 
   const agyWasRunning = agyPids.length > 0;
 
   if (agyPids.length === 0) {
-    // agy 确实未运行：模型列表不会随本次切号重建，必须显式告知，不能静默当成功
     logWarn('agy.reload.no-engine', { reason: '切号时 agy 引擎未运行' });
     return { killed: 0, agyWasRunning: false, error: t('agyReloadNoEngine') };
   }

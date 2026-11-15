@@ -12,6 +12,7 @@ OrderProject/
 
 # Temporary/debug assets and scripts
 *.png
+!resources/icon.png
 *.jpg
 *.jpeg
 scripts/test_*

@@ -24,6 +24,9 @@ import * as vscode from 'vscode';
 import { logInfo, logWarn } from './logger';
 import { getAppDataDir } from './platformPaths';
 
+const BURST_WINDOW_MS = 20_000;
+const STEADY_INTERVAL_MS = 3_500;
+
 /** 心跳间隔：读设置（默认 500ms， clamp 200~5000），每轮动态读取（改设置即时生效） */
 function getHeartbeatMs(): number {
   const raw = vscode.workspace.getConfiguration('antigravityKite').get<number>('cdpHeartbeatMs', 500);
@@ -34,21 +37,74 @@ function getHeartbeatMs(): number {
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
+let burstUntil = 0;
+
+/** 自适应心跳间隔：启动/切号唤醒窗口内用配置基础间隔快速捕获，稳态后退避至 >=3.5s 降耗 */
+export function getNextIntervalMs(
+  nowMs: number,
+  configuredMs: number,
+  inBurst = nowMs < burstUntil,
+  steadyMs = STEADY_INTERVAL_MS,
+): number {
+  const base = Math.min(5000, Math.max(200, Number.isFinite(configuredMs) ? configuredMs : 500));
+  if (inBurst) return base;
+  return Math.max(base, steadyMs);
+}
 
 function getPort(): number {
   return vscode.workspace.getConfiguration('antigravityKite').get<number>('cdpPort', 9333);
 }
 
-function cdpAlive(port: number, timeoutMs = 1500): Promise<boolean> {
+export interface CdpVersionInfo {
+  Browser?: string;
+  'User-Agent'?: string;
+}
+
+export interface CdpTargetLike {
+  url?: string;
+  type?: string;
+}
+
+/** 验证 CDP 端口是否属于 Antigravity / Electron 工作台（过滤本机 9222 上无关的普通浏览器） */
+export function isAntigravityCdpHost(version: CdpVersionInfo | null, targets: CdpTargetLike[]): boolean {
+  const ua = `${version?.Browser || ''} ${version?.['User-Agent'] || ''}`;
+  if (/antigravity|electron/i.test(ua)) return true;
+  return targets.some(t => /^(vscode-file|vscode-webview|antigravity|jetski):/i.test(t.url || ''));
+}
+
+function httpGetJson<T>(url: string, timeoutMs = 1500): Promise<T | null> {
   return new Promise((resolve) => {
-    const req = http.get(`http://127.0.0.1:${port}/json/version`, { timeout: timeoutMs }, (res) => {
-      res.resume();
-      resolve(res.statusCode === 200);
+    const req = http.get(url, { timeout: timeoutMs }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        resolve(null);
+        return;
+      }
+      const chunks: Buffer[] = [];
+      res.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as T);
+        } catch {
+          resolve(null);
+        }
+      });
+      res.on('error', () => resolve(null));
     });
-    req.on('error', () => resolve(false));
-    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
   });
 }
+
+async function cdpAlive(port: number, timeoutMs = 1500): Promise<boolean> {
+  const version = await httpGetJson<CdpVersionInfo>(`http://127.0.0.1:${port}/json/version`, timeoutMs);
+  if (!version) return false;
+  if (isAntigravityCdpHost(version, [])) return true;
+  const targets = await httpGetJson<CdpTargetLike[]>(`http://127.0.0.1:${port}/json/list`, timeoutMs);
+  return Array.isArray(targets) && isAntigravityCdpHost(version, targets);
+}
+
+export { cdpAlive as verifyCdpHost };
 
 /** 从 DevToolsActivePort 文件读取 Chromium/Electron 动态分配的调试端口 */
 export function readDevToolsActivePort(appDataName: string): number | null {
@@ -60,7 +116,9 @@ export function readDevToolsActivePort(appDataName: string): number | null {
       const port = Number(line);
       if (Number.isFinite(port) && port > 0 && port < 65536) return port;
     }
-  } catch { }
+  } catch (e) {
+    logWarn('declGuard.readActivePort', e);
+  }
   return null;
 }
 
@@ -93,46 +151,33 @@ export async function probeCdpPort(): Promise<number | null> {
 interface TargetInfo { id: string; ws: string; type: string; url: string }
 
 async function listAppTargets(port: number): Promise<TargetInfo[]> {
-  return new Promise((resolve) => {
-    const req = http.get(`http://127.0.0.1:${port}/json/list`, { timeout: 2500 }, (res) => {
-      let d = '';
-      res.on('data', (c) => (d += c));
-      res.on('end', () => {
-        try {
-          const list = JSON.parse(d) as Array<Record<string, unknown>>;
-          const out: TargetInfo[] = [];
-          for (const t of list) {
-            const url = String(t.url || '');
-            const id = String(t.id || '');
-            const ws = String(t.webSocketDebuggerUrl || '');
-            const type = String(t.type || '');
-            if (!id || !ws) continue;
-            // 忽略非渲染表面（worker/service_worker/browser 等）；webview 也要纳入
-            if (type !== 'page' && type !== 'iframe' && type !== 'webview') continue;
-            // 排除自身扩展的 webview
-            if (url.includes('extensionId=soulvon.antigravity-kite')) continue;
+  const list = await httpGetJson<Array<Record<string, unknown>>>(`http://127.0.0.1:${port}/json/list`, 2500);
+  if (!Array.isArray(list)) return [];
+  const out: TargetInfo[] = [];
+  for (const t of list) {
+    const url = String(t.url || '');
+    const id = String(t.id || '');
+    const ws = String(t.webSocketDebuggerUrl || '');
+    const type = String(t.type || '');
+    if (!id || !ws) continue;
+    // 忽略非渲染表面（worker/service_worker/browser 等）；webview 也要纳入
+    if (type !== 'page' && type !== 'iframe' && type !== 'webview') continue;
+    // 排除自身扩展的 webview
+    if (url.includes('extensionId=soulvon.antigravity-kite')) continue;
 
-            // 匹配本地 127.0.0.1 / localhost 上的 http / https 页面，以及 vscode 内部页面
-            // 黑名单排除法（2026-11-16 真机实证后定案）：
-            // 旧实现是 scheme 白名单（只认 vscode-file:// + 127.0.0.1/c/），IDE 一升级
-            // 换表面（vscode-webview://、plugin://）就静默漏掉弹窗，用户只看到"根本没帮忙点"。
-            // 改为只排除确定无关/危险的表面，其余全部纳入；守卫仅按特异文案点按，误触面可控。
-            const excluded =
-              /^(devtools|chrome-extension|chrome|about|data|blob):/i.test(url) ||
-              url.includes('extensionId=soulvon.antigravity-kite');
-            if (!excluded) {
-              out.push({ id, ws, type, url });
-            }
-          }
-          resolve(out);
-        } catch {
-          resolve([]);
-        }
-      });
-    });
-    req.on('error', () => resolve([]));
-    req.on('timeout', () => { req.destroy(); resolve([]); });
-  });
+    // 匹配本地 127.0.0.1 / localhost 上的 http / https 页面，以及 vscode 内部页面
+    // 黑名单排除法（2026-11-16 真机实证后定案）：
+    // 旧实现是 scheme 白名单（只认 vscode-file:// + 127.0.0.1/c/），IDE 一升级
+    // 换表面（vscode-webview://、plugin://）就静默漏掉弹窗，用户只看到"根本没帮忙点"。
+    // 改为只排除确定无关/危险的表面，其余全部纳入；守卫仅按特异文案点按，误触面可控。
+    const excluded =
+      /^(devtools|chrome-extension|chrome|about|data|blob):/i.test(url) ||
+      url.includes('extensionId=soulvon.antigravity-kite');
+    if (!excluded) {
+      out.push({ id, ws, type, url });
+    }
+  }
+  return out;
 }
 
 /**
@@ -362,7 +407,11 @@ const GUARD_SCRIPT = `(() => {
     window.__kiteDeclGuardV = GUARD_VERSION;
     window.__kiteDeclGuardInstalled = true;
     try {
-      const mo = new MutationObserver(() => setTimeout(tryAccept, 60));
+      let moTimer = 0;
+      const mo = new MutationObserver(() => {
+        if (moTimer) return;
+        moTimer = setTimeout(() => { moTimer = 0; tryAccept(); }, 100);
+      });
       mo.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
       window.__kiteDeclGuardObserver = mo;
     } catch (e) {}
@@ -531,7 +580,10 @@ async function heartbeat(): Promise<void> {
       let session = SESSIONS.get(key);
       if (!session || !session.isOpen()) {
         if (session) { session.close(); SESSIONS.delete(key); }
-        session = new CdpSession(t.ws, t.type === 'page', () => SESSIONS.delete(key));
+        session = new CdpSession(t.ws, t.type === 'page', () => {
+          SESSIONS.delete(key);
+          burstUntil = Date.now() + 8_000;
+        });
         if (!(await session.connect())) {
           // 连接失败必须留痕：targets=N attached=M 的缺口就是弹窗没人点的来源
           logWarn('declGuard.attachFail', { url: t.url.slice(0, 90), type: t.type });
@@ -582,6 +634,14 @@ async function heartbeat(): Promise<void> {
 }
 
 async function tick(): Promise<void> {
+  const enabled = vscode.workspace.getConfiguration('antigravityKite').get<boolean>('autoConfirmDeclaration', true);
+  if (!enabled) {
+    if (SESSIONS.size > 0) {
+      for (const s of SESSIONS.values()) s.close();
+      SESSIONS.clear();
+    }
+    return;
+  }
   if (running) return;
   running = true;
   try {
@@ -593,19 +653,25 @@ async function tick(): Promise<void> {
   }
 }
 
-/** 自调度循环：每轮重新读设置（改间隔即时生效） */
+/** 自调度循环：burst 窗口内高频扫描，稳态自动退避 */
 function loop(): void {
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  const waitMs = getNextIntervalMs(Date.now(), getHeartbeatMs());
   timer = setTimeout(() => {
     void (async () => {
       await tick();
-      loop();
+      if (timer !== null) loop();
     })();
-  }, getHeartbeatMs());
+  }, waitMs);
 }
 
 /** 启动守护（静默轮询；端口不可用时自动空转） */
 export function startDeclarationSuppressor(): void {
   if (timer) return;
+  burstUntil = Date.now() + BURST_WINDOW_MS;
   loop();
   setTimeout(() => { void tick(); }, 1000);
   logInfo('declGuard.start', { heartbeatMs: getHeartbeatMs() });
@@ -622,10 +688,11 @@ export function stopDeclarationSuppressor(): void {
 }
 
 /**
- * 切号后立即补扫：agy 重建会换端口/新表面，靠 500ms 心跳自然轮询存在数秒空窗。
- * 0/1/2.5/5s 四连 tick 把新表面快速拉进守护，弹窗一出现即被处理。
+ * 切号后立即补扫：agy 重建会换端口/新表面，开启 20s 高频窗口 + 0/1/2.5/5s 补扫。
  */
 export function pokeGuard(): void {
+  burstUntil = Date.now() + BURST_WINDOW_MS;
+  if (timer) loop();
   for (const d of [0, 1000, 2500, 5000]) {
     setTimeout(() => { void tick(); }, d);
   }

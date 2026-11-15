@@ -73,28 +73,65 @@ async function patchShortcuts(port: number): Promise<{ patched: number; details:
   });
 }
 
-/** 轻量重启：延迟关闭 IDE → 以原参数 + 调试端口重新拉起（独立进程执行，不写任何身份状态） */
+/** 从启动参数中移除已有 --remote-debugging-port（支持 =val 与空格双参数形式），再追加目标端口 */
+export function sanitizeCdpLaunchArgs(args: string[], port: number): string[] {
+  const cleaned: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--remote-debugging-port') {
+      i += 1;
+      continue;
+    }
+    if (/^--remote-debugging-port=/i.test(a)) continue;
+    cleaned.push(a);
+  }
+  cleaned.push(`--remote-debugging-port=${port}`);
+  return cleaned;
+}
+
+/** 轻量重启：延迟关闭 IDE → 以原参数 + 调试端口重新拉起（独立进程执行，跨平台 win32/POSIX，失败留痕日志） */
 function relaunchWithPort(launch: { exePath: string; args: string[]; pid: number }, port: number): void {
+  const cleanArgs = sanitizeCdpLaunchArgs(launch.args, port);
+  const logFile = path.join(os.tmpdir(), 'kite-cdp-relaunch.log');
   const script = [
     'const cp = require("child_process");',
+    'const fs = require("fs");',
     `const pid = ${launch.pid};`,
     `const exe = ${JSON.stringify(launch.exePath)};`,
-    `const args = ${JSON.stringify([...launch.args, '--remote-debugging-port=' + port])};`,
-    'setTimeout(() => {',
-    '  try { cp.execSync("taskkill /PID " + pid + " /T /F", { stdio: "ignore" }); } catch (e) {}',
-    '  setTimeout(() => {',
-    '    const c = cp.spawn(exe, args, { detached: true, stdio: "ignore", windowsHide: false });',
+    `const args = ${JSON.stringify(cleanArgs)};`,
+    `const logFile = ${JSON.stringify(logFile)};`,
+    'const logErr = (tag, err) => { try { fs.appendFileSync(logFile, new Date().toISOString() + " " + tag + ": " + String(err && err.stack || err) + "\\n"); } catch {} };',
+    'const cleanEnv = Object.assign({}, process.env);',
+    'for (const k of ["ELECTRON_RUN_AS_NODE","ELECTRON_NO_ATTACH_CONSOLE","VSCODE_IPC_HOOK","VSCODE_IPC_HOOK_CLI","VSCODE_PID","VSCODE_CWD","VSCODE_HANDLES_UNCAUGHT_ERRORS"]) { delete cleanEnv[k]; }',
+    'const launchApp = () => {',
+    '  try {',
+    '    const c = cp.spawn(exe, args, { detached: true, stdio: "ignore", windowsHide: false, env: cleanEnv });',
     '    c.once("spawn", () => process.exit(0));',
-    '    c.once("error", () => process.exit(1));',
+    '    c.once("error", (err) => { logErr("spawn", err); process.exit(1); });',
     '    c.unref();',
-    '  }, 1500);',
+    '  } catch (err) { logErr("spawnSync", err); process.exit(1); }',
+    '};',
+    'setTimeout(() => {',
+    '  if (process.platform === "win32") {',
+    '    try { cp.execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); } catch (err) { logErr("taskkill", err); }',
+    '    setTimeout(launchApp, 1500);',
+    '  } else {',
+    '    try { process.kill(pid, "SIGTERM"); } catch (err) { logErr("sigterm", err); }',
+    '    setTimeout(() => {',
+    '      try { process.kill(pid, 0); process.kill(pid, "SIGKILL"); } catch {}',
+    '      setTimeout(launchApp, 600);',
+    '    }, 900);',
+    '  }',
     '}, 1200);',
   ].join('\n');
   const child = cp.spawn(process.execPath, ['-e', script], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
+    // process.execPath 可能是 Electron，运行 -e 助手脚本时必须显式保留 ELECTRON_RUN_AS_NODE=1
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
   });
+  child.once('error', (err) => logWarn('cdpGate.relaunchHelperError', err));
   child.unref();
 }
 

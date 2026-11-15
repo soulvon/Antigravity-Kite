@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.3.5",
+  "version": "1.3.10",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -15,7 +15,7 @@
   "license": "MIT",
   "icon": "resources/icon.png",
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.101.0"
   },
   "categories": [
     "Other"
@@ -237,7 +237,7 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_agy_reload.mjs && node scripts/check_switch_health.mjs && node scripts/check_webview_hardening.mjs && node scripts/check_platform_gates.mjs && node scripts/check_decl_suppressor.mjs && node scripts/check_status_bar.mjs && node scripts/check_mw_feedback.mjs && node scripts/check_mw_launch.mjs",
+    "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_agy_reload.mjs && node scripts/check_switch_health.mjs && node scripts/check_switch_perf.mjs && node scripts/check_webview_hardening.mjs && node scripts/check_platform_gates.mjs && node scripts/check_decl_suppressor.mjs && node scripts/check_status_bar.mjs && node scripts/check_mw_feedback.mjs && node scripts/check_mw_launch.mjs && node scripts/check_tags.mjs && node scripts/check_hardening.mjs",
     "watch": "tsc -watch -p ./",
     "package": "node ./scripts/update-version.js && npm run compile && vsce package --skip-license",
     "check:release": "node scripts/check_release_readiness.mjs"

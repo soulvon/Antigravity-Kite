@@ -5,8 +5,9 @@
  * （bundle 逆向 + 真机实验证实：写它 + 重启 = 身份/头像/名字/额度完整切换；
  *   写 state.vscdb 对界面身份无效）。
  *
- * 实现方式：生成 PowerShell 脚本（Add-Type P/Invoke CredReadW/CredWriteW），
- * 以 -EncodedCommand 执行，避免引号转义问题。
+ * 实现方式：优先走 winNativeHelper（一次 csc.exe 编译缓存为 KiteWinHelper_<hash>.exe，
+ * 后续直调 Win32 CredReadW/CredWriteW，单次仅 ~100ms，零 PowerShell 启动）；
+ * 无 csc.exe 的极简环境自动回退 PowerShell + Add-Type。
  * 本模块不 import vscode，供扩展与关-写-重启助手共用。
  */
 import * as cp from 'child_process';
@@ -15,6 +16,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { getAppDataDir } from './platformPaths';
+import { ensureWinNativeHelper, runWinCredRead, runWinCredWrite } from './winNativeHelper';
 import { t } from './i18n';
 
 export const IDE_CRED_TARGET = 'gemini:antigravity';
@@ -229,7 +231,17 @@ export interface IdeCredentialReadResult {
 export async function readIdeCredential(targetOverride?: string): Promise<IdeCredentialReadResult> {
   try {
     assertWindowsCredAvailable();
-    const script = renderPs('Read', targetOverride || IDE_CRED_TARGET, '', '');
+    const target = targetOverride || IDE_CRED_TARGET;
+    const helper = await ensureWinNativeHelper();
+    if (helper) {
+      const res = await runWinCredRead(target);
+      if (!res.ok || !res.blobBase64) {
+        return { ok: false, error: res.error || 'CredReadW failed' };
+      }
+      const parsed = JSON.parse(Buffer.from(res.blobBase64, 'base64').toString('utf8')) as IdeCredential;
+      return { ok: true, user: res.user, blobBase64: res.blobBase64, parsed };
+    }
+    const script = renderPs('Read', target, '', '');
     const out = await runPs(script);
     const json = JSON.parse(out.trim());
     const parsed = JSON.parse(Buffer.from(json.blobBase64, 'base64').toString('utf8')) as IdeCredential;
@@ -243,7 +255,13 @@ export async function readIdeCredential(targetOverride?: string): Promise<IdeCre
 export async function writeIdeCredentialBlob(blobBase64: string, user: string, targetOverride?: string): Promise<{ ok: boolean; error?: string }> {
   try {
     assertWindowsCredAvailable();
-    const script = renderPs('Write', targetOverride || IDE_CRED_TARGET, user, blobBase64);
+    const target = targetOverride || IDE_CRED_TARGET;
+    const helper = await ensureWinNativeHelper();
+    if (helper) {
+      const res = await runWinCredWrite(target, user, blobBase64);
+      return res.ok ? { ok: true } : { ok: false, error: res.error || 'CredWriteW failed' };
+    }
+    const script = renderPs('Write', target, user, blobBase64);
     const out = await runPs(script);
     JSON.parse(out.trim());
     return { ok: true };
@@ -255,24 +273,67 @@ export async function writeIdeCredentialBlob(blobBase64: string, user: string, t
 export interface IdeCredentialSwapResult {
   ok: boolean;
   error?: string;
-  /** 被覆盖的旧凭据（PowerShell 内部读出，用于回滚备份） */
+  /** 被覆盖的旧凭据（内部或预读阶段读出，用于回滚备份） */
   previous?: IdeCredential;
   previousUser?: string;
 }
 
 /**
- * 一次 PowerShell 完成「读旧凭据 + 写新凭据」。
- * 旧 blob 的 writer_id / auth_method 由脚本内部继承（IDE 认这两个字段），
- * 相比 readIdeCredential + writeIdeCredentialBlob 两次调用，省掉一次进程启动 + Add-Type 编译。
+ * 合并旧凭据的 writer_id / auth_method 并写入新凭据。
+ * 若外部已在并发阶段传入 preRead（Phase A 零增量读完），则无需再次读凭据，直接一次 native write（~100ms）落地。
  */
 export async function swapIdeCredential(
   blobBase64: string,
   user: string,
   targetOverride?: string,
+  preRead?: IdeCredentialReadResult,
 ): Promise<IdeCredentialSwapResult> {
   try {
     assertWindowsCredAvailable();
-    const script = renderPs('Swap', targetOverride || IDE_CRED_TARGET, user, blobBase64);
+    const target = targetOverride || IDE_CRED_TARGET;
+    const helper = await ensureWinNativeHelper();
+    if (helper) {
+      let prev = preRead;
+      if (!prev) {
+        try {
+          const raw = await runWinCredRead(target);
+          if (raw.ok && raw.blobBase64) {
+            let parsed: IdeCredential | undefined;
+            try {
+              parsed = JSON.parse(Buffer.from(raw.blobBase64, 'base64').toString('utf8')) as IdeCredential;
+            } catch { /* 非 JSON 旧 blob 仅跳过继承 */ }
+            prev = { ok: true, user: raw.user, blobBase64: raw.blobBase64, parsed };
+          } else {
+            prev = { ok: false, error: raw.error };
+          }
+        } catch {
+          prev = { ok: false };
+        }
+      }
+      let finalBlobBase64 = blobBase64;
+      let writeUser = user;
+      if (prev.ok) {
+        if (prev.user) writeUser = prev.user;
+        if (prev.parsed) {
+          try {
+            const newObj = JSON.parse(Buffer.from(blobBase64, 'base64').toString('utf8')) as Record<string, unknown>;
+            if (prev.parsed.writer_id) newObj.writer_id = prev.parsed.writer_id;
+            if (prev.parsed.auth_method) newObj.auth_method = prev.parsed.auth_method;
+            finalBlobBase64 = Buffer.from(JSON.stringify(newObj), 'utf8').toString('base64');
+          } catch { /* 新 blob 解析异常时仍按原样写入 */ }
+        }
+      }
+      const wRes = await runWinCredWrite(target, writeUser, finalBlobBase64);
+      if (!wRes.ok) {
+        return { ok: false, error: wRes.error || 'CredWriteW failed' };
+      }
+      return {
+        ok: true,
+        previous: prev.parsed,
+        previousUser: prev.ok ? (prev.user || user) : user,
+      };
+    }
+    const script = renderPs('Swap', target, user, blobBase64);
     const out = await runPs(script);
     const json = JSON.parse(out.trim()) as { ok?: boolean; oldBlobBase64?: string; oldUser?: string };
     let previous: IdeCredential | undefined;

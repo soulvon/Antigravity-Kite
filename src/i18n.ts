@@ -242,6 +242,7 @@ const S: Record<string, [string, string]> = {
   accountImported: ['已导入账号: {0}', 'Account imported: {0}'],
   importFailed: ['导入失败: {0}', 'Import failed: {0}'],
   tagsUpdated: ['已为 {0} 个账号更新标签', 'Updated tags for {0} accounts'],
+  tagDeleted: ['已删除标签「{0}」（已从 {1} 个账号移除）', 'Deleted tag "{0}" (removed from {1} accounts)'],
   accountsDeleted: ['已删除 {0} 个账号', 'Deleted {0} accounts'],
   accountsEnabled: ['已启用 {0} 个账号', 'Enabled {0} accounts'],
   accountsDisabled: ['已禁用 {0} 个账号', 'Disabled {0} accounts'],
@@ -283,7 +284,6 @@ const S: Record<string, [string, string]> = {
     '无法获取用户邮箱（未登录或数据损坏）',
     'Could not get the user email (not signed in or data corrupted)',
   ],
-  lrTagReauth: ['需要重新授权', 'Needs re-auth'],
 
   // ── OAuth ──
   oauthNoPort: ['无法找到可用端口', 'No available port'],
@@ -442,7 +442,10 @@ const S: Record<string, [string, string]> = {
   'ui.tagEditTitle': ['编辑标签', 'Edit Tags'],
   'ui.tagInputPh': ['输入标签名称，回车添加', 'Type a tag name and press Enter'],
   'ui.add': ['添加', 'Add'],
-  'ui.existingTags': ['已有标签（点击添加/移除）', 'Existing tags (click to add/remove)'],
+  'ui.existingTags': ['已有标签（点击选中/取消，× 永久删除）', 'Existing tags (click to toggle, × to delete)'],
+  'ui.deleteTagTitle': ['删除标签', 'Delete Tag'],
+  'ui.deleteTagBtn': ['删除', 'Delete'],
+  'ui.confirmDeleteTag': ['确定永久删除标签「{0}」？将从全部 {1} 个账号中移除。', 'Permanently delete tag "{0}"? It will be removed from all {1} accounts.'],
   'ui.noTags': ['暂无标签', 'No tags'],
   'ui.save': ['保存', 'Save'],
   'ui.confirmTitle': ['确认操作', 'Confirm'],
@@ -498,8 +501,8 @@ const S: Record<string, [string, string]> = {
   'ui.quotaGroup': ['额度与刷新', 'Quota & refresh'],
   'ui.quotaPoolRow': ['全池后台刷新间隔', 'Background refresh (all accounts)'],
   'ui.quotaPoolHint': [
-    '驱动号池卡片、统计面板与底栏的全量刷新（保存即时生效）。底栏"当前号"另有短周期增量刷新，在状态栏组单独配置。',
-    'Drives the full-pool refresh behind cards, stats and the status bar (applies instantly). The status bar has a separate short-interval refresh for the current account.',
+    '驱动号池卡片、统计面板与底栏的全量刷新（修改即时生效）。底栏“当前号”另有短周期增量刷新，在状态栏组单独配置。',
+    'Drives the full-pool refresh behind cards, stats and the status bar (applies immediately). The status bar has a separate short-interval refresh for the current account.',
   ],
   'ui.syncGeminiRow': ['切号同步 Gemini 配置', 'Sync Gemini config on switch'],
   'ui.heartbeatRow': ['CDP 心跳间隔', 'CDP heartbeat interval'],
@@ -534,9 +537,6 @@ const S: Record<string, [string, string]> = {
     'Delete the {0} selected accounts? This cannot be undone.',
   ],
   'ui.filteredCount': ['已筛选 {0}', 'Filtered: {0}'],
-  'ui.tagColorTitle': ['「{0}」颜色', 'Color for "{0}"'],
-  'ui.colorResetTitle': ['重置为默认色', 'Reset to default color'],
-  'ui.changeColor': ['点击换色', 'Click to change color'],
   'ui.editTagsFor': ['编辑标签 - {0}', 'Edit Tags - {0}'],
   'ui.tagBatchTitle': ['为 {0} 个账号打标签', 'Tag {0} accounts'],
   'ui.importingFrom': ['正在从 {0} 导入...', 'Importing from {0}...'],
@@ -644,6 +644,13 @@ const S: Record<string, [string, string]> = {
   'lp.pageInfo': ['{0} / {1} 页（共 {2} 条）', 'Page {0} / {1} ({2} records)'],
   'lp.prevPage': ['上一页', 'Prev'],
   'lp.nextPage': ['下一页', 'Next'],
+  'ui.switchingElapsed': ['切换中 {0}s…', 'Switching {0}s…'],
+  'ui.switchTimeout': ['切号超时（超过 {0} 秒未收到响应），请查看诊断日志或重试', 'Switch timed out after {0}s. Check diagnostics log or retry.'],
+  'ui.oauthWaiting': ['正在等待浏览器完成 Google 授权…', 'Waiting for Google authorization in browser…'],
+  'ui.detectingLocal': ['正在读取本地登录账号…', 'Reading currently logged-in account…'],
+  'ui.activeFilters': ['当前筛选', 'Active filters'],
+  'ui.clearFilterShort': ['清除', 'Clear'],
+  'ui.closeSettings': ['关闭', 'Close'],
 };
 
 /** 取文案；{0}{1} 为占位符 */

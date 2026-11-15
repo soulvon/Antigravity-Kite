@@ -260,9 +260,9 @@
     tbody.innerHTML = accounts.map(a => {
       const remaining = a.usedPct === null ? null : (100 - a.usedPct);
       const pctText = remaining === null ? '—' : remaining + '%';
-      const fillClass = remaining === null ? '' : remaining <= 10 ? 'lp-fill-danger' : remaining <= 30 ? 'lp-fill-warn' : 'lp-fill-ok';
-      const statusText = a.disabled ? l('disabled') : remaining === null ? l('statusUnchecked') : remaining <= 10 ? l('statusDanger') : remaining <= 30 ? l('statusWarn') : l('statusNormal');
-      const statusClass = a.disabled ? 'lp-c-dim' : remaining === null ? 'lp-c-dim' : remaining <= 10 ? 'lp-c-red' : remaining <= 30 ? 'lp-c-yellow' : 'lp-c-green';
+      const fillClass = remaining === null ? '' : remaining < 10 ? 'lp-fill-danger' : remaining < 30 ? 'lp-fill-warn' : 'lp-fill-ok';
+      const statusText = a.disabled ? l('disabled') : remaining === null ? l('statusUnchecked') : remaining < 10 ? l('statusDanger') : remaining < 30 ? l('statusWarn') : l('statusNormal');
+      const statusClass = a.disabled ? 'lp-c-dim' : remaining === null ? 'lp-c-dim' : remaining < 10 ? 'lp-c-red' : remaining < 30 ? 'lp-c-yellow' : 'lp-c-green';
       const tagsHtml = (a.tags || []).map(t => '<span class="lp-tag" style="background:' + getTagColor(t) + '20;color:' + getTagColor(t) + ';border-color:' + getTagColor(t) + '60">' + escHtml(t) + '</span>').join('');
       return '<tr class="' + (a.isCurrent ? 'lp-row-current' : '') + '">' +
         '<td>' + (a.isCurrent ? '<span class="lp-cur-dot">●</span>' : '') + '</td>' +

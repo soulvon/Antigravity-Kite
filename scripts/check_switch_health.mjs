@@ -73,17 +73,18 @@ for (const k of ['switchCredFail', 'switchAgyPtrFail', 'switchGeminiFail', 'swit
   check(`H10 ${k} 含 {0} 占位符`, new RegExp(`${k}:[\\s\\S]{0,160}\\{0\\}`).test(i18nSrc));
 }
 
-// H8f 运行期冒烟（Windows）：真跑一次编译后的 readIdeCredential，验证 PS 语法 + Add-Type + csc 生成 hash DLL
+// H8f 运行期冒烟（Windows）：真跑一次 readIdeCredential，验证原生 Helper 编译生成与 P/Invoke CredReadW 通道
 if (process.platform === 'win32') {
   const require = createRequire(import.meta.url);
   const mod = require(join(root, 'out', 'winCredential.js'));
+  const helperMod = require(join(root, 'out', 'winNativeHelper.js'));
   const probe = await mod.readIdeCredential('kite:gate:nonexistent-smoke');
-  // 目标靶标不存在时必须走到 Win32 ERROR_NOT_FOUND(1168)，若 PS/C# 语法或编译炸了不会是 err=1168
+  // 目标靶标不存在时必须走到 Win32 ERROR_NOT_FOUND(1168)，若编译或 P/Invoke 炸了不会是 err=1168
   const pInvokeRan = probe && probe.ok === false && typeof probe.error === 'string' && probe.error.includes('err=1168');
-  check('H8f Windows 凭据 PS/C# 编译与 P/Invoke 实跑通畅', pInvokeRan, pInvokeRan ? mod.WIN_CRED_DLL_NAME : (probe && probe.error));
-  const dllPath = join(process.env.APPDATA || '', '.antigravity-kite', 'dll', mod.WIN_CRED_DLL_NAME || 'missing');
-  const dllOk = existsSync(dllPath) && statSync(dllPath).size > 0;
-  check('H8g csc 预编译 hash DLL 已生成', dllOk, dllOk ? `${mod.WIN_CRED_DLL_NAME} (${statSync(dllPath).size}B)` : dllPath);
+  check('H8f Windows 凭据原生 Helper 编译与 P/Invoke 实跑通畅', pInvokeRan, pInvokeRan ? helperMod.WIN_HELPER_EXE_NAME : (probe && probe.error));
+  const exePath = helperMod.getWinHelperExePath();
+  const exeOk = existsSync(exePath) && statSync(exePath).size > 0;
+  check('H8g csc 预编译 hash Helper EXE 已生成', exeOk, exeOk ? `${helperMod.WIN_HELPER_EXE_NAME} (${statSync(exePath).size}B)` : exePath);
 } else {
   console.log('  SKIP  H8f/H8g Windows 凭据运行期冒烟（非 win32）');
 }

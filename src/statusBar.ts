@@ -302,7 +302,7 @@ export class StatusBarManager implements vscode.Disposable {
 
     // 主段：账号 + 额度聚合，点击弹切号菜单（QuickPick）
     this._main = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    this._main.command = 'antigravityKite.openSettings';
+    this._main.command = 'antigravityKite.quickSwitchAccount';
     this._main.name = 'Kite Quota';
 
     // 副段：号池统计，点击开侧栏
@@ -334,7 +334,7 @@ export class StatusBarManager implements vscode.Disposable {
     );
 
     // 订阅账号变化（健康/禁用/增删都在 store 里，重绘即可；额度刷新由统一管线推送）
-    accountStore.onChange(() => this.update());
+    this._disposables.push(accountStore.onChange(() => this.update()));
 
     // 倒计时跳动：每分钟纯重绘一次（不碰网络；渲染层读的都是缓存与时间差）
     this._redrawTimer = setInterval(() => this.update(), 60 * 1000);
@@ -382,7 +382,7 @@ export class StatusBarManager implements vscode.Disposable {
     try { this._pool.dispose(); } catch { /* ignore */ }
     this._main = vscode.window.createStatusBarItem(target, 100);
     this._pool = vscode.window.createStatusBarItem(target, 99);
-    this._main.command = 'antigravityKite.openSettings';
+    this._main.command = 'antigravityKite.quickSwitchAccount';
     this._pool.command = OPEN_SIDEBAR_CMD;
     this._currentAlignment = target;
   }
@@ -823,13 +823,11 @@ export class StatusBarManager implements vscode.Disposable {
       title: t('sbSwitching', account.email),
       cancellable: false
     }, async () => {
-      // 复用侧栏完整切号链路（门控/token/凭据/状态库/agy/gemini/会话/引擎重载）
+      // 复用侧栏完整切号链路（门控/token/凭据/状态库/agy/gemini/会话/引擎重载；切号内部已触发当前号额度刷新）
       try {
         await switchRequest?.(account.email);
         await onAccountSwitched?.(account.email);
         this.update();
-        const cur = this._ctx.globalState.get<string>('currentEmail') || account.email;
-        await this._deps.refreshCurrent?.(cur);
       } catch (err) {
         notifyUi('error', t('sbSwitchFail', err instanceof Error ? err.message : String(err)));
       }

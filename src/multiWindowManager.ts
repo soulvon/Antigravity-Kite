@@ -14,6 +14,8 @@ import { getAppDataDir } from './platformPaths';
 import {
   getDefaultUserDataDir,
   getCurrentUserDataDir,
+  setEffectiveCurrentUserDataDir,
+  getEffectiveCurrentUserDataDir as getIdeEffectiveCurrentUserDataDir,
   normalizePath,
   detectExePath,
   getRunningEntries,
@@ -23,6 +25,7 @@ import {
 } from './ideRuntime';
 import { logInfo, logWarn, logError } from './logger';
 import { t } from './i18n';
+import { isLegacyAutoTag } from './tagSanitizer';
 
 export { invalidateProcessCache } from './ideRuntime';
 
@@ -67,6 +70,13 @@ let _context: vscode.ExtensionContext | null = null;
 
 export function init(context: vscode.ExtensionContext): void {
   _context = context;
+  if (context?.globalStorageUri) {
+    try {
+      const p = context.globalStorageUri.fsPath;
+      const candidate = path.resolve(p, '../../..');
+      if (fs.existsSync(candidate)) setEffectiveCurrentUserDataDir(candidate);
+    } catch {}
+  }
   migrateDataIfNeeded(context, MULTI_WINDOWS_FILE);
   _storageDir = getSharedStorageDir();
 }
@@ -76,10 +86,13 @@ export function getEffectiveCurrentUserDataDir(): string {
     try {
       const p = _context.globalStorageUri.fsPath;
       const candidate = path.resolve(p, '../../..');
-      if (fs.existsSync(candidate)) return candidate;
+      if (fs.existsSync(candidate)) {
+        setEffectiveCurrentUserDataDir(candidate);
+        return candidate;
+      }
     } catch {}
   }
-  return getCurrentUserDataDir();
+  return getIdeEffectiveCurrentUserDataDir();
 }
 
 function getWindowsRootDir(): string {
@@ -152,7 +165,12 @@ function loadStore(forceFresh = false): MultiWindowStore {
         cleanName = cleanName.replace(/实例/g, '多开');
       }
       if (cleanName !== win.name) dirty = true;
-      return { ...win, name: cleanName };
+      let cleanAssignedTag = win.assignedTag;
+      if (cleanAssignedTag && isLegacyAutoTag(cleanAssignedTag)) {
+        cleanAssignedTag = undefined;
+        dirty = true;
+      }
+      return { ...win, name: cleanName, assignedTag: cleanAssignedTag };
     });
     _storeCache = { windows };
     _storeCacheTs = now;
@@ -622,6 +640,15 @@ export async function focusWindow(windowId: string): Promise<void> {
   }
 }
 
+function writeWindowBindFile(win: MultiWindowConfig): void {
+  try {
+    const bPath = path.join(win.userDataDir, BIND_FILE);
+    if (fs.existsSync(win.userDataDir)) {
+      fs.writeFileSync(bPath, JSON.stringify({ bindEmail: win.bindEmail, assignedTag: win.assignedTag || '' }, null, 2), 'utf8');
+    }
+  } catch {}
+}
+
 /** 更新多开信息（名称 / 绑定账号 / 分组） */
 export function updateWindow(windowId: string, updates: { name?: string; bindEmail?: string; assignedTag?: string }): void {
   const store = loadStore();
@@ -645,14 +672,26 @@ export function updateWindow(windowId: string, updates: { name?: string; bindEma
   }
 
   // 刷新绑定文件
-  try {
-    const bPath = path.join(win.userDataDir, BIND_FILE);
-    if (fs.existsSync(win.userDataDir)) {
-      fs.writeFileSync(bPath, JSON.stringify({ bindEmail: win.bindEmail, assignedTag: win.assignedTag || '' }, null, 2), 'utf8');
-    }
-  } catch {}
-
+  writeWindowBindFile(win);
   saveStore(store);
+}
+
+/** 从所有多开窗口配置中解除指定标签分组绑定 */
+export function clearAssignedTag(tag: string): number {
+  const target = tag.trim();
+  if (!target) return 0;
+
+  const store = loadStore();
+  let cleared = 0;
+  for (const win of store.windows) {
+    if (win.assignedTag && win.assignedTag.trim() === target) {
+      win.assignedTag = undefined;
+      cleared++;
+      writeWindowBindFile(win);
+    }
+  }
+  if (cleared > 0) saveStore(store);
+  return cleared;
 }
 
 /** 删除多开窗口 */

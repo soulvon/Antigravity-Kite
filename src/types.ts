@@ -16,8 +16,14 @@ export interface StoredAccount {
   };
   /** 配额快照（运行时缓存，不持久化） */
   usage?: UsageSnapshot;
+  /** Cloud Code 项目 ID（缓存以加速后续查询与健康探针） */
+  projectId?: string;
   /** 健康状态（封禁/登录失效检测，持久化到 accounts.json） */
   health?: AccountHealth;
+  /** Kite 自身通过 refreshToken 刷出当前 accessToken 的 SHA256 前 16 位指纹（防外部低权 token 混用） */
+  verifiedAtHash?: string;
+  /** 最近一次由 Kite 刷新验证该 accessToken 的毫秒时间戳 */
+  verifiedAt?: number;
 }
 
 /** 多开窗口配置 */

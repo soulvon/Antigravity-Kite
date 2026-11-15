@@ -62,7 +62,7 @@ function normalizeExpiryToIso(value: unknown): string | undefined {
   return undefined;
 }
 
-function convertToStoredAccount(ext: ExternalAccount, source: string): StoredAccount {
+function convertToStoredAccount(ext: ExternalAccount): StoredAccount {
   return {
     email: ext.email,
     name: ext.name,
@@ -74,7 +74,6 @@ function convertToStoredAccount(ext: ExternalAccount, source: string): StoredAcc
       source: 'local',
       importedAt: new Date().toISOString(),
     },
-    tag: source,
   };
 }
 
@@ -179,7 +178,7 @@ export async function importFromCockpitTools(): Promise<{ imported: number; skip
       continue;
     }
 
-    const stored = convertToStoredAccount(ext, 'cockpit-tools');
+    const stored = convertToStoredAccount(ext);
     accountStore.add(stored);
     imported++;
   }
@@ -213,7 +212,7 @@ export async function importFromAntigravityManager(): Promise<{ imported: number
       continue;
     }
 
-    const stored = convertToStoredAccount(ext, 'antigravity-manager');
+    const stored = convertToStoredAccount(ext);
     accountStore.add(stored);
     imported++;
   }
@@ -290,7 +289,6 @@ export async function importFromJsonFile(): Promise<{ imported: number; skipped:
         source: 'manual',
         importedAt: new Date().toISOString(),
       },
-      tag: 'json-import',
     };
     
     accountStore.add(stored);
