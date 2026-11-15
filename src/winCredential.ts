@@ -10,6 +10,7 @@
  * 本模块不 import vscode，供扩展与关-写-重启助手共用。
  */
 import * as cp from 'child_process';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -42,16 +43,8 @@ export interface IdeCredential {
   writer_id: string;
 }
 
-const PS_TEMPLATE = [
-  "$ErrorActionPreference = 'Stop'",
-  "$DllDir = '<DLLDIR>'",
-  "if (-not (Test-Path $DllDir)) { New-Item -ItemType Directory -Path $DllDir -Force | Out-Null }",
-  "$Dll = Join-Path $DllDir 'KiteWinCred_v1.dll'",
-  "$Mode = '<MODE>'",
-  "$Target = '<TARGET>'",
-  "$User = '<USER>'",
-  "$BlobBase64 = '<BLOB>'",
-  "$src = @'",
+/** P/Invoke C# 源码（单独常量：DLL 文件名要绑定它的 hash） */
+const CS_SOURCE_LINES = [
   'using System;',
   'using System.Runtime.InteropServices;',
   'public static class KiteWinCred {',
@@ -77,6 +70,23 @@ const PS_TEMPLATE = [
   '  [DllImport("Advapi32.dll")]',
   '  public static extern void CredFree(IntPtr cred);',
   '}',
+];
+
+/** DLL 文件名绑定 C# 源码 hash：源码一变文件名即变，杜绝加载旧结构 DLL 写坏凭据（2026-11-16 审视修正） */
+export const WIN_CRED_DLL_NAME = `KiteWinCred_${createHash('sha1').update(CS_SOURCE_LINES.join('\n')).digest('hex').slice(0, 8)}.dll`;
+
+const PS_TEMPLATE = [
+  "$ErrorActionPreference = 'Stop'",
+  "$ProgressPreference = 'SilentlyContinue'",
+  "$DllDir = '<DLLDIR>'",
+  "if (-not (Test-Path $DllDir)) { New-Item -ItemType Directory -Path $DllDir -Force | Out-Null }",
+  "$Dll = Join-Path $DllDir '<DLLNAME>'",
+  "$Mode = '<MODE>'",
+  "$Target = '<TARGET>'",
+  "$User = '<USER>'",
+  "$BlobBase64 = '<BLOB>'",
+  "$src = @'",
+  ...CS_SOURCE_LINES,
   "'@",
   // 首次切号用 csc 预编译到共享 DLL，后续切号 Add-Type -Path 直接加载，
   // 省掉每次 PowerShell 进程内重编译 C#（真机实测 hot.cred 中位 4.5s，编译占大头）。
@@ -87,7 +97,7 @@ const PS_TEMPLATE = [
   '  try {',
   '    $csc = Join-Path $env:WINDIR "Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe"',
   '    if (Test-Path $csc) {',
-  '      $srcFile = Join-Path $DllDir "KiteWinCred_v1.cs"',
+  '      $srcFile = [System.IO.Path]::ChangeExtension($Dll, ".cs")',
   '      Set-Content -Path $srcFile -Value $src -Encoding UTF8',
   '      & $csc /nologo /target:library /out:$Dll $srcFile | Out-Null',
   '      Remove-Item -Force $srcFile -ErrorAction SilentlyContinue',
@@ -189,13 +199,13 @@ function runPs(script: string, timeoutMs = 45000): Promise<string> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (code !== 0) reject(new Error('powershell exit ' + code + ': ' + stderr.slice(0, 300)));
+      if (code !== 0) reject(new Error('powershell exit ' + code + ': ' + stderr.slice(-400)));
       else resolve(stdout);
     });
   });
 }
 
-/** 凭据脚本渲染：统一注入 DLL 缓存目录，避免三处调用各拼一遍漏掉占位符 */
+/** 凭据脚本渲染：统一注入 DLL 缓存目录与 DLL 名，避免三处调用各拼一遍漏掉占位符 */
 function renderPs(mode: 'Read' | 'Write' | 'Swap', target: string, user: string, blob: string): string {
   const dllDir = path.join(getAppDataDir(), '.antigravity-kite', 'dll').replace(/'/g, "''");
   return PS_TEMPLATE
@@ -203,7 +213,8 @@ function renderPs(mode: 'Read' | 'Write' | 'Swap', target: string, user: string,
     .replace('<TARGET>', target.replace(/'/g, "''"))
     .replace('<USER>', user.replace(/'/g, "''"))
     .replace('<BLOB>', blob)
-    .replace('<DLLDIR>', dllDir);
+    .replace('<DLLDIR>', dllDir)
+    .replace('<DLLNAME>', WIN_CRED_DLL_NAME);
 }
 
 export interface IdeCredentialReadResult {

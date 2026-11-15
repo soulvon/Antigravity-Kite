@@ -49,6 +49,7 @@ check('A2d wmic 回退失败有 logWarn', rt.includes('agy.enum.wmic'));
 check('A3a killAgyEngine 调用独立 agy PID 校验', /killAgyEngine[\s\S]{0,1200}listAgyPids\(/.test(rt));
 check('A3b 枚举差异显式告警', rt.includes('agy.enum.mismatch'));
 check('A3c 独立校验命令失败不得当成「无进程」', /AgyProbe[\s\S]{0,200}ok:\s*false/.test(rt) || /probe\.ok\s*===\s*false/.test(rt));
+check('A7 probe 仅兜底不无条件并入（树内优先，防误杀其他实例 agy）', /enumHit\.length > 0 \? enumHit : probe\.pids/.test(rt));
 
 // A4 「agy 未运行」不得静默当成功：必须有可见错误
 const noEngineBranch = rt.match(/if \(agyPids\.length === 0\)[\s\S]{0,500}/);

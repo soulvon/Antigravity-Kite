@@ -151,18 +151,18 @@ const S: Record<string, [string, string]> = {
   ],
 
   // ── 切号 toast ──
-  switchCredFail: ['凭据写入失败：', 'Failed to write credential: '],
-  switchAgyPtrFail: ['agy 指针写入失败：', 'Failed to write agy pointer: '],
-  switchGeminiFail: ['gemini 文件同步失败：', 'Failed to sync gemini files: '],
+  switchCredFail: ['凭据写入失败：{0}', 'Failed to write credential: {0}'],
+  switchAgyPtrFail: ['agy 指针写入失败：{0}', 'Failed to write agy pointer: {0}'],
+  switchGeminiFail: ['gemini 文件同步失败：{0}', 'Failed to sync gemini files: {0}'],
   switchMenuAlignLater: [
     '账号菜单显示待下次重启对齐（不影响使用）',
     'The account menu display will align after the next restart (does not affect usage)',
   ],
   switchDone: [
-    '秒切完成：agent/额度已切至 ',
-    'Quick switch done: agent/quota switched to ',
+    '秒切完成：agent/额度已切至 {0}',
+    'Quick switch done: agent/quota switched to {0}',
   ],
-  switchCancelled: ['切号已取消：', 'Switch cancelled: '],
+  switchCancelled: ['切号已取消：{0}', 'Switch cancelled: {0}'],
   agyReloadNoEngine: [
     '本次切号时 agy 引擎未运行，模型列表将在下次打开 agent 面板后刷新',
     'The agy engine was not running during this switch; the model list will refresh the next time the agent panel opens',

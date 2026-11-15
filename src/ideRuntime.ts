@@ -502,50 +502,60 @@ function isIdeMainProcess(p: ProcSnapshot): boolean {
  * 被杀后 IDE 按需以新凭据重建引擎——agent 面板无感切号的机制。
  */
 export async function killAgyEngine(): Promise<{ killed: number; error?: string; agyWasRunning: boolean }> {
-  // 0) 独立校验先行：tasklist/ps 不依赖 PowerShell，主枚举失败时仍能拿到真实 agy PID
+  // 0) 独立校验先行：tasklist/ps 只需 ~60ms，失败立刻暴露，不浪费时间跑全量快照
   const probe = await listAgyPids();
-
-  // 1) 全量进程快照（一次 PowerShell 拿 Name/PID/PPID/CommandLine）
-  const all = await listAllProcesses();
-
-  // 2) 定位当前窗口主进程（无 --type= 且 user-data-dir 匹配；匹配不到则取唯一主进程兜底）
-  const mains = all.filter((p) => isIdeMainProcess(p));
-  let mainPid: number | null = null;
-  const matched = mains.filter((p) => processMatchesCurrentWindow(p.cmd));
-  if (matched.length > 0) {
-    mainPid = matched[0].pid;
-  } else if (mains.length === 1) {
-    mainPid = mains[0].pid;
+  if (probe.ok === false) {
+    // 读失败 = 未知：绝不当成「没有进程」静默走完切号
+    return { killed: 0, agyWasRunning: false, error: t('agyReloadEnumFail', probe.reason || '') };
   }
 
-  // 3) BFS 收集主进程全部后代
-  const ppidMap = new Map<number, number[]>();
-  for (const p of all) {
-    const list = ppidMap.get(p.ppid) || [];
-    list.push(p.pid);
-    ppidMap.set(p.ppid, list);
-  }
-  const descendants = new Set<number>();
-  if (mainPid !== null) {
-    const queue = [mainPid];
-    while (queue.length > 0) {
-      const pid = queue.shift()!;
-      for (const child of ppidMap.get(pid) || []) {
-        if (!descendants.has(child)) {
-          descendants.add(child);
-          queue.push(child);
+  let agyPids: number[] = [];
+  if (probe.pids.length === 1) {
+    // 快路径（2026-11-16 分段实测：listAllProcesses 跑全系统 670+ 进程快照耗时 ~6.6s）：
+    // 全系统仅 1 个 agy 时，树内命中或旧兜底结果都是它，免去 PowerShell 全量快照；
+    // 只有 >= 2 个 agy 并存时才走进程树 BFS 精准隔离，防止误杀白底 Hub / 其他实例。
+    agyPids = probe.pids;
+  } else if (probe.pids.length >= 2) {
+    // 1) 全量进程快照（一次 PowerShell 拿 Name/PID/PPID/CommandLine）
+    const all = await listAllProcesses();
+
+    // 2) 定位当前窗口主进程（无 --type= 且 user-data-dir 匹配；匹配不到则取唯一主进程兜底）
+    const mains = all.filter((p) => isIdeMainProcess(p));
+    let mainPid: number | null = null;
+    const matched = mains.filter((p) => processMatchesCurrentWindow(p.cmd));
+    if (matched.length > 0) {
+      mainPid = matched[0].pid;
+    } else if (mains.length === 1) {
+      mainPid = mains[0].pid;
+    }
+
+    // 3) BFS 收集主进程全部后代
+    const ppidMap = new Map<number, number[]>();
+    for (const p of all) {
+      const list = ppidMap.get(p.ppid) || [];
+      list.push(p.pid);
+      ppidMap.set(p.ppid, list);
+    }
+    const descendants = new Set<number>();
+    if (mainPid !== null) {
+      const queue = [mainPid];
+      while (queue.length > 0) {
+        const pid = queue.shift()!;
+        for (const child of ppidMap.get(pid) || []) {
+          if (!descendants.has(child)) {
+            descendants.add(child);
+            queue.push(child);
+          }
         }
       }
     }
-  }
 
-  // 4) 后代里的 agy 引擎（Windows: agy.exe；POSIX: agy，按平台匹配名称与路径分隔符）
-  const agyNameRe = isWindows ? /(^|\\)agy\.exe$/i : /(^|\/)agy$/i;
-  const treeAgy = all.filter((p) => agyNameRe.test(p.name) && descendants.has(p.pid)).map((p) => p.pid);
-  const enumAgy = all.filter((p) => agyNameRe.test(p.name)).map((p) => p.pid);
+    // 4) 后代里的 agy 引擎（Windows: agy.exe；POSIX: agy，按平台匹配名称与路径分隔符）
+    const agyNameRe = isWindows ? /(^|\\)agy\.exe$/i : /(^|\/)agy$/i;
+    const treeAgy = all.filter((p) => agyNameRe.test(p.name) && descendants.has(p.pid)).map((p) => p.pid);
+    const enumAgy = all.filter((p) => agyNameRe.test(p.name)).map((p) => p.pid);
 
-  // 5) 主枚举与独立校验必须对齐：出现差异说明 PowerShell 快照不可信，留痕供排障
-  if (probe.ok) {
+    // 5) 主枚举与独立校验必须对齐：出现差异说明 PowerShell 快照不可信，留痕供排障
     const enumSet = new Set(enumAgy);
     const probeSet = new Set(probe.pids);
     const onlyIndependent = probe.pids.filter((pid) => !enumSet.has(pid));
@@ -553,14 +563,12 @@ export async function killAgyEngine(): Promise<{ killed: number; error?: string;
     if (onlyIndependent.length > 0 || onlyEnum.length > 0) {
       logWarn('agy.enum.mismatch', { stage: 'process-enum', onlyIndependent, onlyEnum });
     }
-  }
-  if (probe.ok === false) {
-    // 读失败 = 未知：绝不当成「没有进程」静默走完切号
-    return { killed: 0, agyWasRunning: false, error: t('agyReloadEnumFail', probe.reason || '') };
+
+    // 6) 树内命中优先：probe 是全系统扫描，无条件并入会误杀其他实例的 agy
+    const enumHit = treeAgy.length > 0 ? treeAgy : enumAgy;
+    agyPids = enumHit.length > 0 ? enumHit : probe.pids;
   }
 
-  // 6) 合并三路结果：树内命中优先，独立校验补齐主枚举漏掉的进程
-  const agyPids = Array.from(new Set([...treeAgy, ...enumAgy, ...probe.pids]));
   const agyWasRunning = agyPids.length > 0;
 
   if (agyPids.length === 0) {
