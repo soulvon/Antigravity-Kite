@@ -9,6 +9,7 @@ import { ensureFreshToken, refreshAccessToken } from './usageService';
 import * as accountStore from './accountStore';
 import { createUserStatusPayloadBase64 } from './ideStateDb';
 import { t } from './i18n';
+import { logInfo } from './logger';
 
 const SEAMLESS_TIMEOUT_MS = 8000;
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
@@ -221,21 +222,26 @@ export async function seamlessSwitch(account: StoredAccount, preparedExternal?: 
 
   try {
     // 写入 token
+    const setStart = Date.now();
     await withTimeout(
       Promise.resolve(tokenApi.setOAuthTokenInfo(tokenInfo)),
       SEAMLESS_TIMEOUT_MS,
       'setOAuthTokenInfo'
     );
-    console.log('[SeamlessSwitcher] setOAuthTokenInfo succeeded');
+    const setTokenMs = Date.now() - setStart;
+    console.log(`[SeamlessSwitcher] setOAuthTokenInfo succeeded in ${setTokenMs}ms`);
 
     // 验证写入
+    let readbackMs = -1;
     if (typeof tokenApi.getOAuthTokenInfo === 'function') {
       try {
+        const readStart = Date.now();
         const applied = await withTimeout(
           Promise.resolve(tokenApi.getOAuthTokenInfo()),
           SEAMLESS_TIMEOUT_MS,
           'getOAuthTokenInfo'
         );
+        readbackMs = Date.now() - readStart;
         const readEmail = applied?.accessToken ? applied.accessToken.substring(0, 20) + '...' : 'null';
         const accessTokenMatched = applied?.accessToken === prepared.token.accessToken;
         const refreshTokenMatched = !applied?.refreshToken || applied.refreshToken === prepared.token.refreshToken;
@@ -252,6 +258,8 @@ export async function seamlessSwitch(account: StoredAccount, preparedExternal?: 
       }
     }
 
+    // 分段计时落盘：下一次切号即可看出 setOAuthTokenInfo / 读回各占多久
+    logInfo('seamless.setToken', { setTokenMs, readbackMs, reusedPrepared: !!preparedExternal });
     return {
       success: true,
       email: account.email,
