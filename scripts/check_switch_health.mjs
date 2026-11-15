@@ -69,9 +69,10 @@ check('H8d 统一渲染注入 DLLDIR，无漏占位', cred.includes('renderPs(')
 check('H9a compile 链含 check_switch_health', (pkg.scripts.compile || '').includes('check_switch_health'));
 check('H9b package 链经 compile 覆盖门控', (pkg.scripts.package || '').includes('npm run compile'));
 
-// L1 反向验证：旧代码（HEAD）必须在新断言上失败，证明检查确实有效
+// L1 反向验证：固定取 v1.3.1（旧 scheme 白名单实现）验证断言确实能抓住旧缺陷。
+// 不能用 HEAD：提交后 HEAD 就是新代码，反向验证会自己失效（踩过）。
 let legacy = '';
-try { legacy = execSync('git show HEAD:src/declarationSuppressor.ts', { cwd: root, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }); } catch { /* 干净检出无 git */ }
+try { legacy = execSync('git show v1.3.1:src/declarationSuppressor.ts', { cwd: root, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }); } catch { /* tag 不存在（浅检出） */ }
 if (legacy) {
   const legacyHasBlacklist = /devtools\|chrome-extension\|chrome\|about\|data\|blob/.test(legacy);
   const legacyHasWebview = /type !== 'webview'/.test(legacy);
