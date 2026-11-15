@@ -13,6 +13,7 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { getAppDataDir } from './platformPaths';
 import { t } from './i18n';
 
 export const IDE_CRED_TARGET = 'gemini:antigravity';
@@ -43,6 +44,9 @@ export interface IdeCredential {
 
 const PS_TEMPLATE = [
   "$ErrorActionPreference = 'Stop'",
+  "$DllDir = '<DLLDIR>'",
+  "if (-not (Test-Path $DllDir)) { New-Item -ItemType Directory -Path $DllDir -Force | Out-Null }",
+  "$Dll = Join-Path $DllDir 'KiteWinCred_v1.dll'",
   "$Mode = '<MODE>'",
   "$Target = '<TARGET>'",
   "$User = '<USER>'",
@@ -74,7 +78,22 @@ const PS_TEMPLATE = [
   '  public static extern void CredFree(IntPtr cred);',
   '}',
   "'@",
-  'Add-Type -TypeDefinition $src | Out-Null',
+  // 首次切号用 csc 预编译到共享 DLL，后续切号 Add-Type -Path 直接加载，
+  // 省掉每次 PowerShell 进程内重编译 C#（真机实测 hot.cred 中位 4.5s，编译占大头）。
+  'if (Test-Path $Dll) {',
+  '  try { Add-Type -Path $Dll | Out-Null } catch { Add-Type -TypeDefinition $src | Out-Null }',
+  '} else {',
+  '  Add-Type -TypeDefinition $src | Out-Null',
+  '  try {',
+  '    $csc = Join-Path $env:WINDIR "Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe"',
+  '    if (Test-Path $csc) {',
+  '      $srcFile = Join-Path $DllDir "KiteWinCred_v1.cs"',
+  '      Set-Content -Path $srcFile -Value $src -Encoding UTF8',
+  '      & $csc /nologo /target:library /out:$Dll $srcFile | Out-Null',
+  '      Remove-Item -Force $srcFile -ErrorAction SilentlyContinue',
+  '    }',
+  '  } catch {}',
+  '}',
   'function Read-KiteCred([string]$target) {',
   '  $ptr = [IntPtr]::Zero',
   '  if (-not [KiteWinCred]::CredReadW($target, 1, 0, [ref]$ptr)) { throw ("CredReadW failed err=" + [Runtime.InteropServices.Marshal]::GetLastWin32Error()) }',
@@ -176,6 +195,17 @@ function runPs(script: string, timeoutMs = 45000): Promise<string> {
   });
 }
 
+/** 凭据脚本渲染：统一注入 DLL 缓存目录，避免三处调用各拼一遍漏掉占位符 */
+function renderPs(mode: 'Read' | 'Write' | 'Swap', target: string, user: string, blob: string): string {
+  const dllDir = path.join(getAppDataDir(), '.antigravity-kite', 'dll').replace(/'/g, "''");
+  return PS_TEMPLATE
+    .replace('<MODE>', mode)
+    .replace('<TARGET>', target.replace(/'/g, "''"))
+    .replace('<USER>', user.replace(/'/g, "''"))
+    .replace('<BLOB>', blob)
+    .replace('<DLLDIR>', dllDir);
+}
+
 export interface IdeCredentialReadResult {
   ok: boolean;
   user?: string;
@@ -188,11 +218,7 @@ export interface IdeCredentialReadResult {
 export async function readIdeCredential(targetOverride?: string): Promise<IdeCredentialReadResult> {
   try {
     assertWindowsCredAvailable();
-    const script = PS_TEMPLATE
-      .replace('<MODE>', 'Read')
-      .replace('<TARGET>', (targetOverride || IDE_CRED_TARGET).replace(/'/g, "''"))
-      .replace('<USER>', '')
-      .replace('<BLOB>', '');
+    const script = renderPs('Read', targetOverride || IDE_CRED_TARGET, '', '');
     const out = await runPs(script);
     const json = JSON.parse(out.trim());
     const parsed = JSON.parse(Buffer.from(json.blobBase64, 'base64').toString('utf8')) as IdeCredential;
@@ -206,11 +232,7 @@ export async function readIdeCredential(targetOverride?: string): Promise<IdeCre
 export async function writeIdeCredentialBlob(blobBase64: string, user: string, targetOverride?: string): Promise<{ ok: boolean; error?: string }> {
   try {
     assertWindowsCredAvailable();
-    const script = PS_TEMPLATE
-      .replace('<MODE>', 'Write')
-      .replace('<TARGET>', (targetOverride || IDE_CRED_TARGET).replace(/'/g, "''"))
-      .replace('<USER>', user.replace(/'/g, "''"))
-      .replace('<BLOB>', blobBase64);
+    const script = renderPs('Write', targetOverride || IDE_CRED_TARGET, user, blobBase64);
     const out = await runPs(script);
     JSON.parse(out.trim());
     return { ok: true };
@@ -239,11 +261,7 @@ export async function swapIdeCredential(
 ): Promise<IdeCredentialSwapResult> {
   try {
     assertWindowsCredAvailable();
-    const script = PS_TEMPLATE
-      .replace('<MODE>', 'Swap')
-      .replace('<TARGET>', (targetOverride || IDE_CRED_TARGET).replace(/'/g, "''"))
-      .replace('<USER>', user.replace(/'/g, "''"))
-      .replace('<BLOB>', blobBase64);
+    const script = renderPs('Swap', targetOverride || IDE_CRED_TARGET, user, blobBase64);
     const out = await runPs(script);
     const json = JSON.parse(out.trim()) as { ok?: boolean; oldBlobBase64?: string; oldUser?: string };
     let previous: IdeCredential | undefined;

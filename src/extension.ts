@@ -10,7 +10,7 @@ import { seamlessSwitch, prepareSwitchToken, pushLiveIdentityUpdate } from './se
 import { switchIdeStateIdentity, resolveIdeStateDbPathFromUserData } from './ideStateDb';
 import { readSwitchRestartResult, clearSwitchRestartResult, writeAgyActiveAccount } from './switchRestart';
 import { logInfo, logWarn, logError } from './logger';
-import { startDeclarationSuppressor } from './declarationSuppressor';
+import { pokeGuard, startDeclarationSuppressor } from './declarationSuppressor';
 import { ensureCdpGate, enableCdp } from './cdpGate';
 import { probeCdpPort } from './declarationSuppressor';
 import { t, localeBundle, getLang } from './i18n';
@@ -1067,7 +1067,7 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
 
             // 4) 会话层 token 热切与 agent 引擎重启互不依赖：并行执行，省一段串行等待
             const [hot, agyReload] = await Promise.all([
-              seamlessSwitch(account),
+              seamlessSwitch(account, prepared.token),
               ideRuntime.killAgyEngine(),
             ]);
             logInfo('switch.hot.session', { success: hot.success, message: hot.message });
@@ -1076,6 +1076,10 @@ class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter {
             // 5) 总线身份推送（依赖会话层已写入）
             const identity = await pushLiveIdentityUpdate(account.email);
             logInfo('switch.hot.identity', { ok: identity.ok, error: identity.error });
+
+            // 5.5) 弹窗守护立即补扫：agy 重建/换端口后的新表面马上进守护，
+            // 弹窗一出现即被处理，不再依赖心跳自然轮询的数秒空窗
+            pokeGuard();
 
             await this._context.globalState.update('currentEmail', msg.email);
             usageTracker.recordSwitch(msg.email);

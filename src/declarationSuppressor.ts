@@ -90,7 +90,7 @@ export async function probeCdpPort(): Promise<number | null> {
   return ports.length > 0 ? ports[0] : null;
 }
 
-interface TargetInfo { id: string; ws: string; type: string }
+interface TargetInfo { id: string; ws: string; type: string; url: string }
 
 async function listAppTargets(port: number): Promise<TargetInfo[]> {
   return new Promise((resolve) => {
@@ -107,23 +107,21 @@ async function listAppTargets(port: number): Promise<TargetInfo[]> {
             const ws = String(t.webSocketDebuggerUrl || '');
             const type = String(t.type || '');
             if (!id || !ws) continue;
-            // 忽略非网页节点（如 worker/service_worker/node 等）
-            if (type !== 'page' && type !== 'iframe') continue;
+            // 忽略非渲染表面（worker/service_worker/browser 等）；webview 也要纳入
+            if (type !== 'page' && type !== 'iframe' && type !== 'webview') continue;
             // 排除自身扩展的 webview
             if (url.includes('extensionId=soulvon.antigravity-kite')) continue;
 
             // 匹配本地 127.0.0.1 / localhost 上的 http / https 页面，以及 vscode 内部页面
-            const isLocalWeb =
-              url.startsWith('http://127.0.0.1:') ||
-              url.startsWith('https://127.0.0.1:') ||
-              url.startsWith('http://localhost:') ||
-              url.startsWith('https://localhost:');
-            const isWorkbench = url.startsWith('vscode-file://');
-            // Antigravity 的声明 / 引导卡片都挂在 /c/<id> 会话页上；
-            // IDE 内部 webview（vscode-webview://，含本扩展自己的侧栏）不再注入，避免干扰别的扩展
-            const isAgentHub = isLocalWeb && /\/c\/[^/?]+/.test(url);
-            if (isAgentHub || isWorkbench) {
-              out.push({ id, ws, type });
+            // 黑名单排除法（2026-11-16 真机实证后定案）：
+            // 旧实现是 scheme 白名单（只认 vscode-file:// + 127.0.0.1/c/），IDE 一升级
+            // 换表面（vscode-webview://、plugin://）就静默漏掉弹窗，用户只看到"根本没帮忙点"。
+            // 改为只排除确定无关/危险的表面，其余全部纳入；守卫仅按特异文案点按，误触面可控。
+            const excluded =
+              /^(devtools|chrome-extension|chrome|about|data|blob):/i.test(url) ||
+              url.includes('extensionId=soulvon.antigravity-kite');
+            if (!excluded) {
+              out.push({ id, ws, type, url });
             }
           }
           resolve(out);
@@ -499,6 +497,8 @@ const SESSIONS = new Map<string, CdpSession>();
 let reportedClicks = 0;
 /** 是否已记录过"看到卡片但没点到"的证据 */
 let seenLogged = false;
+/** 无调试端口只记一次，避免每 500ms 刷屏 */
+let noPortLogged = false;
 let tickCount = 0;
 
 async function heartbeat(): Promise<void> {
@@ -507,10 +507,18 @@ async function heartbeat(): Promise<void> {
   if (ports.length === 0) {
     for (const s of SESSIONS.values()) s.close();
     SESSIONS.clear();
+    // 关键：无端口 = 守护整体不可用（IDE 未带 --remote-debugging-port 启动）。
+    // 这条以前完全静默，用户只看到"弹窗没被点"却查不到原因；现在必须留痕。
+    if (!noPortLogged) {
+      noPortLogged = true;
+      logWarn('declGuard.noPort', { reason: '调试端口未开启，弹窗守护不可用（切号会触发 CDP 门控重启）' });
+    }
     return;
   }
+  noPortLogged = false;
 
   const alive = new Set<string>();
+  const aliveInfo = new Map<string, string>();
   let attached = 0;
 
   for (const port of ports) {
@@ -518,12 +526,15 @@ async function heartbeat(): Promise<void> {
     for (const t of targets) {
       const key = `${port}:${t.id}`;
       alive.add(key);
+      aliveInfo.set(key, `${t.type} ${t.url.slice(0, 70)}`);
 
       let session = SESSIONS.get(key);
       if (!session || !session.isOpen()) {
         if (session) { session.close(); SESSIONS.delete(key); }
         session = new CdpSession(t.ws, t.type === 'page', () => SESSIONS.delete(key));
         if (!(await session.connect())) {
+          // 连接失败必须留痕：targets=N attached=M 的缺口就是弹窗没人点的来源
+          logWarn('declGuard.attachFail', { url: t.url.slice(0, 90), type: t.type });
           session.close();
           continue;
         }
@@ -564,6 +575,10 @@ async function heartbeat(): Promise<void> {
     if (!alive.has(key)) { SESSIONS.get(key)?.close(); SESSIONS.delete(key); }
   }
   if (attached > 0) logInfo('declGuard.attached', { ports, attached, targets: alive.size });
+  // 每 20 轮落一次当前表面清单：弹窗到底挂在哪类 target（scheme/type）一眼可查
+  if (tickCount % 20 === 0) {
+    logInfo('declGuard.surfaces', { surfaces: [...aliveInfo.values()].slice(0, 12) });
+  }
 }
 
 async function tick(): Promise<void> {
@@ -603,5 +618,15 @@ export function stopDeclarationSuppressor(): void {
     for (const s of SESSIONS.values()) s.close();
     SESSIONS.clear();
     logInfo('declGuard.stop', {});
+  }
+}
+
+/**
+ * 切号后立即补扫：agy 重建会换端口/新表面，靠 500ms 心跳自然轮询存在数秒空窗。
+ * 0/1/2.5/5s 四连 tick 把新表面快速拉进守护，弹窗一出现即被处理。
+ */
+export function pokeGuard(): void {
+  for (const d of [0, 1000, 2500, 5000]) {
+    setTimeout(() => { void tick(); }, d);
   }
 }

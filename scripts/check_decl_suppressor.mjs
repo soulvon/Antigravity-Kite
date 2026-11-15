@@ -4,7 +4,7 @@
  *   - M1: 弹窗卡片识别——覆盖新版 "One last thing before getting started..." 与 "继续" 按钮
  *   - M2: 经典声明兼容——覆盖 "接受并继续" / "Accept and continue"
  *   - M3: 防误伤——普通页面中无关的 "继续" 按钮不可乱点
- *   - M4: target 过滤——覆盖 https://127.0.0.1、vscode-file://，并排除自身 webview
+ *   - M4: target 过滤——本地 http(s) 表面必须覆盖（白名单或黑名单实现都认），并排除自身 webview
  *   - M5: 端口发现——支持 DevToolsActivePort 动态端口读取
  */
 import assert from 'assert';
@@ -40,13 +40,18 @@ try {
   fail('M2 匹配 "继续" / "Continue" 按钮', e.message);
 }
 
-// 检查 3: Target 过滤必须支持 https 协议
+// 检查 3: 本地 http(s) 表面不得被排除
+// 两种合法实现都要认：旧 scheme 白名单（显式列 127.0.0.1/localhost），
+// 新黑名单排除法（只排 devtools/chrome/about/data/blob，不排 http/https）。
 try {
-  assert(/https\?:\/\/(127\.0\.0\.1|localhost)/i.test(content) || (content.includes('https://') && content.includes('127.0.0.1')),
-    'declarationSuppressor.ts 目标 URL 过滤未覆盖 https://127.0.0.1');
-  pass('M3 Target 过滤支持 https');
+  const schemeBlacklist = (content.match(/const excluded\s*=[\s\S]{0,240}?\/\^?\(?([^/]+)\)?\//) || [])[1] || 'https';
+  const whitelistCovers = /https?:\/\/(127\.0\.0\.1|localhost)/i.test(content);
+  const blacklistCovers = content.includes('devtools|chrome-extension') && !/https?|localhost|127\.0\.0\.1/i.test(schemeBlacklist);
+  assert(whitelistCovers || blacklistCovers,
+    'declarationSuppressor.ts 目标 URL 过滤既未白名单覆盖 127.0.0.1/localhost，黑名单也未保留 http(s) 表面');
+  pass('M3 Target 过滤覆盖本地 http(s) 表面（白名单或黑名单实现）');
 } catch (e) {
-  fail('M3 Target 过滤支持 https', e.message);
+  fail('M3 Target 过滤覆盖本地 http(s) 表面', e.message);
 }
 
 // 检查 4: 支持 DevToolsActivePort 端口读取

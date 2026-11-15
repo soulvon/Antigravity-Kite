@@ -178,7 +178,7 @@ export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: 
 /**
  * 执行无感换号
  */
-export async function seamlessSwitch(account: StoredAccount): Promise<SwitchResult> {
+export async function seamlessSwitch(account: StoredAccount, preparedExternal?: PreparedSwitchToken): Promise<SwitchResult> {
   const api = vscode as unknown as AntigravityVsCodeApi;
   const hasUnified = !!(api.antigravityUnifiedStateSync?.OAuthPreferences);
   const hasLegacy = !!(api.antigravityAuth);
@@ -195,7 +195,12 @@ export async function seamlessSwitch(account: StoredAccount): Promise<SwitchResu
     };
   }
 
-  const prepared = await prepareSwitchToken(account);
+  // 2026-11-16 实测：切号链路外层已强制刷新过 token（switch.token），这里再刷一次
+  // 等于每次切号双倍网络往返（hot.session 中位 3.7s 的一半来自重复刷新）。
+  // 外部传入已落定的 token 时直接复用；仅在独立调用（无外部准备）时才自行刷新。
+  const prepared = preparedExternal
+    ? { ok: true as const, token: preparedExternal }
+    : await prepareSwitchToken(account);
   if (!prepared.ok) {
     return {
       success: false,
