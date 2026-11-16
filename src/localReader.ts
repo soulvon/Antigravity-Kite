@@ -3,6 +3,8 @@ import * as path from 'path';
 import * as https from 'https';
 import { StoredAccount } from './types';
 import { t } from './i18n';
+import { getEffectiveCurrentUserDataDir } from './ideRuntime';
+import { resolveIdeStateDbPaths, resolveIdeStateDbPathFromUserData } from './ideStateDb';
 
 const USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -44,19 +46,20 @@ async function readStateValue(dbPath: string, key: string): Promise<string> {
   throw new Error(t('errSqliteUnavailable'));
 }
 
-// state.vscdb 路径（仅支持 Antigravity IDE 2.0）
-function getStateDbPath(): string {
-  const platform = process.platform;
-  const home = process.env.HOME || require('os').homedir();
-
-  if (platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
-    return path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
-  } else if (platform === 'darwin') {
-    return path.join(home, 'Library', 'Application Support', 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
-  } else {
-    return path.join(home, '.config', 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
+/** 解析当前 IDE 实例对应的 state.vscdb 路径：优先当前 --user-data-dir，其次跨平台候选路径 */
+export function resolveLocalStateDbPath(): string {
+  const effectiveUda = getEffectiveCurrentUserDataDir().trim();
+  const customDb = effectiveUda ? resolveIdeStateDbPathFromUserData(effectiveUda) : '';
+  if (customDb && fs.existsSync(customDb)) {
+    return customDb;
   }
+  const candidates = resolveIdeStateDbPaths();
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return customDb || candidates[0];
 }
 
 // Protobuf varint 解码
@@ -298,7 +301,7 @@ let pendingCredential: StoredAccount | null = null;
 // 预览本地账号（检测是否存在）
 // 优先使用 token 获取 email，失败时从 userStatus 读取
 export async function previewLocalAccount(existingEmails: string[]): Promise<{ email: string; exists: boolean; tokenExpired?: boolean }> {
-  const dbPath = getStateDbPath();
+  const dbPath = resolveLocalStateDbPath();
   if (!fs.existsSync(dbPath)) {
     throw new Error(t('lrNoLocalLogin'));
   }

@@ -207,6 +207,41 @@ function runPs(script: string, timeoutMs = 45000): Promise<string> {
   });
 }
 
+export interface PsCredJsonResponse {
+  ok?: boolean;
+  error?: string;
+  user?: string;
+  blobBase64?: string;
+  oldBlobBase64?: string;
+  oldUser?: string;
+}
+
+/** 统一校验并规整 PowerShell 凭据回退响应：任何非 ok / 缺字段都必须返回非空 error，严禁静默吞错或返回 undefined */
+export function normalizePsCredResponse(
+  action: 'Read' | 'Write' | 'Swap',
+  rawOut: string
+): { ok: true; json: PsCredJsonResponse } | { ok: false; error: string } {
+  let json: PsCredJsonResponse;
+  try {
+    json = JSON.parse((rawOut || '').trim()) as PsCredJsonResponse;
+  } catch (e) {
+    return {
+      ok: false,
+      error: `PowerShell ${action} invalid JSON: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  if (!json || typeof json !== 'object' || json.ok !== true) {
+    const errMsg = typeof json?.error === 'string' && json.error.trim()
+      ? json.error.trim()
+      : `PowerShell ${action} failed (ok=${String(json?.ok)})`;
+    return { ok: false, error: errMsg };
+  }
+  if (action === 'Read' && (typeof json.blobBase64 !== 'string' || !json.blobBase64)) {
+    return { ok: false, error: 'PowerShell Read returned empty credential blob' };
+  }
+  return { ok: true, json };
+}
+
 /** 凭据脚本渲染：统一注入 DLL 缓存目录与 DLL 名，避免三处调用各拼一遍漏掉占位符 */
 function renderPs(mode: 'Read' | 'Write' | 'Swap', target: string, user: string, blob: string): string {
   const dllDir = path.join(getAppDataDir(), '.antigravity-kite', 'dll').replace(/'/g, "''");
@@ -243,9 +278,10 @@ export async function readIdeCredential(targetOverride?: string): Promise<IdeCre
     }
     const script = renderPs('Read', target, '', '');
     const out = await runPs(script);
-    const json = JSON.parse(out.trim());
-    const parsed = JSON.parse(Buffer.from(json.blobBase64, 'base64').toString('utf8')) as IdeCredential;
-    return { ok: true, user: json.user, blobBase64: json.blobBase64, parsed };
+    const res = normalizePsCredResponse('Read', out);
+    if (!res.ok) return { ok: false, error: res.error };
+    const parsed = JSON.parse(Buffer.from(res.json.blobBase64!, 'base64').toString('utf8')) as IdeCredential;
+    return { ok: true, user: res.json.user, blobBase64: res.json.blobBase64, parsed };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -263,8 +299,8 @@ export async function writeIdeCredentialBlob(blobBase64: string, user: string, t
     }
     const script = renderPs('Write', target, user, blobBase64);
     const out = await runPs(script);
-    JSON.parse(out.trim());
-    return { ok: true };
+    const res = normalizePsCredResponse('Write', out);
+    return res.ok ? { ok: true } : { ok: false, error: res.error };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -335,14 +371,17 @@ export async function swapIdeCredential(
     }
     const script = renderPs('Swap', target, user, blobBase64);
     const out = await runPs(script);
-    const json = JSON.parse(out.trim()) as { ok?: boolean; oldBlobBase64?: string; oldUser?: string };
+    const res = normalizePsCredResponse('Swap', out);
     let previous: IdeCredential | undefined;
-    if (json.oldBlobBase64) {
+    if (res.ok && res.json.oldBlobBase64) {
       try {
-        previous = JSON.parse(Buffer.from(json.oldBlobBase64, 'base64').toString('utf8')) as IdeCredential;
+        previous = JSON.parse(Buffer.from(res.json.oldBlobBase64, 'base64').toString('utf8')) as IdeCredential;
       } catch { /* 旧 blob 非 JSON：只影响备份，不影响切换 */ }
     }
-    return { ok: json.ok === true, previous, previousUser: json.oldUser };
+    if (!res.ok) {
+      return { ok: false, error: res.error };
+    }
+    return { ok: true, previous, previousUser: res.json.oldUser };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

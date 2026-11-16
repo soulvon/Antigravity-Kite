@@ -14,8 +14,19 @@ import { pokeGuard, startDeclarationSuppressor, stopDeclarationSuppressor } from
 import { ensureCdpGate, enableCdp } from './cdpGate';
 import { probeCdpPort } from './declarationSuppressor';
 import { t, localeBundle, getLang } from './i18n';
-import { swapIdeCredential, readIdeCredential, buildIdeCredentialBlob } from './winCredential';
-import { syncGeminiLocalCreds } from './geminiFiles';
+import { swapIdeCredential, readIdeCredential, buildIdeCredentialBlob, IdeCredential } from './winCredential';
+import { syncGeminiLocalCreds, readActiveAccount } from './geminiFiles';
+import {
+  isSupportedRemoteSession,
+  isRemoteAuthSyncEnabled,
+  resolveRemoteAuthority,
+  resolveRemoteHomeDir,
+  syncCredentialToRemote,
+  applyRemoteAuthRefresh,
+  PENDING_REMOTE_NOTICE_KEY,
+  RemoteSyncResult,
+  RemoteTokenPreviousState,
+} from './remoteAuthSync';
 import { getSharedStorageDir } from './storage';
 import { StatusBarManager } from './statusBar';
 import { fetchUsage, checkAccountHealth, classifyAccountError, describeError } from './usageService';
@@ -64,6 +75,132 @@ function isUsageCacheStale(): boolean {
   return usageCache.size === 0 || Date.now() - usageCacheLastRefresh > quotaRefreshMs();
 }
 
+const REMOTE_TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+
+/**
+ * 解析当前本地激活账号的有效 IdeCredential（供 Remote SSH 启动自动同步复用）。
+ * Windows 优先直读 CredMan `gemini:antigravity`（兼容尚未导入号池的官方登录态）；
+ * 若 AT 临期或非 Windows 环境，则通过 accountStore + prepareSwitchToken 刷新构造。
+ */
+async function resolveLocalCredentialForRemoteSync(context: vscode.ExtensionContext): Promise<IdeCredential | null> {
+  let writerId = '';
+  let authMethod = 'consumer';
+  let candidateEmail = '';
+
+  if (process.platform === 'win32') {
+    const localCred = await readIdeCredential();
+    if (localCred.ok && localCred.parsed?.id_token_email) {
+      const parsed = localCred.parsed;
+      writerId = parsed.writer_id || '';
+      authMethod = parsed.auth_method || 'consumer';
+      candidateEmail = parsed.id_token_email;
+      const expMs = Date.parse(parsed.token?.expiry || '');
+      const credFresh = Boolean(parsed.token?.access_token)
+        && Number.isFinite(expMs)
+        && expMs > Date.now() + REMOTE_TOKEN_REFRESH_BUFFER_MS;
+      if (credFresh && parsed.token?.refresh_token) {
+        return parsed;
+      }
+      // 尚未导入 Kite 号池但本地凭据仍含有效 AT/RT：直接透传，让远端 agy 自行用 RT 续期
+      if (!accountStore.getByEmail(candidateEmail) && (parsed.token?.access_token || parsed.token?.refresh_token)) {
+        return parsed;
+      }
+    }
+  }
+
+  if (!candidateEmail) {
+    candidateEmail = context.globalState.get<string>('currentEmail') || readActiveAccount();
+  }
+  if (!candidateEmail) return null;
+
+  const account = accountStore.getByEmail(candidateEmail);
+  if (!account) return null;
+
+  const prepared = await prepareSwitchToken(account);
+  if (!prepared.ok) {
+    logWarn('remote.sync.prepare-local-fail', { email: account.email, error: prepared.message });
+    return null;
+  }
+
+  const expiryMs = prepared.token.expiryDateSeconds > Math.floor(Date.now() / 1000)
+    ? prepared.token.expiryDateSeconds * 1000
+    : Date.now() + 3600_000;
+
+  return buildIdeCredentialBlob({
+    email: account.email,
+    accessToken: prepared.token.accessToken,
+    refreshToken: prepared.token.refreshToken,
+    expiryMs,
+    authMethod,
+    writerId,
+  }).parsed;
+}
+
+/** 将指定 IdeCredential 写入当前 Remote SSH 窗口对应的远端 ~/.gemini/jetski-standalone-oauth-token */
+async function syncCredentialForRemoteSession(
+  context: vscode.ExtensionContext,
+  credential: IdeCredential,
+  isExplicitSwitch: boolean,
+): Promise<{ result: RemoteSyncResult; authority?: string }> {
+  const authority = await resolveRemoteAuthority({ logUriFsPath: context.logUri?.fsPath });
+  if (!authority) {
+    return { result: { ok: false, wrote: false, error: t('remoteSyncNoAuthority') } };
+  }
+  const homeRes = await resolveRemoteHomeDir(authority, undefined, { logUriFsPath: context.logUri?.fsPath });
+  if (!homeRes.ok || !homeRes.homeDir) {
+    return { authority, result: { ok: false, wrote: false, error: homeRes.error || t('ui.unknown') } };
+  }
+  const res = await syncCredentialToRemote(homeRes.homeDir, authority, credential, {
+    forceOverwrite: isExplicitSwitch,
+  });
+  return { authority, result: res };
+}
+
+/** Remote SSH 窗口激活后：若远端缺登录态或与本地激活账号不一致，则自动同步并唤醒右侧官方面板 */
+async function syncStartupAuthToRemote(context: vscode.ExtensionContext): Promise<void> {
+  if (!isSupportedRemoteSession() || !isRemoteAuthSyncEnabled()) return;
+
+  try {
+    let authority = await resolveRemoteAuthority({ logUriFsPath: context.logUri?.fsPath });
+    if (!authority) {
+      await new Promise((r) => setTimeout(r, 2500));
+      authority = await resolveRemoteAuthority({ logUriFsPath: context.logUri?.fsPath });
+    }
+    if (!authority) {
+      logWarn('remote.sync.startup.no-authority', { remoteName: vscode.env.remoteName });
+      return;
+    }
+
+    const cred = await resolveLocalCredentialForRemoteSync(context);
+    if (!cred) {
+      logInfo('remote.sync.startup.no-local-auth', {});
+      return;
+    }
+
+    const { result } = await syncCredentialForRemoteSession(context, cred, false);
+    if (!result.ok) {
+      logWarn('remote.sync.startup.fail', { email: cred.id_token_email, error: result.error });
+      return;
+    }
+    if (!result.wrote) {
+      logInfo('remote.sync.startup.skip', { email: cred.id_token_email, reason: result.reason });
+      return;
+    }
+
+    const refresh = await applyRemoteAuthRefresh(context, {
+      previousState: result.previousState,
+      email: cred.id_token_email,
+      authority,
+      isExplicitSwitch: false,
+    });
+    if (refresh.mode === 'reconnect') {
+      notifyUi('success', t('remoteSyncStartupDone', cred.id_token_email));
+    }
+  } catch (e) {
+    logWarn('remote.sync.startup.unexpected', e);
+  }
+}
+
 function applyQuotaRefreshInterval(context: vscode.ExtensionContext): void {
   if (quotaRefreshTimer) clearInterval(quotaRefreshTimer);
   quotaRefreshTimer = setInterval(() => backgroundRefreshAllUsage(context), quotaRefreshMs());
@@ -108,6 +245,25 @@ export function activate(context: vscode.ExtensionContext) {
     } else if (lastRestart.warning) {
       notifyUi('warning', t('restartWarning', lastRestart.warning));
     }
+  }
+
+  // Remote SSH 同步触发重启扩展宿主后的一次性结果提示（<30 秒内有效）
+  const pendingRemoteNotice = context.globalState.get<{ email?: string; ts?: number; isExplicitSwitch?: boolean }>(PENDING_REMOTE_NOTICE_KEY);
+  if (pendingRemoteNotice) {
+    void context.globalState.update(PENDING_REMOTE_NOTICE_KEY, undefined);
+    if (pendingRemoteNotice.email && typeof pendingRemoteNotice.ts === 'number' && Date.now() - pendingRemoteNotice.ts < 30_000) {
+      notifyUi(
+        'success',
+        pendingRemoteNotice.isExplicitSwitch
+          ? t('remoteSyncDone', pendingRemoteNotice.email)
+          : t('remoteSyncStartupDone', pendingRemoteNotice.email)
+      );
+    }
+  }
+
+  // Remote SSH 窗口启动时自动对齐远端登录态（后台异步执行，不阻塞扩展激活）
+  if (isSupportedRemoteSession()) {
+    setTimeout(() => { void syncStartupAuthToRemote(context); }, 800);
   }
 
   usageTracker = new UsageTracker(context);
@@ -651,6 +807,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter 
         cdpPort: cfg.get<number>('cdpPort', 9333),
         cdpHeartbeatMs: cfg.get<number>('cdpHeartbeatMs', 500),
         syncGeminiFiles: cfg.get<boolean>('switch.syncGeminiFiles', true),
+        syncRemoteAuth: cfg.get<boolean>('remote.syncAuth', true),
         quotaRefreshMinutes: cfg.get<number>('quotaRefreshMinutes', 15),
         locale: cfg.get<string>('locale', 'auto'),
         statusBarEnabled: cfg.get<boolean>('statusBar.enabled', true),
@@ -681,6 +838,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter 
     const heartbeat = Number(s.cdpHeartbeatMs);
     await cfg.update('cdpHeartbeatMs', Number.isFinite(heartbeat) ? Math.min(5000, Math.max(200, Math.round(heartbeat))) : 500, target);
     await cfg.update('switch.syncGeminiFiles', s.syncGeminiFiles !== false, target);
+    await cfg.update('remote.syncAuth', s.syncRemoteAuth !== false, target);
     const quotaMin = Number(s.quotaRefreshMinutes);
     const prevQuotaMin = cfg.get<number>('quotaRefreshMinutes', 15);
     await cfg.update('quotaRefreshMinutes', Number.isFinite(quotaMin) ? Math.min(120, Math.max(5, Math.round(quotaMin))) : 15, target);
@@ -1028,20 +1186,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter 
                 ? switchToken.expiryDateSeconds * 1000
                 : Date.now() + 3600000;
 
+              // 本地凭据与远端 ~/.gemini/jetski-standalone-oauth-token 共用同一结构，提前统一构造
+              const targetCred = buildIdeCredentialBlob({
+                email: account.email,
+                accessToken: switchToken.accessToken,
+                refreshToken: switchToken.refreshToken,
+                expiryMs,
+                authMethod: preReadCred?.parsed?.auth_method,
+                writerId: preReadCred?.parsed?.writer_id,
+              });
+
               // ── 热切（不重启 IDE）──
               // 1) Windows 凭据管理器写入（命中 Phase A 预读结果，只跑一次原生 write ~100ms）
               if (process.platform === 'win32') {
-                const blob = buildIdeCredentialBlob({
-                  email: account.email,
-                  accessToken: switchToken.accessToken,
-                  refreshToken: switchToken.refreshToken,
-                  expiryMs,
-                });
                 logInfo('switch.cred.build', { email: account.email, expiryMs });
-                const cw = await swapIdeCredential(blob.blobBase64, 'antigravity', undefined, preReadCred);
+                const cw = await swapIdeCredential(targetCred.blobBase64, 'antigravity', undefined, preReadCred);
                 logInfo('switch.hot.cred', { ok: cw.ok, error: cw.error });
                 if (!cw.ok) {
-                  this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('switchCredFail', cw.error || '') });
+                  this._view?.webview.postMessage({ type: 'toast', status: 'error', message: t('switchCredFail', cw.error || t('ui.unknown')) });
                   this._view?.webview.postMessage({ type: 'switchResult', ok: false });
                   break;
                 }
@@ -1090,13 +1252,25 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter 
               }
               logInfo('switch.hot.files', { agyPtr: agyPtr.ok, gemini: geminiLocal.ok, error: agyPtr.error || geminiLocal.error });
 
-              // 4) 会话层 token 热切与 agent 引擎重启互不依赖：并行执行，省一段串行等待
-              const [hot, agyReload] = await Promise.all([
+              // 4) 会话层 token 热切、agent 引擎重载与 Remote SSH 远端登录态同步并行推进
+              const shouldSyncRemote = isSupportedRemoteSession() && isRemoteAuthSyncEnabled();
+              const [hot, agyReload, remoteSync] = await Promise.all([
                 seamlessSwitch(account, prepared.token),
                 ideRuntime.killAgyEngine(),
+                shouldSyncRemote
+                  ? syncCredentialForRemoteSession(this._context, targetCred.parsed, true)
+                  : Promise.resolve(null),
               ]);
               logInfo('switch.hot.session', { success: hot.success, message: hot.message });
-              logInfo('switch.hot.agyReload', { killed: agyReload.killed, agyWasRunning: agyReload.agyWasRunning, error: agyReload.error });
+              logInfo('switch.hot.agyReload', {
+                killed: agyReload.killed,
+                agyWasRunning: agyReload.agyWasRunning,
+                remoteSkipped: agyReload.remoteSkipped,
+                error: agyReload.error,
+              });
+              if (remoteSync) {
+                logInfo('switch.hot.remoteSync', remoteSync.result);
+              }
 
               // 5) 总线身份推送（依赖会话层已写入）
               const identity = await pushLiveIdentityUpdate(account.email);
@@ -1113,13 +1287,31 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter 
               this._refreshUsage(msg.email);
 
               const notes: string[] = [];
-              if (!agyPtr.ok) notes.push(t('switchAgyPtrFail', agyPtr.error || ''));
-              if (!geminiLocal.ok && geminiLocal.error) notes.push(t('switchGeminiFail', geminiLocal.error));
-              if (agyReload.error) notes.push(agyReload.error);
-              if (hot.success && !identity.ok) notes.push(t('switchMenuAlignLater'));
-              // 任何一条降级说明（含 agy 引擎未重载）都必须是 warning
-              const degraded = notes.length > 0;
-              if (!degraded) {
+              let degraded = false;
+              let pendingRemoteRefresh: { previousState?: RemoteTokenPreviousState; email: string; authority: string } | null = null;
+              if (!agyPtr.ok) { notes.push(t('switchAgyPtrFail', agyPtr.error || '')); degraded = true; }
+              if (!geminiLocal.ok && geminiLocal.error) { notes.push(t('switchGeminiFail', geminiLocal.error)); degraded = true; }
+              if (agyReload.error) { notes.push(agyReload.error); degraded = true; }
+              else if (remoteSync) {
+                if (!remoteSync.result.ok) {
+                  notes.push(t('remoteSyncFail', remoteSync.result.error || t('ui.unknown')));
+                  degraded = true;
+                } else if (remoteSync.result.wrote && remoteSync.authority) {
+                  pendingRemoteRefresh = {
+                    previousState: remoteSync.result.previousState,
+                    email: account.email,
+                    authority: remoteSync.authority,
+                  };
+                  notes.push(t('remoteSyncDone', account.email));
+                } else {
+                  notes.push(t('remoteSyncAligned', account.email));
+                }
+              } else if (agyReload.remoteSkipped) {
+                notes.push(t('agyReloadRemoteNote', account.email));
+                degraded = true;
+              }
+              if (hot.success && !identity.ok) { notes.push(t('switchMenuAlignLater')); degraded = true; }
+              if (notes.length === 0) {
                 notes.push(t('switchDone', account.email));
               }
               this._view?.webview.postMessage({
@@ -1127,6 +1319,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter 
                 status: degraded ? 'warning' : 'success',
                 message: notes.join('；')
               });
+              if (pendingRemoteRefresh) {
+                const refOpts = pendingRemoteRefresh;
+                setTimeout(() => {
+                  void applyRemoteAuthRefresh(this._context, { ...refOpts, isExplicitSwitch: true });
+                }, 150);
+              }
             } catch (err) {
               const errMsg = describeError(err);
               logError('switch.unexpected', { email: account.email, error: errMsg });
@@ -1783,6 +1981,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter 
         <div class="v2-opt-row">
           <span class="v2-opt-label" data-i18n="syncGeminiRow">切号同步 Gemini 配置</span>
           <label class="as-switch"><input type="checkbox" id="setSyncGemini"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="syncRemoteAuthRow">同步 Remote SSH 登录态</span>
+          <label class="as-switch"><input type="checkbox" id="setSyncRemoteAuth"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
         </div>
         <div class="v2-opt-row">
           <span class="v2-opt-label" data-i18n="cdpPortRow">调试端口</span>
@@ -3585,6 +3787,7 @@ function fillSettingsForm(s) {
   chk('setUpdateAutoInstall', s.updateAutoInstall !== false);
   chk('setAutoConfirm', s.autoConfirmDeclaration !== false);
   chk('setSyncGemini', s.syncGeminiFiles !== false);
+  chk('setSyncRemoteAuth', s.syncRemoteAuth !== false);
   set('setCdpPort', s.cdpPort || 9333);
   set('setCdpHeartbeat', s.cdpHeartbeatMs || 500);
   set('setQuotaRefresh', s.quotaRefreshMinutes || 15);
@@ -3700,6 +3903,7 @@ function renderCdpStatus(s) {
       cdpPort: num('setCdpPort', 9333),
       cdpHeartbeatMs: num('setCdpHeartbeat', 500),
       syncGeminiFiles: on('setSyncGemini'),
+      syncRemoteAuth: on('setSyncRemoteAuth'),
       quotaRefreshMinutes: num('setQuotaRefresh', 15),
       locale: val('setLocale') || 'auto',
       statusBarEnabled: on('setStatusEnabled'),
@@ -3827,6 +4031,7 @@ function renderCdpStatus(s) {
       cdpPort: 9333,
       cdpHeartbeatMs: 500,
       syncGeminiFiles: true,
+      syncRemoteAuth: true,
       quotaRefreshMinutes: 15,
       locale: 'auto',
       statusBarEnabled: true,

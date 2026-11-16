@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as cp from 'child_process';
 import { getAppDataDir } from './platformPaths';
 import { ensureWinNativeHelper, reloadWinAgyNative } from './winNativeHelper';
-import { logWarn } from './logger';
+import { logInfo, logWarn } from './logger';
 import { t } from './i18n';
 
 const isWindows = process.platform === 'win32';
@@ -138,27 +138,60 @@ async function detectExeWindows(): Promise<string | null> {
   return null;
 }
 
+function isRegularFile(p: string): boolean {
+  try {
+    return fs.existsSync(p) && !fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 async function detectExeUnix(): Promise<string | null> {
+  const appRoot = vscode.env.appRoot || '';
+  if (appRoot) {
+    if (isMac) {
+      for (const name of ['Electron', 'Antigravity IDE', 'Antigravity']) {
+        const fromAppRoot = path.resolve(appRoot, '..', '..', 'MacOS', name);
+        if (isRegularFile(fromAppRoot)) return fromAppRoot;
+      }
+    } else {
+      for (const name of ['antigravity-ide', 'antigravity', 'Antigravity IDE', 'Antigravity']) {
+        const fromAppRoot = path.resolve(appRoot, '..', '..', name);
+        if (isRegularFile(fromAppRoot)) return fromAppRoot;
+      }
+    }
+  }
+
   const home = os.homedir();
   const candidates = isMac
     ? [
         '/Applications/Antigravity IDE.app/Contents/MacOS/Electron',
+        '/Applications/Antigravity.app/Contents/MacOS/Electron',
         path.join(home, 'Applications', 'Antigravity IDE.app', 'Contents', 'MacOS', 'Electron'),
+        path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'MacOS', 'Electron'),
       ]
     : [
         '/usr/bin/antigravity-ide',
         '/usr/local/bin/antigravity-ide',
         '/opt/Antigravity IDE/antigravity-ide',
+        '/usr/share/antigravity-ide/antigravity-ide',
+        '/usr/bin/antigravity',
+        '/usr/local/bin/antigravity',
+        '/opt/Antigravity/antigravity',
+        '/usr/share/antigravity/antigravity',
         path.join(home, '.local', 'bin', 'antigravity-ide'),
+        path.join(home, '.local', 'bin', 'antigravity'),
       ];
   for (const c of candidates) {
-    if (fs.existsSync(c)) return c;
+    if (isRegularFile(c)) return c;
   }
-  try {
-    const out = cp.execSync('which antigravity-ide', { encoding: 'utf8', timeout: 3000 });
-    const found = out.trim();
-    if (found && fs.existsSync(found)) return found;
-  } catch {}
+  for (const binName of ['antigravity-ide', 'antigravity']) {
+    try {
+      const out = cp.execSync(`which ${binName}`, { encoding: 'utf8', timeout: 3000 });
+      const found = out.trim().split(/\r?\n/)[0]?.trim();
+      if (found && isRegularFile(found)) return found;
+    } catch {}
+  }
   return null;
 }
 
@@ -192,18 +225,88 @@ export function parseUserDataDir(cmd: string): string {
   return dir || getDefaultUserDataDir();
 }
 
+const NON_IDE_MAIN_EXECUTABLES = new Set([
+  'sh', 'bash', 'zsh', 'dash', 'ash', 'fish', 'ksh', 'csh',
+  'cmd', 'cmd.exe', 'pwsh', 'pwsh.exe', 'powershell', 'powershell.exe',
+  'node', 'node.exe', 'env', 'sudo', 'su', 'ssh', 'ssh.exe',
+]);
+
+export function tokenizeCommandLine(cmd: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (quote) {
+      if (c === quote) { quote = null; continue; }
+      cur += c;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (/\s/.test(c)) {
+      if (cur) { out.push(cur); cur = ''; }
+      continue;
+    }
+    cur += c;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+function quoteCmdValue(val: string): string {
+  if (!/[\s"']/.test(val)) return val;
+  if (!val.includes('"')) return `"${val}"`;
+  if (!val.includes("'")) return `'${val}'`;
+  return val.split('"').map((seg) => (seg ? `"${seg}"` : '')).join('\'"\'');
+}
+
+/** 将 Linux /proc/<pid>/cmdline 的 NUL 分隔 argv 无损拼装为命令行，保留含空格/引号的参数边界 */
+export function formatUnixProcCmdline(raw: Buffer | string): string {
+  const text = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw || '');
+  if (!text.includes('\0')) return text.trim();
+  const tokens = text.split('\0').filter((s) => s.length > 0);
+  return tokens
+    .map((tok) => {
+      const eq = tok.match(/^(--?[A-Za-z0-9_-]+=)(.*)$/s);
+      if (eq) return eq[1] + quoteCmdValue(eq[2]);
+      return quoteCmdValue(tok);
+    })
+    .join(' ')
+    .trim();
+}
+
+function readUnixProcCmdline(pid: number, fallback: string): string {
+  try {
+    return formatUnixProcCmdline(fs.readFileSync(`/proc/${pid}/cmdline`));
+  } catch {
+    return formatUnixProcCmdline(fallback);
+  }
+}
+
 /**
- * IDE 主进程判定。只排除 --type= 是不够的：tsserver / typingsInstaller / jsonServer
- * 同样带 exe 名且没有 --type=，会被当成窗口主进程 —— 停止多开时会误杀语言服务。
+ * IDE 主进程判定。除 --type= / js 扩展宿主 / crashpad 外，
+ * 还必须排除 Remote SSH/WSL 的 shell 包装器（sh/bash）与远端服务端进程（.antigravity*-server/--start-server/*-reh），
+ * 防止开启 CDP 或获取主程序路径时把 `sh` 当成桌面主程序；同时保留携带 --remote/--folder-uri 的本地桌面窗口主进程。
  */
 export function isIdeMainProcessCmd(cmd: string): boolean {
-  if (/--type=/i.test(cmd)) return false;
-  if (/[\\/]resources[\\/]app[\\/]extensions[\\/]/i.test(cmd)) return false;
-  if (/\.js["']?(?:\s|$)/i.test(cmd)) return false;
+  const trimmed = (cmd || '').trim();
+  if (!trimmed) return false;
+  if (/--type=/i.test(trimmed)) return false;
+  if (/[\\/]resources[\\/]app[\\/]extensions[\\/]/i.test(trimmed)) return false;
+  if (/\.js["']?(?:\s|$)/i.test(trimmed)) return false;
   // Chromium 内部参数：只做精确匹配，避免用户工作区路径含 plugin/gpu 这类词时误伤主进程
-  if (/--node-ipc\b/i.test(cmd)) return false;
-  if (/--clientprocessid=/i.test(cmd)) return false;
-  if (/[\\/]crashpad[\\/]/i.test(cmd)) return false;
+  if (/--node-ipc\b/i.test(trimmed)) return false;
+  if (/--clientprocessid=/i.test(trimmed)) return false;
+  if (/[\\/]crashpad[\\/]/i.test(trimmed)) return false;
+  if (/[\\/]\.(?:antigravity(?:-ide)?|vscode|cursor)-server[\\/]/i.test(trimmed)) return false;
+  if (/[\\/]out[\\/]server-main\.js\b/i.test(trimmed)) return false;
+  if (/--(?:start-server|enable-remote-auto-shutdown)\b/i.test(trimmed)) return false;
+
+  const tokens = tokenizeCommandLine(trimmed);
+  const exe = (tokens[0] || '').replace(/\\/g, '/');
+  const exeBase = (exe.split('/').pop() || '').toLowerCase();
+  if (!exeBase || NON_IDE_MAIN_EXECUTABLES.has(exeBase)) return false;
+  if (/-reh$/i.test(exeBase) || /^antigravity(?:-ide)?-server$/i.test(exeBase)) return false;
   return true;
 }
 
@@ -266,11 +369,7 @@ async function getRunningEntriesUnix(): Promise<Array<[number, string | null]>> 
       const parts = line.trim().split(/\s+/);
       const pid = parseInt(parts[1], 10);
       if (!pid || isNaN(pid)) continue;
-      let cmdline = '';
-      try { cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' '); } catch {
-        cmdline = parts.slice(10).join(' ');
-      }
-      const normalized = cmdline.replace(/\0/g, ' ').trim();
+      const normalized = readUnixProcCmdline(pid, parts.slice(10).join(' '));
       if (!isIdeMainProcessCmd(normalized)) continue;
       entries.push([pid, parseUserDataDir(normalized)]);
     }
@@ -287,23 +386,6 @@ export interface LaunchInfo {
   args: string[];
 }
 
-function tokenizeCommandLine(cmd: string): string[] {
-  const out: string[] = [];
-  let cur = '';
-  let inQuote = false;
-  for (let i = 0; i < cmd.length; i++) {
-    const c = cmd[i];
-    if (c === '"') { inQuote = !inQuote; continue; }
-    if (!inQuote && /\s/.test(c)) {
-      if (cur) { out.push(cur); cur = ''; }
-      continue;
-    }
-    cur += c;
-  }
-  if (cur) out.push(cur);
-  return out;
-}
-
 interface IdeProcessInfo {
   pid: number;
   cmd: string;
@@ -312,7 +394,7 @@ interface IdeProcessInfo {
 async function listIdeProcesses(): Promise<IdeProcessInfo[]> {
   const out: IdeProcessInfo[] = [];
   if (!isWindows) {
-    // POSIX：ps aux 快照，解析主进程命令行（与 getRunningEntriesUnix 同源）
+    // POSIX：ps aux 快照，与 getRunningEntriesUnix 共用 isIdeMainProcessCmd 过滤非桌面主进程
     const stdout = await runShellAsync('ps aux', 8000);
     if (!stdout) return out;
     for (const line of stdout.split('\n')) {
@@ -320,10 +402,8 @@ async function listIdeProcesses(): Promise<IdeProcessInfo[]> {
       const parts = line.trim().split(/\s+/);
       const pid = parseInt(parts[1], 10);
       if (!pid || isNaN(pid)) continue;
-      let cmd = '';
-      try { cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' '); } catch {
-        cmd = parts.slice(10).join(' ');
-      }
+      const cmd = readUnixProcCmdline(pid, parts.slice(10).join(' '));
+      if (!isIdeMainProcessCmd(cmd)) continue;
       out.push({ pid, cmd });
     }
     return out;
@@ -340,7 +420,8 @@ async function listIdeProcesses(): Promise<IdeProcessInfo[]> {
         const pidMatch = block.match(/ProcessId=(\d+)/);
         if (!pidMatch) continue;
         const pid = parseInt(pidMatch[1], 10);
-        if (pid) out.push({ pid, cmd: cmdMatch ? cmdMatch[1] : '' });
+        const cmd = cmdMatch ? cmdMatch[1] : '';
+        if (pid && isIdeMainProcessCmd(cmd)) out.push({ pid, cmd });
       }
       if (out.length > 0) return out;
     }
@@ -354,7 +435,8 @@ async function listIdeProcesses(): Promise<IdeProcessInfo[]> {
       const list = Array.isArray(parsed) ? parsed : [parsed];
       for (const p of list) {
         const pid = Number(p.ProcessId);
-        if (pid) out.push({ pid, cmd: p.CommandLine || '' });
+        const cmd: string = p.CommandLine || '';
+        if (pid && isIdeMainProcessCmd(cmd)) out.push({ pid, cmd });
       }
     }
   } catch (e) { logWarn('ideRuntime.listIdeProcesses.fail', e); }
@@ -651,7 +733,7 @@ async function listAgyPids(): Promise<AgyPidProbe> {
 }
 
 function isIdeMainProcess(p: ProcSnapshot): boolean {
-  if (/--type=/i.test(p.cmd)) return false;
+  if (!isIdeMainProcessCmd(p.cmd)) return false;
   if (isWindows) {
     if (!/antigravity(\s|\.)/i.test(p.name) && !/antigravity.*ide\.exe/i.test(p.name)) return false;
     return /antigravity/i.test(p.cmd);
@@ -673,12 +755,26 @@ export async function prepareAgyReload(): Promise<void> {
   }
 }
 
+export interface KillAgyResult {
+  killed: number;
+  error?: string;
+  agyWasRunning: boolean;
+  remoteSkipped?: boolean;
+}
+
 /**
  * 杀掉当前窗口进程树下的 agy 引擎。
  * Windows 优先走编译缓存的原生 .exe（Toolhelp32 一次完成「树定位 + 强杀」~134ms）；
  * Linux 走零派生 /proc 读取 + SIGKILL（~15ms）；macOS 走修复空格路径的单次 ps + SIGKILL（~40ms）。
  */
-export async function killAgyEngine(): Promise<{ killed: number; error?: string; agyWasRunning: boolean }> {
+export async function killAgyEngine(): Promise<KillAgyResult> {
+  // 远程工作区下 agy 跑在远端，跳过本地清理以防误杀其他本地窗口的 agy.exe
+  const remoteName = typeof vscode.env?.remoteName === 'string' ? vscode.env.remoteName.trim() : '';
+  if (remoteName) {
+    logInfo('agy.reload.remote-skip', { remoteName });
+    return { killed: 0, agyWasRunning: false, remoteSkipped: true };
+  }
+
   // Windows 快路径：原生 .exe 一次性完成 CreateToolhelp32Snapshot + 祖先定位 + 树级强杀
   if (isWindows) {
     const winRes = await reloadWinAgyNative(process.pid);

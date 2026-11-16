@@ -269,7 +269,7 @@ export function updateUserStatusEmail(payload: Buffer, email: string): Buffer {
 
 // ── 状态库定位与写入 ──
 
-function resolveIdeStateDbPaths(): string[] {
+export function resolveIdeStateDbPaths(): string[] {
   const candidates: string[] = [];
   const appDataNames = ['Antigravity IDE', 'Antigravity'];
   const homeCandidates = ['Antigravity IDE', 'Antigravity'];

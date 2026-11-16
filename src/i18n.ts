@@ -171,6 +171,30 @@ const S: Record<string, [string, string]> = {
     '进程检测或终止失败，agy 引擎可能未重载：{0}',
     'Process detection or termination failed; the agy engine may not have reloaded: {0}',
   ],
+  agyReloadRemoteNote: [
+    '已切至 {0}（远程工作区已跳过本地 agy 重载；远端助手认证由远端主机独立维护，如状态未同步请在远端重载窗口或确认远端登录）',
+    'Switched to {0} (local agy reload skipped in remote workspace; remote agent auth is managed independently on the remote host — reload the window or check remote login if out of sync)',
+  ],
+  remoteSyncStartupDone: [
+    '已将本地当前登录态（{0}）自动同步至远端服务器',
+    'Synced active local sign-in ({0}) to remote host automatically',
+  ],
+  remoteSyncDone: [
+    '已切至 {0} 并同步登录态至远端服务器，正在刷新远端面板…',
+    'Switched to {0} and synced sign-in to remote host; refreshing remote panel…',
+  ],
+  remoteSyncAligned: [
+    '已切至 {0}（远端登录态已对齐）',
+    'Switched to {0} (remote auth already aligned)',
+  ],
+  remoteSyncFail: [
+    '本地已切号，但同步远端登录态失败：{0}',
+    'Switched locally, but failed to sync sign-in to remote host: {0}',
+  ],
+  remoteSyncNoAuthority: [
+    '无法识别当前 Remote SSH 窗口的主机标识',
+    'Unable to resolve Remote SSH host authority for the current window',
+  ],
 
   // ── 切号重启反馈 ──
   restartIncomplete: [
@@ -505,6 +529,7 @@ const S: Record<string, [string, string]> = {
     'Drives the full-pool refresh behind cards, stats and the status bar (applies immediately). The status bar has a separate short-interval refresh for the current account.',
   ],
   'ui.syncGeminiRow': ['切号同步 Gemini 配置', 'Sync Gemini config on switch'],
+  'ui.syncRemoteAuthRow': ['同步 Remote SSH 登录态', 'Sync Remote SSH auth state'],
   'ui.heartbeatRow': ['CDP 心跳间隔', 'CDP heartbeat interval'],
   'ui.heartbeatHint': [
     '切号后探测 IDE 就绪的心跳节奏。数值越小切号越快、占用越高；200–5000 毫秒。',

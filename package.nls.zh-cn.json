@@ -35,6 +35,7 @@
 	"config.statusBar.showTier": "账号名旁显示订阅级别（PRO/ULTRA）。FREE 免费版不亮牌，保持底栏安静。",
 	"config.statusBar.families": "底栏显示哪些配额池（claude / gemini / argon=Gemini 4）。被关掉的池不参与族分格与最紧额度聚合。",
 	"config.syncGeminiFiles": "切号时同步 ~/.gemini 的 oauth_creds.json 与 google_accounts.json。仅当 AgyHop / Cockpit 等其它工具也在管理这些文件时才关闭。",
+	"config.remote.syncAuth": "在 Remote SSH 窗口打开或切号时，自动把本地当前登录凭证同步到远端 ~/.gemini/jetski-standalone-oauth-token，使右侧官方 Antigravity 面板与本地保持同号登录。",
 	"config.locale": "界面与提示文案语言。auto = 跟随 IDE 语言。",
 	"config.locale.auto": "跟随 IDE 语言（默认）",
 	"config.locale.zh": "中文",

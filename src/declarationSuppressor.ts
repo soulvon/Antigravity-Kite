@@ -23,6 +23,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { logInfo, logWarn } from './logger';
 import { getAppDataDir } from './platformPaths';
+import { getEffectiveCurrentUserDataDir } from './ideRuntime';
 
 const BURST_WINDOW_MS = 20_000;
 const STEADY_INTERVAL_MS = 3_500;
@@ -106,11 +107,11 @@ async function cdpAlive(port: number, timeoutMs = 1500): Promise<boolean> {
 
 export { cdpAlive as verifyCdpHost };
 
-/** 从 DevToolsActivePort 文件读取 Chromium/Electron 动态分配的调试端口 */
-export function readDevToolsActivePort(appDataName: string): number | null {
+/** 从指定 userDataDir 下的 DevToolsActivePort 文件读取 Chromium/Electron 动态分配的调试端口 */
+export function readDevToolsActivePortFromDir(userDataDir: string): number | null {
   try {
-    const base = getAppDataDir();
-    const p = path.join(base, appDataName, 'DevToolsActivePort');
+    if (!userDataDir) return null;
+    const p = path.join(userDataDir, 'DevToolsActivePort');
     if (fs.existsSync(p)) {
       const line = fs.readFileSync(p, 'utf8').split('\n')[0]?.trim();
       const port = Number(line);
@@ -122,9 +123,21 @@ export function readDevToolsActivePort(appDataName: string): number | null {
   return null;
 }
 
-/** 探测所有当前存活的 CDP 调试端口（配置端口、DevToolsActivePort、9222 兜底） */
+/** 从默认 appDataName 下的 DevToolsActivePort 文件读取动态分配的调试端口 */
+export function readDevToolsActivePort(appDataName: string): number | null {
+  return readDevToolsActivePortFromDir(path.join(getAppDataDir(), appDataName));
+}
+
+/** 探测所有当前存活的 CDP 调试端口（当前实例 DevToolsActivePort 优先、配置端口、默认目录 DevToolsActivePort、9222 兜底） */
 export async function getAliveCdpPorts(): Promise<number[]> {
   const candidates = new Set<number>();
+
+  const effectiveUda = getEffectiveCurrentUserDataDir().trim();
+  if (effectiveUda) {
+    const p = readDevToolsActivePortFromDir(effectiveUda);
+    if (p) candidates.add(p);
+  }
+
   const primary = getPort();
   if (primary) candidates.add(primary);
   candidates.add(9222);

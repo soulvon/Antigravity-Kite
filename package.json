@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.3.10",
+  "version": "1.4.0",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -24,6 +24,14 @@
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
+  "extensionKind": [
+    "ui"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -94,21 +102,25 @@
         "antigravityKite.update.autoCheck": {
           "type": "boolean",
           "default": true,
+          "scope": "application",
           "description": "%config.autoCheck%"
         },
         "antigravityKite.update.autoInstall": {
           "type": "boolean",
           "default": true,
+          "scope": "application",
           "description": "%config.autoInstall%"
         },
         "antigravityKite.autoConfirmDeclaration": {
           "type": "boolean",
           "default": true,
+          "scope": "application",
           "description": "%config.autoConfirmDeclaration%"
         },
         "antigravityKite.cdpPort": {
           "type": "number",
           "default": 9333,
+          "scope": "application",
           "description": "%config.cdpPort%"
         },
         "antigravityKite.cdpHeartbeatMs": {
@@ -116,6 +128,7 @@
           "default": 500,
           "minimum": 200,
           "maximum": 5000,
+          "scope": "application",
           "description": "%config.cdpHeartbeatMs%"
         },
         "antigravityKite.quotaRefreshMinutes": {
@@ -216,7 +229,14 @@
         "antigravityKite.switch.syncGeminiFiles": {
           "type": "boolean",
           "default": true,
+          "scope": "application",
           "description": "%config.syncGeminiFiles%"
+        },
+        "antigravityKite.remote.syncAuth": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "%config.remote.syncAuth%"
         },
         "antigravityKite.locale": {
           "type": "string",
@@ -237,7 +257,7 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_agy_reload.mjs && node scripts/check_switch_health.mjs && node scripts/check_switch_perf.mjs && node scripts/check_webview_hardening.mjs && node scripts/check_platform_gates.mjs && node scripts/check_decl_suppressor.mjs && node scripts/check_status_bar.mjs && node scripts/check_mw_feedback.mjs && node scripts/check_mw_launch.mjs && node scripts/check_tags.mjs && node scripts/check_hardening.mjs",
+    "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_agy_reload.mjs && node scripts/check_switch_health.mjs && node scripts/check_switch_perf.mjs && node scripts/check_webview_hardening.mjs && node scripts/check_platform_gates.mjs && node scripts/check_decl_suppressor.mjs && node scripts/check_status_bar.mjs && node scripts/check_mw_feedback.mjs && node scripts/check_mw_launch.mjs && node scripts/check_tags.mjs && node scripts/check_hardening.mjs && node scripts/check_remote_ssh.mjs",
     "watch": "tsc -watch -p ./",
     "package": "node ./scripts/update-version.js && npm run compile && vsce package --skip-license",
     "check:release": "node scripts/check_release_readiness.mjs"

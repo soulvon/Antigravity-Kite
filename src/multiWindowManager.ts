@@ -481,9 +481,10 @@ export async function startWindow(windowId: string): Promise<void> {
   const exePath = await detectExePath();
   if (!exePath) throw new Error(t('gateNoExe') || '未找到 Antigravity IDE 可执行文件');
 
-  // 拼接启动参数：独立数据目录，打开当前工作区
+  // 拼接启动参数：独立数据目录，打开当前工作区（仅透传本地 file:// 目录，防止 vscode-remote:// 污染本地多开）
   const args: string[] = ['--user-data-dir', win.userDataDir, '--reuse-window'];
-  const curFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const curUri = vscode.workspace.workspaceFolders?.[0]?.uri;
+  const curFolder = curUri?.scheme === 'file' ? curUri.fsPath : '';
   if (curFolder && fs.existsSync(curFolder)) {
     args.push(curFolder);
   }

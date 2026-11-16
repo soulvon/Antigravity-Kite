@@ -6,7 +6,7 @@
 
 **切号不重启 IDE · Claude / Gemini / Gemini 4 真实双窗配额流 · 安全声明自动确认 · 中英双语自适应**
 
-[![Version](https://img.shields.io/badge/version-1.3.10-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)]()
 [![GitHub release](https://img.shields.io/github/v/release/soulvon/Antigravity-Kite?color=orange&style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases)
@@ -47,7 +47,7 @@ Antigravity Kite 是一款面向 **Antigravity IDE** 的多账号管理与无感
 
 ### 方式一：扩展面板安装（推荐）
 
-1. 下载最新版 `antigravity-kite-1.3.10.vsix`（[GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest)）；
+1. 下载最新版 `antigravity-kite-1.4.0.vsix`（[GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest)）；
 2. 打开 **Antigravity IDE**；
 3. 进入左侧扩展面板（快捷键 `Ctrl+Shift+X` / macOS `Cmd+Shift+X`）；
 4. 点击面板右上角 `...` 菜单 ➔ 选择 **"从 VSIX 安装..." (Install from VSIX...)**；
@@ -56,7 +56,7 @@ Antigravity Kite 是一款面向 **Antigravity IDE** 的多账号管理与无感
 ### 方式二：命令行安装
 
 ```bash
-antigravity-ide --install-extension antigravity-kite-1.3.10.vsix --force
+antigravity-ide --install-extension antigravity-kite-1.4.0.vsix --force
 ```
 
 ---
@@ -142,6 +142,7 @@ antigravity-ide --install-extension antigravity-kite-1.3.10.vsix --force
 | `antigravityKite.cdpHeartbeatMs` | `500` | 声明自动确认的心跳间隔（毫秒），改动即时生效 |
 | `antigravityKite.quotaRefreshMinutes` | `15` | 后台刷新全部账号配额的间隔（分钟），改动即时生效 |
 | `antigravityKite.switch.syncGeminiFiles` | `true` | 切号时同步 `~/.gemini` 凭证文件（多工具共管时可关闭） |
+| `antigravityKite.remote.syncAuth` | `true` | Remote SSH 窗口自动对齐并无重启热切远端 Antigravity 登录态 |
 | `antigravityKite.update.autoCheck` | `true` | 启动时自动检查更新 |
 | `antigravityKite.update.autoInstall` | `true` | 发现新版本时自动静默安装 |
 

@@ -27,6 +27,13 @@ function autoConfirmEnabled(): boolean {
   return vscode.workspace.getConfiguration('antigravityKite').get<boolean>('autoConfirmDeclaration', true);
 }
 
+const IDE_SHORTCUT_EXE_RE = /(?:^|[\\/])antigravity(?:\s+ide)?\.exe$/i;
+
+/** 校验快捷方式 TargetPath 是否指向 Antigravity IDE 主程序（排除 antigravity-tools 等第三方程序） */
+export function isIdeShortcutTarget(targetPath: string): boolean {
+  return IDE_SHORTCUT_EXE_RE.test(String(targetPath || '').trim());
+}
+
 /** 给桌面 / 开始菜单 / 任务栏中指向 Antigravity IDE 的快捷方式追加调试端口参数（WScript.Shell COM） */
 async function patchShortcuts(port: number): Promise<{ patched: number; details: string[] }> {
   const ps = [
@@ -45,7 +52,7 @@ async function patchShortcuts(port: number): Promise<{ patched: number; details:
     "foreach ($lnk in $lnks) {",
     "  try {",
     "    $s = $ws.CreateShortcut($lnk.FullName)",
-    "    if ($s.TargetPath -and $s.TargetPath -match 'antigravity') {",
+    "    if ($s.TargetPath -and ($s.TargetPath.Trim() -match '(^|[\\\\/])antigravity(\\s+ide)?\\.exe$')) {",
     "      if ($s.Arguments -notmatch 'remote-debugging-port') {",
     "        $s.Arguments = ($s.Arguments + ' ' + $flag).Trim()",
     "        $s.Save()",
@@ -89,11 +96,11 @@ export function sanitizeCdpLaunchArgs(args: string[], port: number): string[] {
   return cleaned;
 }
 
-/** 轻量重启：延迟关闭 IDE → 以原参数 + 调试端口重新拉起（独立进程执行，跨平台 win32/POSIX，失败留痕日志） */
-function relaunchWithPort(launch: { exePath: string; args: string[]; pid: number }, port: number): void {
+/** 构建独立重拉起脚本：先发送优雅退出信号并等待落盘，超时后再强杀兜底，避免丢失未保存窗口状态 */
+export function buildRelaunchScript(launch: { exePath: string; args: string[]; pid: number }, port: number): string {
   const cleanArgs = sanitizeCdpLaunchArgs(launch.args, port);
   const logFile = path.join(os.tmpdir(), 'kite-cdp-relaunch.log');
-  const script = [
+  return [
     'const cp = require("child_process");',
     'const fs = require("fs");',
     `const pid = ${launch.pid};`,
@@ -103,6 +110,10 @@ function relaunchWithPort(launch: { exePath: string; args: string[]; pid: number
     'const logErr = (tag, err) => { try { fs.appendFileSync(logFile, new Date().toISOString() + " " + tag + ": " + String(err && err.stack || err) + "\\n"); } catch {} };',
     'const cleanEnv = Object.assign({}, process.env);',
     'for (const k of ["ELECTRON_RUN_AS_NODE","ELECTRON_NO_ATTACH_CONSOLE","VSCODE_IPC_HOOK","VSCODE_IPC_HOOK_CLI","VSCODE_PID","VSCODE_CWD","VSCODE_HANDLES_UNCAUGHT_ERRORS"]) { delete cleanEnv[k]; }',
+    'const isAlive = (p) => {',
+    '  try { process.kill(p, 0); return true; }',
+    '  catch (e) { return !!(e && e.code === "EPERM"); }',
+    '};',
     'const launchApp = () => {',
     '  try {',
     '    const c = cp.spawn(exe, args, { detached: true, stdio: "ignore", windowsHide: false, env: cleanEnv });',
@@ -111,19 +122,35 @@ function relaunchWithPort(launch: { exePath: string; args: string[]; pid: number
     '    c.unref();',
     '  } catch (err) { logErr("spawnSync", err); process.exit(1); }',
     '};',
+    'const forceKillAndLaunch = () => {',
+    '  if (process.platform === "win32") {',
+    '    try { cp.execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 4000 }); } catch (err) { logErr("taskkillForce", err); }',
+    '    setTimeout(launchApp, 800);',
+    '  } else {',
+    '    try { process.kill(pid, "SIGKILL"); } catch (err) { logErr("sigkill", err); }',
+    '    setTimeout(launchApp, 600);',
+    '  }',
+    '};',
     'setTimeout(() => {',
     '  if (process.platform === "win32") {',
-    '    try { cp.execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); } catch (err) { logErr("taskkill", err); }',
-    '    setTimeout(launchApp, 1500);',
+    '    try { cp.execFileSync("taskkill", ["/PID", String(pid)], { stdio: "ignore", windowsHide: true, timeout: 2500 }); } catch (err) { logErr("taskkillGraceful", err); }',
     '  } else {',
     '    try { process.kill(pid, "SIGTERM"); } catch (err) { logErr("sigterm", err); }',
-    '    setTimeout(() => {',
-    '      try { process.kill(pid, 0); process.kill(pid, "SIGKILL"); } catch {}',
-    '      setTimeout(launchApp, 600);',
-    '    }, 900);',
     '  }',
+    '  const deadline = Date.now() + 6000;',
+    '  const waitExit = () => {',
+    '    if (!isAlive(pid)) { setTimeout(launchApp, 600); return; }',
+    '    if (Date.now() >= deadline) { forceKillAndLaunch(); return; }',
+    '    setTimeout(waitExit, 250);',
+    '  };',
+    '  setTimeout(waitExit, 250);',
     '}, 1200);',
   ].join('\n');
+}
+
+/** 轻量重启：延迟优雅关闭 IDE → 以原参数 + 调试端口重新拉起（独立进程执行，跨平台 win32/POSIX，失败留痕日志） */
+function relaunchWithPort(launch: { exePath: string; args: string[]; pid: number }, port: number): void {
+  const script = buildRelaunchScript(launch, port);
   const child = cp.spawn(process.execPath, ['-e', script], {
     detached: true,
     stdio: 'ignore',
