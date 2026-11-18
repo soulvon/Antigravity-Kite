@@ -15,12 +15,7 @@ import * as path from 'path';
 import { getAppDataDir } from './platformPaths';
 import { logWarn } from './logger';
 
-const HELPER_CS_LINES = [
-  'using System;',
-  'using System.Collections.Generic;',
-  'using System.Runtime.InteropServices;',
-  'using System.Text;',
-  'public static class KiteWinHelper {',
+export const WIN32_CREDENTIAL_CS_STRUCT: readonly string[] = [
   '  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]',
   '  public struct CREDENTIAL {',
   '    public int Flags;',
@@ -36,6 +31,21 @@ const HELPER_CS_LINES = [
   '    public string TargetAlias;',
   '    public string UserName;',
   '  }',
+  '  [DllImport("Advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]',
+  '  public static extern bool CredReadW(string target, int type, int flags, out IntPtr credPtr);',
+  '  [DllImport("Advapi32.dll", EntryPoint = "CredWriteW", CharSet = CharSet.Unicode, SetLastError = true)]',
+  '  public static extern bool CredWriteW(ref CREDENTIAL cred, int flags);',
+  '  [DllImport("Advapi32.dll")]',
+  '  public static extern void CredFree(IntPtr cred);',
+];
+
+const HELPER_CS_LINES = [
+  'using System;',
+  'using System.Collections.Generic;',
+  'using System.Runtime.InteropServices;',
+  'using System.Text;',
+  'public static class KiteWinHelper {',
+  ...WIN32_CREDENTIAL_CS_STRUCT,
   '  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]',
   '  public struct PROCESSENTRY32W {',
   '    public uint dwSize;',
@@ -50,14 +60,8 @@ const HELPER_CS_LINES = [
   '    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]',
   '    public string szExeFile;',
   '  }',
-  '  [DllImport("Advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]',
-  '  static extern bool CredReadW(string target, int type, int flags, out IntPtr credPtr);',
-  '  [DllImport("Advapi32.dll", EntryPoint = "CredWriteW", CharSet = CharSet.Unicode, SetLastError = true)]',
-  '  static extern bool CredWriteW(ref CREDENTIAL cred, int flags);',
   '  [DllImport("Advapi32.dll", EntryPoint = "CredDeleteW", CharSet = CharSet.Unicode, SetLastError = true)]',
   '  static extern bool CredDeleteW(string target, int type, int flags);',
-  '  [DllImport("Advapi32.dll")]',
-  '  static extern void CredFree(IntPtr cred);',
   '  [DllImport("Kernel32.dll", SetLastError = true)]',
   '  static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);',
   '  [DllImport("Kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]',
@@ -287,7 +291,9 @@ export async function ensureWinNativeHelper(): Promise<string | null> {
     if (fs.existsSync(targetExe) && fs.statSync(targetExe).size > 0) {
       return targetExe;
     }
-  } catch { /* 继续走编译路径 */ }
+  } catch (e) {
+    logWarn('winHelper.statCacheFail', { targetExe, message: e instanceof Error ? e.message : String(e) });
+  }
 
   if (_compilePromise) return _compilePromise;
 
@@ -329,8 +335,8 @@ export async function ensureWinNativeHelper(): Promise<string | null> {
       logWarn('winHelper.compileFail', { message: e instanceof Error ? e.message : String(e) });
       return fs.existsSync(targetExe) ? targetExe : null;
     } finally {
-      try { if (fs.existsSync(tmpCs)) fs.unlinkSync(tmpCs); } catch { /* 清理临时源码 */ }
-      try { if (fs.existsSync(tmpExe)) fs.unlinkSync(tmpExe); } catch { /* 清理未重命名的临时产物 */ }
+      try { if (fs.existsSync(tmpCs)) fs.unlinkSync(tmpCs); } catch (e) { logWarn('winHelper.cleanupTmpCs', e); }
+      try { if (fs.existsSync(tmpExe)) fs.unlinkSync(tmpExe); } catch (e) { logWarn('winHelper.cleanupTmpExe', e); }
     }
   })().finally(() => {
     _compilePromise = null;

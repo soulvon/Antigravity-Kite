@@ -15,6 +15,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { getAppDataDir } from './platformPaths';
 import { t } from './i18n';
+import { logWarn } from './logger';
 
 export interface IdeTokenInfo {
   accessToken: string;
@@ -129,6 +130,51 @@ function decodeRowBase64(rowBytes: Buffer): string {
   return '';
 }
 
+function skipProtobufField(buf: Buffer, off: number, wireType: number): number {
+  if (wireType === 0) return readVarint(buf, off).next;
+  if (wireType === 2) return readLenDelim(buf, off).next;
+  if (wireType === 5) {
+    if (off + 4 > buf.length) throw new Error('Protobuf fixed32 truncated');
+    return off + 4;
+  }
+  if (wireType === 1) {
+    if (off + 8 > buf.length) throw new Error('Protobuf fixed64 truncated');
+    return off + 8;
+  }
+  throw new Error(`Unsupported protobuf wireType: ${wireType}`);
+}
+
+function forEachProtobufField(
+  buf: Buffer,
+  visitor: (fieldNum: number, wireType: number, bytes?: Buffer) => void,
+): void {
+  let off = 0;
+  while (off < buf.length) {
+    const tag = readVarint(buf, off);
+    const fieldNum = Math.floor(tag.value / 8);
+    const wireType = tag.value & 7;
+    off = tag.next;
+    if (wireType === 2) {
+      const v = readLenDelim(buf, off);
+      off = v.next;
+      visitor(fieldNum, wireType, v.bytes);
+    } else if (wireType === 0) {
+      off = readVarint(buf, off).next;
+      visitor(fieldNum, wireType);
+    } else if (wireType === 5) {
+      if (off + 4 > buf.length) break;
+      off += 4;
+      visitor(fieldNum, wireType);
+    } else if (wireType === 1) {
+      if (off + 8 > buf.length) break;
+      off += 8;
+      visitor(fieldNum, wireType);
+    } else {
+      break;
+    }
+  }
+}
+
 function decodeTopicEntries(blob: Buffer): TopicEntry[] {
   const entries: TopicEntry[] = [];
   let off = 0;
@@ -145,21 +191,27 @@ function decodeTopicEntries(blob: Buffer): TopicEntry[] {
     while (p < entry.length) {
       const t = readVarint(entry, p);
       p = t.next;
-      if ((t.value >> 3) === 1 && (t.value & 7) === 2) {
+      const fieldNum = Math.floor(t.value / 8);
+      const wireType = t.value & 7;
+      if (fieldNum === 1 && wireType === 2) {
         const v = readLenDelim(entry, p);
         sentinelKey = v.bytes.toString('utf8');
         p = v.next;
-      } else if ((t.value >> 3) === 2 && (t.value & 7) === 2) {
+      } else if (fieldNum === 2 && wireType === 2) {
         const v = readLenDelim(entry, p);
         p = v.next;
         // Row 是 Protobuf 消息，field 1 才是 base64 字符串（旧实现直接 toString 会把 2 字节 varint 高位 0x41 'A' 混入 base64）
         payloadB64 = decodeRowBase64(v.bytes);
       } else {
-        break;
+        try {
+          p = skipProtobufField(entry, p, wireType);
+        } catch {
+          break;
+        }
       }
     }
     if (sentinelKey) {
-      entries.push({ sentinelKey, payload: Buffer.from(payloadB64, 'base64') });
+      entries.push({ sentinelKey, payload: Buffer.from(payloadB64.trim(), 'base64') });
     }
   }
   return entries;
@@ -317,6 +369,111 @@ function loadSqlite(): { DatabaseSync: any } | null {
   }
 }
 
+function readStateItemValue(dbPath: string, key: string): string | null {
+  const sqlite = loadSqlite();
+  if (!sqlite) {
+    throw new Error(t('errSqliteUnavailable'));
+  }
+  let db: any;
+  try {
+    db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+    const row = db.prepare('SELECT value FROM ItemTable WHERE key = ?').get(key);
+    if (row && row.value !== undefined && row.value !== null) {
+      return String(row.value).trim();
+    }
+    return null;
+  } finally {
+    try { db?.close(); } catch (closeErr) { logWarn('ideStateDb.readClose.fail', closeErr); }
+  }
+}
+
+/**
+ * 从 IDE state.vscdb 安全读取 OAuth token（53-bit varint 解码）。
+ * - 缺 node:sqlite 抛 errSqliteUnavailable
+ * - 缺 oauthToken 记录抛 lrNoToken
+ * - 缺 oauthTokenInfoSentinelKey 抛 lrNoSentinel
+ */
+export function readIdeOAuthTokenFromDb(dbPath: string): { accessToken?: string; refreshToken?: string } {
+  const stateValue = readStateItemValue(dbPath, OAUTH_TOKEN_KEY);
+  if (!stateValue) {
+    throw new Error(t('lrNoToken'));
+  }
+
+  let entries: TopicEntry[] = [];
+  try {
+    entries = decodeTopicEntries(Buffer.from(stateValue, 'base64'));
+  } catch (e) {
+    logWarn('ideStateDb.oauthDecode.fail', { dbPath, error: e instanceof Error ? e.message : String(e) });
+    entries = [];
+  }
+
+  const entry = entries.find((e) => e.sentinelKey === OAUTH_SENTINEL);
+  if (!entry) {
+    throw new Error(t('lrNoSentinel'));
+  }
+
+  const result: { accessToken?: string; refreshToken?: string } = {};
+  try {
+    forEachProtobufField(entry.payload, (fieldNum, wireType, bytes) => {
+      if (wireType !== 2 || !bytes) return;
+      if (fieldNum === 1) result.accessToken = bytes.toString('utf8');
+      else if (fieldNum === 3) result.refreshToken = bytes.toString('utf8');
+    });
+  } catch (e) {
+    logWarn('ideStateDb.oauthPayload.partial', { dbPath, error: e instanceof Error ? e.message : String(e) });
+  }
+  return result;
+}
+
+/**
+ * 从 IDE state.vscdb 安全读取 userStatus 中的邮箱与昵称。
+ * 支持 wireType 0/1/2/5 不提前中断；优先 field 2 含 '@' 字符串，兼容兜底 field 7 含 '@'，field 3 为 name。
+ */
+export function readIdeUserStatusFromDb(dbPath: string): { email?: string; name?: string } {
+  const stateValue = readStateItemValue(dbPath, USER_STATUS_KEY);
+  if (!stateValue) {
+    return {};
+  }
+
+  let entries: TopicEntry[] = [];
+  try {
+    entries = decodeTopicEntries(Buffer.from(stateValue, 'base64'));
+  } catch (e) {
+    logWarn('ideStateDb.userStatusDecode.fail', { dbPath, error: e instanceof Error ? e.message : String(e) });
+    return {};
+  }
+
+  const entry = entries.find((e) => e.sentinelKey === USER_STATUS_SENTINEL);
+  if (!entry) {
+    return {};
+  }
+
+  let emailPrimary: string | undefined;
+  let emailFallback: string | undefined;
+  let name: string | undefined;
+  try {
+    forEachProtobufField(entry.payload, (fieldNum, wireType, bytes) => {
+      if (wireType !== 2 || !bytes) return;
+      const str = bytes.toString('utf8');
+      if (!str) return;
+      if (fieldNum === 2 && str.includes('@') && !emailPrimary) {
+        emailPrimary = str;
+      } else if (fieldNum === 7 && str.includes('@') && !emailFallback) {
+        emailFallback = str;
+      } else if (fieldNum === 3 && !name) {
+        name = str;
+      }
+    });
+  } catch (e) {
+    logWarn('ideStateDb.userStatusPayload.partial', { dbPath, error: e instanceof Error ? e.message : String(e) });
+  }
+
+  return {
+    email: emailPrimary || emailFallback,
+    name,
+  };
+}
+
 function upsertItem(db: any, key: string, value: string): void {
   db.prepare(
     'INSERT INTO ItemTable (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
@@ -424,10 +581,10 @@ export function switchIdeStateIdentity(
     return { dbWritten: true, dbPath };
   } catch (e) {
     if (inTx && db) {
-      try { db.exec('ROLLBACK'); } catch { /* 事务回滚兜底 */ }
+      try { db.exec('ROLLBACK'); } catch (rollbackErr) { logWarn('ideStateDb.rollback.fail', rollbackErr); }
     }
     return { dbWritten: false, dbPath, error: e instanceof Error ? e.message : String(e) };
   } finally {
-    try { db?.close(); } catch { /* 已关闭 */ }
+    try { db?.close(); } catch (closeErr) { logWarn('ideStateDb.close.fail', closeErr); }
   }
 }

@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="{{LANG}}">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {{CSP_SOURCE}} data: blob:; style-src {{CSP_SOURCE}} 'unsafe-inline'; font-src {{CSP_SOURCE}} data:; script-src 'nonce-{{NONCE}}';">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="{{CSS_URI}}">
+</head>
+<body>
+<div class="app">
+<!-- 账号页 -->
+<div class="tab-page active" id="tabAccounts">
+  <div class="list-body">
+      <!-- 账号区标题与操作 -->
+      <div class="accounts-section-header list-summary">
+        <svg class="list-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <h3 data-i18n="myAccounts">我的账号</h3>
+        <span class="list-arrow"></span>
+        <div style="flex:1"></div>
+        <span class="grid-count" id="gridCount"></span>
+        <button class="add-account-btn" id="addAccountBtn" data-i18n="addAccount">添加账号</button>
+      </div>
+
+      <div class="panel-divider"></div>
+      <!-- 搜索栏 -->
+      <div class="search-bar">
+        <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M10.8 4a6.8 6.8 0 1 0 4.25 12.12l3.42 3.42a1.2 1.2 0 0 0 1.7-1.7l-3.42-3.42A6.8 6.8 0 0 0 10.8 4Zm0 2.4a4.4 4.4 0 1 1 0 8.8 4.4 4.4 0 0 1 0-8.8Z"/></svg>
+        <input type="text" class="search-input" id="searchInput" placeholder="搜索账号..." autocomplete="off" data-i18n-ph="searchPh">
+        <button class="search-clear" id="searchClear" hidden>×</button>
+      </div>
+      <!-- 工具栏 -->
+      <div class="toolbar-bar" id="toolbarBar">
+        <div class="filter-wrap" id="filterWrap">
+          <button class="filter-trigger" id="filterTrigger" data-i18n-title="filter" title="过滤">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+            <span id="filterLabel" data-i18n="filterAll">全部</span>
+            <span class="filter-count" id="filterTriggerCount"></span>
+          </button>
+          <div class="filter-dropdown" id="filterDropdown" hidden>
+            <div class="filter-section" id="filterPlanSection">
+              <div class="filter-section-title" data-i18n="plan">套餐</div>
+              <div class="filter-options" id="filterPlanList"></div>
+            </div>
+            <div class="filter-section" id="filterTagSection">
+              <div class="filter-section-title" data-i18n="tags">标签</div>
+              <div class="filter-options" id="filterTagList"></div>
+            </div>
+            <div class="filter-section" id="filterStatusSection">
+              <div class="filter-section-title" data-i18n="status">状态</div>
+              <div class="filter-options" id="filterStatusList"></div>
+            </div>
+            <div class="filter-actions">
+              <button class="filter-clear-btn" id="filterClearBtn" data-i18n="clearFilters">清空筛选</button>
+            </div>
+          </div>
+        </div>
+        <select class="group-select" id="sortSelect" data-i18n-title="sortBy" title="排序方式">
+          <option value="default" data-i18n="sortDefault">默认排序</option>
+          <option value="recommend" selected data-i18n="sortRecommend">推荐</option>
+          <option value="email" data-i18n="sortEmail">邮箱 A-Z</option>
+          <option value="time" data-i18n="sortTime">导入时间</option>
+        </select>
+        <button class="sort-direction-btn" id="sortDirectionBtn" data-i18n-title="sortDir" title="切换排序方向">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"/>
+            <polyline points="19 12 12 19 5 12"/>
+          </svg>
+        </button>
+        <button class="toolbar-icon-btn" id="refreshAllBtn" data-i18n-title="refreshAll" title="刷新全部">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+          <span class="refresh-progress-badge" id="refreshProgressBadge" hidden></span>
+        </button>
+        <button class="toolbar-icon-btn" id="exportAccountsBtn" data-i18n-title="exportAll" title="导出账号设置">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
+        <button class="toolbar-icon-btn" id="privacyModeBtn" data-i18n-title="privacyOff" title="隐私模式：隐藏邮箱">
+          <svg class="privacy-eye" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+        <div style="flex:1"></div>
+        <button class="group-select-mode-btn" id="selectModeBtn" data-i18n-title="selectModeTitle" title="多选模式">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          <span data-i18n="selectMode">多选</span>
+        </button>
+        <button class="toolbar-icon-btn" id="settingsBtn" data-i18n-title="settings" title="设置">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+      <!-- 批量操作栏 -->
+      <div class="batch-bar" id="batchBar" hidden>
+        <label class="batch-check-all"><input type="checkbox" id="batchCheckAll"><span data-i18n="selectAll">全选</span></label>
+        <div style="flex:1"></div>
+        <span class="batch-count" id="batchCount"></span>
+        <button class="batch-action-btn" id="batchTagBtn" data-i18n-title="batchTagTitle" data-i18n="batchTag" title="为选中账号设置标签">加标签</button>
+        <button class="batch-action-btn" id="batchEnableBtn" data-i18n-title="batchEnableTitle" data-i18n="batchEnable" title="启用选中账号">启用</button>
+        <button class="batch-action-btn" id="batchDisableBtn" data-i18n-title="batchDisableTitle" data-i18n="batchDisable" title="禁用选中账号">禁用</button>
+        <button class="batch-action-btn" id="batchExportBtn" data-i18n-title="batchExportTitle" data-i18n="batchExport" title="导出选中账号">导出</button>
+        <button class="batch-action-btn batch-action-delete" id="batchDeleteBtn" data-i18n-title="batchDeleteTitle" data-i18n="batchDelete" title="删除选中账号">删除</button>
+        <button class="batch-action-btn" id="batchCancelBtn" data-i18n="cancel">取消</button>
+      </div>
+      <!-- 添加账号模态框 -->
+      <div class="add-account-modal" id="addAccountModal" hidden>
+        <div class="add-modal-content">
+          <div class="add-modal-header">
+            <span class="add-modal-title" data-i18n="addModalTitle">添加账号</span>
+            <button class="add-modal-close" id="closeAddModal">×</button>
+          </div>
+          <div class="add-modal-body">
+            <button class="add-modal-option" id="btnOAuth">
+              <span class="add-option-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+              <div class="add-option-info">
+                <span class="add-option-title" data-i18n="oauthTitle">Google 登录</span>
+                <span class="add-option-desc" data-i18n="oauthDesc">通过浏览器授权登录</span>
+              </div>
+            </button>
+            <button class="add-modal-option" id="btnImport">
+              <span class="add-option-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+              <div class="add-option-info">
+                <span class="add-option-title" data-i18n="importLocalTitle">从本地数据库导入</span>
+                <span class="add-option-desc" data-i18n="importLocalDesc">读取本机 Antigravity IDE 客户端登录账号</span>
+              </div>
+            </button>
+            <button class="add-modal-option" id="btnImportCockpit">
+              <span class="add-option-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></span>
+              <div class="add-option-info">
+                <span class="add-option-title" data-i18n="importCockpitTitle">从 Cockpit Tools 导入</span>
+                <span class="add-option-desc" data-i18n="importCockpitDesc">同步 Cockpit Tools 中的账号</span>
+              </div>
+            </button>
+            <button class="add-modal-option" id="btnImportManager">
+              <span class="add-option-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+              <div class="add-option-info">
+                <span class="add-option-title" data-i18n="importManagerTitle">从 Antigravity Manager 导入</span>
+                <span class="add-option-desc" data-i18n="importManagerDesc">同步 Antigravity Manager 中的账号</span>
+              </div>
+            </button>
+            <button class="add-modal-option" id="btnImportJson">
+              <span class="add-option-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg></span>
+              <div class="add-option-info">
+                <span class="add-option-title" data-i18n="importJsonTitle">从本地文件导入</span>
+                <span class="add-option-desc" data-i18n="importJsonDesc">选择 JSON 文件导入账号（支持多种格式）</span>
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
+      <!-- 账号网格 -->
+      <div class="active-filter-bar" id="activeFilterBar" hidden></div>
+      <div class="auth-wait-bar" id="authWaitBar" hidden></div>
+      <div id="accountGrid" class="account-grid"></div>
+      <!-- 分页 -->
+      <div class="pagination-row" id="paginationRow" hidden>
+        <select class="page-size-select" id="pageSizeSelect" data-i18n-title="pageSize" title="每页显示">
+          <option value="10" data-i18n="pageSize10">10/页</option>
+          <option value="20" selected data-i18n="pageSize20">20/页</option>
+          <option value="50" data-i18n="pageSize50">50/页</option>
+          <option value="0" data-i18n="showAll">全部</option>
+        </select>
+        <div id="pagination" class="pagination"></div>
+      </div>
+      <div id="emptyState" class="empty-card">
+        <div class="empty-title" data-i18n="emptyTitle">还没有账号</div>
+        <div class="empty-sub" data-i18n="emptySub">点击上方「添加账号」按钮</div>
+      </div>
+  </div>
+</div>
+
+</div><!-- /.app -->
+
+<!-- 标签编辑弹窗 -->
+<div id="tagEditOverlay" class="modal-overlay" hidden>
+  <div class="modal-box" style="width:min(400px,90vw)">
+    <div class="modal-header">
+      <h3 id="tagEditTitle" data-i18n="tagEditTitle">编辑标签</h3>
+      <button class="modal-close" id="tagEditClose" data-i18n-title="close" title="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="tagEditSelected" class="tag-edit-selected" style="display:flex;flex-wrap:wrap;gap:4px;min-height:28px;margin-bottom:8px;padding:4px 0"></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="text" id="tagEditInput" placeholder="输入标签名称，回车添加" style="flex:1 1 auto;min-width:0;width:100%;box-sizing:border-box" data-i18n-ph="tagInputPh">
+        <button id="tagEditAddBtn" style="flex:0 0 auto;padding:5px 14px;font-size:12px;white-space:nowrap;border-radius:6px;border:1px solid var(--accent,#10b981);background:var(--accent,#10b981);color:#fff;cursor:pointer" data-i18n="add">添加</button>
+      </div>
+      <div style="margin-top:8px">
+        <label style="font-size:12px;opacity:0.7" data-i18n="existingTags">已有标签（点击选中/取消，× 永久删除）</label>
+        <div id="tagEditExisting" class="tag-edit-existing" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;max-height:120px;overflow-y:auto"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+        <button class="modal-cancel-btn" id="tagEditCancel" style="min-width:72px;padding:6px 20px" data-i18n="cancel">取消</button>
+        <button class="primary" id="tagEditSave" style="width:auto;min-width:72px;padding:6px 20px" data-i18n="save">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 通用确认框（showConfirm 驱动） -->
+<div id="confirmOverlay" class="modal-overlay" hidden>
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 id="confirmTitle" data-i18n="confirmTitle">确认操作</h3>
+      <button class="modal-close" id="confirmClose" data-i18n-title="close" title="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="confirm-message" id="confirmMessage"></div>
+      <div class="confirm-actions">
+        <button class="modal-cancel-btn" id="confirmCancel" style="min-width:72px;padding:6px 20px" data-i18n="cancel">取消</button>
+        <button class="confirm-danger-btn" id="confirmOk" data-i18n="ok">确认</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 通用询问弹窗（宿主 askUi 驱动，替代 VS Code 原生 showXxxMessage） -->
+<div id="askOverlay" class="modal-overlay" hidden>
+  <div class="modal-box" style="width:min(440px,92vw)">
+    <div class="modal-header">
+      <h3 id="askTitle"></h3>
+      <button class="modal-close" id="askClose" data-i18n-title="close" title="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="ask-meta" id="askMeta"></div>
+      <div class="ask-message" id="askMessage"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="modal-cancel-btn" id="askCancel" data-i18n="askCancelBtn">取消</button>
+      <button class="primary" id="askOk" style="min-width:96px"></button>
+    </div>
+  </div>
+</div>
+
+<!-- 设置弹窗（工具栏齿轮入口） -->
+<div id="settingsOverlay" class="modal-overlay" hidden>
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 data-i18n="settings">设置</h3>
+      <span class="settings-live-tag" data-i18n="sbLiveTag">实时生效</span>
+      <button class="modal-close" id="settingsClose" data-i18n-title="close" title="关闭">×</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="settings-group">
+        <div class="settings-group-head">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
+          <span data-i18n="autoUpdate">自动更新</span>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="autoCheckRow">启动时检查更新</span>
+          <label class="as-switch"><input type="checkbox" id="setUpdateAutoCheck"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="autoInstallRow">静默安装新版</span>
+          <label class="as-switch"><input type="checkbox" id="setUpdateAutoInstall"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-head">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span data-i18n="switchDebug">切号与调试</span>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="autoConfirmRow">自动确认安全声明</span>
+          <label class="as-switch"><input type="checkbox" id="setAutoConfirm"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="syncGeminiRow">切号同步 Gemini 配置</span>
+          <label class="as-switch"><input type="checkbox" id="setSyncGemini"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="syncRemoteAuthRow">同步 Remote SSH 登录态</span>
+          <label class="as-switch"><input type="checkbox" id="setSyncRemoteAuth"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="cdpPortRow">调试端口</span>
+          <input type="number" class="v2-sel sb-port-input" id="setCdpPort" min="1024" max="65535" placeholder="9333">
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="heartbeatRow">CDP 心跳间隔</span>
+          <div class="sb-num-row">
+            <input type="number" class="v2-param-val" id="setCdpHeartbeat" min="200" max="5000" placeholder="500">
+            <span class="v2-param-unit" data-i18n="unitMs">毫秒</span>
+          </div>
+        </div>
+        <div class="settings-hint" data-i18n="heartbeatHint">切号后探测 IDE 就绪的心跳节奏。数值越小切号越快、占用越高；200–5000 毫秒。</div>
+        <div class="settings-hint" data-i18n="cdpPortHint">切号时通过该端口与 IDE 通信，9222 会作为兜底自动尝试。</div>
+        <div class="cdp-status-row">
+          <span class="cdp-dot is-unknown" id="cdpStatusDot"></span>
+          <span class="cdp-status-text" id="cdpStatusText" data-i18n="cdpStatusChecking">检测中…</span>
+        </div>
+        <div class="cdp-actions-row">
+          <button class="modal-cancel-btn" id="cdpRecheckBtn" data-i18n="cdpRecheck">重新检测</button>
+          <button class="primary cdp-enable-btn" id="cdpEnableBtn" data-i18n="cdpEnableRestart">开启并重启</button>
+        </div>
+        <div class="settings-hint" data-i18n="cdpEnableHint">开启后会修好桌面 / 开始菜单 / 任务栏快捷方式，并自动重启一次 IDE（约 10 秒），之后切号不再弹安全声明。失败可以在这里重新开启。</div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-head">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <span data-i18n="appearance">界面</span>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="localeRow">提示语言</span>
+          <select class="v2-sel" id="setLocale">
+            <option value="auto" data-i18n="localeAuto">跟随 IDE</option>
+            <option value="zh-CN" data-i18n="localeZh">中文</option>
+            <option value="en" data-i18n="localeEn">English</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-head">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="15" x2="21" y2="15"/></svg>
+          <span data-i18n="quotaGroup">额度与刷新</span>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="quotaPoolRow">全池后台刷新间隔</span>
+          <div class="sb-num-row">
+            <input type="number" class="v2-param-val" id="setQuotaRefresh" min="5" max="120" placeholder="15">
+            <span class="v2-param-unit" data-i18n="unitMin">分钟</span>
+          </div>
+        </div>
+        <div class="settings-hint" data-i18n="quotaPoolHint">驱动号池卡片、统计面板与底栏的统一后台刷新（修改即时生效）。</div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-head">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="15" x2="21" y2="15"/></svg>
+          <span data-i18n="statusBar">状态栏</span>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="sbEnabledRow">显示状态栏</span>
+          <label class="as-switch"><input type="checkbox" id="setStatusEnabled" data-sb="enabled"><span class="as-switch-track"><span class="as-switch-thumb"></span></span></label>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="sbPositionRow">位置</span>
+          <select class="v2-sel" id="setStatusPosition" data-sb="position">
+            <option value="left" data-i18n="sbPositionLeft">← 左侧</option>
+            <option value="right" data-i18n="sbPositionRight">→ 右侧（默认）</option>
+          </select>
+        </div>
+        <div class="v2-opt-col">
+          <span class="v2-opt-label" data-i18n="sbStyleRow">样式</span>
+          <div class="sb-style-grid" id="sbStyleGrid"></div>
+          <select class="v2-sel" id="setStatusStyle" data-sb="style" hidden>
+            <option value="smart" data-i18n="sbStyleSmart">账号 + 最紧额度 — 聚合（推荐）</option>
+            <option value="dot" data-i18n="sbStyleDot">状态灯 — 仅图标</option>
+            <option value="percent" data-i18n="sbStylePercent">75% — 仅最低百分比</option>
+            <option value="compact" data-i18n="sbStyleCompact">状态灯 75% — 图标 + 最低百分比</option>
+            <option value="dual" data-i18n="sbStyleDual">状态灯 75% + AI 积分 — 双指标</option>
+            <option value="labeled" data-i18n="sbStyleLabeled">账号 + 各池配额 + 倒计时 — 标签式</option>
+            <option value="full" data-i18n="sbStyleFull">账号 + 级别 + 各池配额 + 倒计时 + 积分 — 完整（默认）</option>
+          </select>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="sbContentRow">显示内容</span>
+          <div class="sb-tag-row">
+            <span class="v2-tag is-on" id="setStatusAccount" data-sb="showAccount" data-i18n="sbTagAccount">账号</span>
+            <span class="v2-tag is-on" id="setStatusModels" data-sb="showModels" data-i18n="sbTagModels">模型额度</span>
+            <span class="v2-tag is-on" id="setStatusCredits" data-sb="showCredits" data-i18n="sbTagCredits">AI 积分</span>
+            <span class="v2-tag is-on" id="setStatusPool" data-sb="showPool" data-i18n="sbTagPool">号池</span>
+            <span class="v2-tag is-on" id="setStatusTier" data-sb="showTier" data-i18n="sbTagTier">会员级别</span>
+            <span class="v2-tag is-on" id="setStatusReset" data-sb="showResetCountdown" data-i18n="sbTagReset">重置倒计时</span>
+          </div>
+        </div>
+        <div class="v2-opt-row">
+          <span class="v2-opt-label" data-i18n="sbFamilyRow">配额池</span>
+          <div class="sb-tag-row">
+            <span class="v2-tag is-on" id="setStatusFamClaude" data-family="claude">Claude</span>
+            <span class="v2-tag is-on" id="setStatusFamGemini" data-family="gemini">Gemini</span>
+            <span class="v2-tag is-on" id="setStatusFamArgon" data-family="argon">Gemini 4</span>
+          </div>
+        </div>
+        <div class="settings-hint" data-i18n="sbRefreshHint">以上改动即时生效，无需点保存。极简样式只显示最低额度，标签式逐项列出各模型。</div>
+      </div>
+
+    </div>
+    <div class="modal-footer">
+      <button class="modal-cancel-btn" id="settingsReset" type="button" data-i18n="resetDefaults">恢复默认</button>
+      <div style="display:flex;gap:8px;">
+        <button class="modal-cancel-btn" id="settingsCancel" type="button" data-i18n="cancel" hidden>取消</button>
+        <button class="primary" id="settingsSave" type="button" style="min-width:80px;" data-i18n="closeSettings">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toastContainer" class="toast-container"></div>
+
+<script nonce="{{NONCE}}">window.__KITE_I18N__ = {{I18N_JSON}};</script>
+<script nonce="{{NONCE}}" src="{{JS_URI}}"></script>
+</body>
+</html>

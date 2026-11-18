@@ -5,11 +5,11 @@
 
 import * as vscode from 'vscode';
 import { StoredAccount } from './types';
-import { computeTokenFingerprint, refreshAccessToken } from './usageService';
+import { computeTokenFingerprint, refreshGoogleAccessToken } from './googleOAuth';
 import * as accountStore from './accountStore';
 import { createUserStatusPayloadBase64 } from './ideStateDb';
 import { t } from './i18n';
-import { logInfo } from './logger';
+import { logInfo, logWarn } from './logger';
 
 const SEAMLESS_TIMEOUT_MS = 8000;
 const VERIFIED_TOKEN_MIN_REMAINING_MS = 15 * 60 * 1000;
@@ -166,9 +166,9 @@ export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: 
   // 首次/外部导入/临期时仍必须用 RT 现场刷新：号池缓存 AT 的 scope 可能不含 aicode 权限，
   // 写入会导致 agy 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT 后崩溃。用 RT 现场刷新出的 AT 才带正确授权范围。
   // 刷新失败宁可取消切号，也不能写入权限不足的 token 把 agent 后端搞崩。
-  let refreshedToken: Awaited<ReturnType<typeof refreshAccessToken>> = null;
+  let refreshedToken: Awaited<ReturnType<typeof refreshGoogleAccessToken>> = null;
   try {
-    refreshedToken = await refreshAccessToken(account.refreshToken);
+    refreshedToken = await refreshGoogleAccessToken(account.refreshToken);
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
     return { ok: false, message: t('errTokenRefreshFailed', err) };
@@ -180,7 +180,10 @@ export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: 
     };
   }
 
-  const newExpiry = new Date(Date.now() + 3600000).toISOString();
+  const expiresSec = typeof refreshedToken.expiresIn === 'number' && refreshedToken.expiresIn > 0
+    ? refreshedToken.expiresIn
+    : 3600;
+  const newExpiry = new Date(Date.now() + expiresSec * 1000).toISOString();
   const now = Date.now();
   const fingerprint = computeTokenFingerprint(refreshedToken.accessToken);
   const updates: Partial<StoredAccount> = {
@@ -190,7 +193,9 @@ export async function prepareSwitchToken(account: StoredAccount): Promise<{ ok: 
     verifiedAt: now,
   };
   if (refreshedToken.idToken) updates.idToken = refreshedToken.idToken;
-  accountStore.update(account.email, updates);
+  if (!accountStore.update(account.email, updates)) {
+    logWarn('seamless.accountUpdate.fail', { email: account.email });
+  }
 
   const latestAccount = accountStore.getByEmail(account.email) || account;
   const expiryMs = parseExpiryMs(latestAccount.expiresAt || newExpiry);
@@ -225,11 +230,11 @@ export async function seamlessSwitch(account: StoredAccount, preparedExternal?: 
   const tokenApi = getTokenApi();
   
   if (!tokenApi) {
-    console.warn('[SeamlessSwitcher] No token API found on vscode namespace');
+    logWarn('seamless.noTokenApi', { hasUnified, legacy: hasLegacy });
     return {
       success: false,
       email: account.email,
-      message: `无感换号不可用：宿主未暴露 OAuthPreferences API（unified=${hasUnified}, legacy=${hasLegacy}）`
+      message: t('ssUnavailable', String(hasUnified), String(hasLegacy))
     };
   }
 
@@ -279,10 +284,10 @@ export async function seamlessSwitch(account: StoredAccount, preparedExternal?: 
           'getOAuthTokenInfo'
         );
         readbackMs = Date.now() - readStart;
-        const readEmail = applied?.accessToken ? applied.accessToken.substring(0, 20) + '...' : 'null';
+        const readFp = applied?.accessToken ? `fp:${computeTokenFingerprint(applied.accessToken).slice(0, 8)}` : 'null';
         const accessTokenMatched = applied?.accessToken === prepared.token.accessToken;
         const refreshTokenMatched = !applied?.refreshToken || applied.refreshToken === prepared.token.refreshToken;
-        console.log(`[SeamlessSwitcher] Readback: token=${readEmail}, accessTokenMatch=${accessTokenMatched}, refreshTokenMatch=${refreshTokenMatched}`);
+        console.log(`[SeamlessSwitcher] Readback: token=${readFp}, accessTokenMatch=${accessTokenMatched}, refreshTokenMatch=${refreshTokenMatched}`);
         if (applied && !accessTokenMatched) {
           return {
             success: false,
@@ -291,7 +296,7 @@ export async function seamlessSwitch(account: StoredAccount, preparedExternal?: 
           };
         }
       } catch (e) {
-        console.warn('[SeamlessSwitcher] Token readback failed:', e);
+        logWarn('seamless.readback.fail', { error: e instanceof Error ? e.message : String(e) });
       }
     }
 
@@ -359,7 +364,7 @@ export async function pushLiveIdentityUpdate(email: string): Promise<{ ok: boole
       'pushUpdate',
     );
   } catch (e) {
-    return { ok: false, error: `身份推送失败：${e instanceof Error ? e.message : String(e)}` };
+    return { ok: false, error: t('ssPushFailed', e instanceof Error ? e.message : String(e)) };
   }
 
   // 读回校验（内置 getUserStatus 直读总线；50ms 短轮询最多 300ms），失败必须暴露
@@ -372,12 +377,12 @@ export async function pushLiveIdentityUpdate(email: string): Promise<{ ok: boole
         if (current === email) break;
       }
     } catch (e) {
-      return { ok: false, error: `身份推送后读回失败：${e instanceof Error ? e.message : String(e)}` };
+      return { ok: false, error: t('ssReadbackFailed', e instanceof Error ? e.message : String(e)) };
     }
     // 读回值无论是否一致都记录，作为总线是否真正接收的证据
-    console.log('[Kite] 身份总线读回:', JSON.stringify({ expect: email, actual: current }));
+    logInfo('seamless.identityReadback', { expect: email, actual: current });
     if (current && current !== email) {
-      return { ok: false, error: `身份推送读回不一致：期望 ${email}，实际 ${current}` };
+      return { ok: false, error: t('ssReadbackMismatch', email, current) };
     }
   }
   return { ok: true };

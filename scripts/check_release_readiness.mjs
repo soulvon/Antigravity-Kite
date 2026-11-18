@@ -94,7 +94,17 @@ if (fs.existsSync(vsixPath)) {
   const readmeInVsix = readmeName ? zip.readAsText(readmeName) : '';
   gate('R3.3 vsix 内 README 徽章 == package.json 版本 (快照过期治理)', readmeInVsix.includes(`version-${V}-blue`));
   gate('R3.4 vsix 内 README 无旧版本徽章残留', !/version-0\.\d+\.\d+-blue/.test(readmeInVsix));
-  gate('R3.5 out/extension.js 含 CSP 声明', fs.readFileSync(path.join(ROOT, 'out', 'extension.js'), 'utf8').includes('Content-Security-Policy'));
+  const sidebarHtmlInVsixName = extNames.find(n => /resources\/webview\/sidebar\.html$/i.test(n));
+  const extJsInVsixName = extNames.find(n => /out\/extension\.js$/i.test(n));
+  const sidebarHtmlInVsix = sidebarHtmlInVsixName ? zip.readAsText(sidebarHtmlInVsixName) : '';
+  const extJsInVsix = extJsInVsixName ? zip.readAsText(extJsInVsixName) : '';
+  const workspaceSidebarHtml = fs.readFileSync(path.join(ROOT, 'resources', 'webview', 'sidebar.html'), 'utf8');
+  const workspaceSidebarProviderJs = fs.readFileSync(path.join(ROOT, 'out', 'sidebarProvider.js'), 'utf8');
+  const vsixHasCsp = sidebarHtmlInVsix.includes('Content-Security-Policy') || extJsInVsix.includes('Content-Security-Policy');
+  gate('R3.5 vsix 含侧栏 CSP 声明且工作区 sidebar.html / out/sidebarProvider.js 对齐',
+    vsixHasCsp
+      && workspaceSidebarHtml.includes('Content-Security-Policy')
+      && workspaceSidebarProviderJs.includes('sidebar.html'));
   gate('R3.6 包体瘦身: vsix 严格排除 node_modules (由 node:sqlite 原生承载, 零打包依赖)', !names.some(n => /(^|\/)node_modules\//.test(n)));
   gate('R3.7 包体瘦身: vsix 严格排除非运行时预览大图 resources/preview-*', !names.some(n => /resources\/preview-/.test(n)));
   gate('R3.8 包体瘦身: vsix 严格排除 .github/ 与 AGENTS.md', !names.some(n => /(^|\/)(\.github|AGENTS\.md)/.test(n)));
@@ -103,10 +113,16 @@ if (fs.existsSync(vsixPath)) {
 }
 
 // ── R4 webview 加固 ──
-const ext = fs.readFileSync(path.join(ROOT, 'src', 'extension.ts'), 'utf8');
+const sidebarHtml = fs.readFileSync(path.join(ROOT, 'resources', 'webview', 'sidebar.html'), 'utf8');
+const sidebarProv = fs.readFileSync(path.join(ROOT, 'src', 'sidebarProvider.ts'), 'utf8');
 const lp = fs.readFileSync(path.join(ROOT, 'src', 'logPanelProvider.ts'), 'utf8');
-gate('R4.1 侧栏 HTML 自声明 CSP (cspSource)', /Content-Security-Policy[^`]*script-src \$\{webview\.cspSource\}/.test(ext));
-gate('R4.2 统计面板 HTML 自声明 CSP (cspSource)', /Content-Security-Policy[^`]*script-src \$\{cspSource\}/.test(lp));
+gate('R4.1 侧栏 HTML 自声明严格 Nonce CSP (cspSource)',
+  /Content-Security-Policy[^>]*script-src 'nonce-\{\{NONCE\}\}'/.test(sidebarHtml)
+    && sidebarHtml.includes('{{CSP_SOURCE}}')
+    && sidebarProv.includes('webview.cspSource'));
+gate('R4.2 统计面板 HTML 自声明严格 Nonce CSP (cspSource)',
+  /Content-Security-Policy[^`]*script-src 'nonce-\$\{nonce\}'/.test(lp)
+    && lp.includes('${cspSource}'));
 gate('R4.3 modal-body flex-basis auto (纵向塌陷防御)', /flex:\s*1\s+1\s+auto/.test(fs.readFileSync(path.join(ROOT, 'resources', 'webview', 'main.css'), 'utf8')));
 
 // ── R5 i18n 纪律 ──

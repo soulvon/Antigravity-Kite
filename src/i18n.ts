@@ -4,8 +4,8 @@
  * 以及 Webview（侧栏面板、统计面板）界面文案——Webview 通过 localeBundle(prefix) 注入。
  * 约定：ui.* 前缀 = 侧栏面板；lp.* 前缀 = 统计面板；其余为宿主侧 t() 直取。
  *
- * 注意：vscode 必须惰性获取。本模块会被 switchRestartHelper → ideStateDb 链路在
- * IDE 之外的 ELECTRON_RUN_AS_NODE 进程中加载（无 vscode API），顶层 import 会直接崩溃。
+ * 注意：vscode 必须惰性获取。本模块可能被 IDE 之外的独立 Node 进程加载
+ * （无 vscode API），顶层 import 会直接崩溃。
  */
 
 /** 惰性获取 vscode API；IDE 之外的独立进程返回 undefined */
@@ -34,98 +34,6 @@ export function getLang(): Lang {
 
 /** [zh, en] */
 const S: Record<string, [string, string]> = {
-  // ── 多开窗口 ──
-  mwDefaultWinName: ['多开 {0}', 'Window {0}'],
-  mwMainWinTitle: ['主窗口', 'Main Window'],
-  mwNameRequired: ['多开名称不能为空', 'Window name cannot be empty'],
-  mwNameDuplicate: ['多开名称已存在', 'Window name already exists'],
-  mwNotFound: ['多开不存在', 'Window not found'],
-  mwDirNotFound: ['多开目录不存在', 'Window directory not found'],
-  mwDefaultCannotStop: ['主窗口不可通过快捷面板停止', 'Main window cannot be stopped from quick panel'],
-  mwCurrentCannotStop: ['当前正在操作的窗口不可直接关闭', 'Current active window cannot be closed'],
-  mwStartFail: ['启动多开失败', 'Failed to start window'],
-  mwStartExited: ['进程启动后立即退出（退出码 {0}）', 'Process exited right after launch (exit code {0})'],
-  mwNotRunning: ['该多开尚未运行', 'Window is not running'],
-  mwDefaultCannotDelete: ['主窗口不可删除', 'Main window cannot be deleted'],
-  mwDeleteRunningError: ['请先停止该多开，再进行删除', 'Please stop this window before deleting'],
-  mwCreatedToast: ['多开创建成功', 'Window created successfully'],
-  mwCreatedStartFailed: [
-    '多开已创建，但启动失败：{0}（可在列表中点「启动」重试）',
-    'Window created, but failed to start: {0} (click Start in the list to retry)',
-  ],
-  mwCopyingProfile: ['正在复制主环境配置…', 'Copying main profile…'],
-  mwCopyProgress: ['正在复制配置 {0}/{1}', 'Copying profile {0}/{1}'],
-  mwCopyFailed: ['配置复制失败，已使用空环境启动', 'Profile copy failed; starting with an empty profile'],
-  mwStartedToast: ['多开已启动', 'Window started'],
-  mwUpdatedToast: ['多开已更新', 'Window updated'],
-  mwDeletedToast: ['多开已删除', 'Window deleted'],
-  mwStoppedToast: ['多开已停止', 'Window stopped'],
-  mwFocusToast: ['已切换至多开窗口', 'Focused on window'],
-  mwFocusFail: ['置顶跳转多开失败', 'Failed to focus window'],
-  mwStarting: ['启动中...', 'Starting...'],
-  mwStopping: ['停止中...', 'Stopping...'],
-  mwFocusing: ['跳转中...', 'Focusing...'],
-  mwCreating: ['创建中...', 'Creating...'],
-  mwStartTimeout: ['多开启动超时，请重试', 'Window start timed out, please retry'],
-  mwStopTimeout: ['多开停止超时，请重试', 'Window stop timed out, please retry'],
-
-  'ui.multiWindow': ['多开', 'Multi-Window'],
-  'ui.mwTitle': ['多开', 'Multi-Window'],
-  'ui.mwMainWinTitle': ['主窗口', 'Main Window'],
-  'ui.mwTooltip': ['多窗口运行，每个窗口独立绑定不同账号，并发不打架', 'Run multiple windows, each bound to a different account independently'],
-  'ui.mwNewBtn': ['+ 新建', '+ New'],
-  'ui.mwCockpitBtn': ['Cockpit', 'Cockpit'],
-  'ui.mwRefreshBtn': ['刷新', 'Refresh'],
-  'ui.mwDrawerTip': ['独立窗口隔离，双号/多号并行开发', 'Isolated window profiles · Parallel multi-account workflow'],
-  'ui.mwDrawerHint': ['多开窗口列表（独立配置环境，账号并发不干扰）', 'Multi-Window list (Independent profiles, concurrent accounts)'],
-  'ui.mwEmpty': ['暂无多开，点击「+ 新建」开辟独立窗口', 'No multi-window yet. Click "+ New" to launch'],
-  'ui.mwFocus': ['跳转', 'Focus'],
-  'ui.mwStart': ['启动', 'Start'],
-  'ui.mwStop': ['停止', 'Stop'],
-  'ui.mwEdit': ['编辑', 'Edit'],
-  'ui.mwDelete': ['删除', 'Delete'],
-  'ui.mwCurrentTag': ['当前', 'Current'],
-  'ui.mwRunningTag': ['运行中', 'Running'],
-  'ui.mwStoppedTag': ['已停止', 'Stopped'],
-  'ui.mwUnbound': ['未绑定账号', 'No account bound'],
-  'ui.mwSmartPick': ['智能选号', 'Smart Pick'],
-  'ui.mwNotStarted': ['尚未启动', 'Not Started'],
-  'ui.mwDefaultGroup': ['默认分组', 'Default Group'],
-  'ui.mwDefaultWinName': ['多开 {0}', 'Window {0}'],
-  'ui.mwCreateModalTitle': ['新建多开窗口', 'New Multi-Window'],
-  'ui.mwCreateNameLabel': ['多开名称', 'Window Name'],
-  'ui.mwCreateNamePh': ['例如：工作号、测试号', 'e.g. Work, Testing'],
-  'ui.mwNameRequired': ['多开名称不能为空', 'Window name cannot be empty'],
-  'ui.mwCreateAccountLabel': ['绑定账号', 'Bind Account'],
-  'ui.mwCreateSelectAccount': ['选择绑定账号（可选）', 'Select account to bind (optional)'],
-  'ui.mwCreateTagLabel': ['标签分组', 'Tag Group'],
-  'ui.mwCreateTagAll': ['不限（全部账号）', 'All accounts'],
-  'ui.mwCreateHint': [
-    '新窗口会复制当前环境配置（设置、扩展状态、项目索引），对话历史天然共享。建议绑定账号，否则与主窗口使用同一账号。',
-    'The new window copies your current environment (settings, extension state, project index) and shares conversation history. Bind an account, or it will use the same one as the main window.',
-  ],
-  'ui.mwCreateSubmit': ['创建并启动', 'Create & Launch'],
-  'ui.mwEditModalTitle': ['编辑多开窗口', 'Edit Multi-Window'],
-  'ui.mwEditSubmit': ['保存修改', 'Save Changes'],
-  'ui.mwDeleteConfirm': ['确定删除该多开？将同时清理其独立配置目录。', 'Delete this multi-window? Its directory will be removed.'],
-  'ui.mwCockpitModalTitle': ['从 Cockpit 导入多开', 'Import from Cockpit'],
-  'ui.mwCockpitEmpty': ['未检测到可导入的 Cockpit 多开', 'No importable Cockpit multi-windows detected'],
-  'ui.mwCockpitImport': ['导入', 'Import'],
-  'ui.mwStarting': ['启动中...', 'Starting...'],
-  'ui.mwStopping': ['停止中...', 'Stopping...'],
-  'ui.mwFocusing': ['跳转中...', 'Focusing...'],
-  'ui.mwCreating': ['创建中...', 'Creating...'],
-  'ui.mwStartTimeout': ['多开启动超时，请重试', 'Window start timed out, please retry'],
-  'ui.mwStopTimeout': ['多开停止超时，请重试', 'Window stop timed out, please retry'],
-  'ui.mwActionElapsed': ['{0} 已用 {1}s', '{0} · {1}s elapsed'],
-  'ui.mwActionTimeout': ['操作超时，请重试', 'Operation timed out, please retry'],
-  'ui.mwNameDuplicate': ['多开名称已存在，请换一个', 'Window name already exists, please choose another'],
-  'ui.mwDeleting': ['删除中...', 'Deleting...'],
-  'ui.mwUpdating': ['保存中...', 'Saving...'],
-  'ui.mwRefreshing': ['刷新中...', 'Refreshing...'],
-  'ui.mwImporting': ['导入中...', 'Importing...'],
-  'ui.mwCockpitLoading': ['正在读取 Cockpit 多开...', 'Loading Cockpit windows...'],
-
   // ── CDP 门控 ──
   gateModalHeading: ['自动确认安全声明', 'Auto-accept security notice'],
   gateModalTitle: [
@@ -196,16 +104,6 @@ const S: Record<string, [string, string]> = {
     'Unable to resolve Remote SSH host authority for the current window',
   ],
 
-  // ── 切号重启反馈 ──
-  restartIncomplete: [
-    'Kite 切号重启未完成：{0}（状态库未写入，账号未切换）',
-    'Kite switch restart did not complete: {0} (state db not written; account not switched)',
-  ],
-  restartWarning: [
-    'Kite 切号重启已完成，但有警告：{0}',
-    'Kite switch restart completed with warnings: {0}',
-  ],
-
   // ── 设置 ──
   settingsSaved: ['设置已保存', 'Settings saved'],
 
@@ -244,8 +142,6 @@ const S: Record<string, [string, string]> = {
   switchSuccessMsg: ['无感切号成功', 'Seamless switch succeeded'],
   errNoPushUpdate: ['宿主未暴露 antigravityUnifiedStateSync.pushUpdate', 'Host does not expose antigravityUnifiedStateSync.pushUpdate'],
   errCredLength: ['nonce 或 ciphertext 长度非法', 'Invalid nonce or ciphertext length'],
-  errMainPid: ['未定位到 Antigravity IDE 主进程 PID', 'Could not locate the Antigravity IDE main process PID'],
-  errCloseIde: ['关闭 IDE 失败：', 'Failed to close IDE: '],
   errCreditsFetch: ['AI 积分拉取失败: ', 'Failed to fetch AI credits: '],
   errQuotaSummaryFallback: [
     '周限摘要获取失败（当前为模型级推断，可能缺 Weekly）: ',
@@ -322,6 +218,14 @@ const S: Record<string, [string, string]> = {
 
   // ── 无感切号 / 状态库 / 加密 / 内部错误（会以通知或日志露出）──
   ssTimeout: ['无感切号超时：{0}', 'Seamless switch timed out: {0}'],
+  ssUnavailable: [
+    '无感换号不可用：宿主未暴露 OAuthPreferences API（unified={0}, legacy={1}）',
+    'Seamless switch unavailable: host did not expose OAuthPreferences API (unified={0}, legacy={1})',
+  ],
+  ssPushFailed: ['身份推送失败：{0}', 'Failed to push identity update: {0}'],
+  ssReadbackFailed: ['身份推送后读回失败：{0}', 'Failed to read back identity after push: {0}'],
+  ssReadbackMismatch: ['身份推送读回不一致：期望 {0}，实际 {1}', 'Identity readback mismatch: expected {0}, got {1}'],
+  remoteHomeNotFound: ['无法解析并验证远端用户主目录', 'Unable to resolve and verify remote user home directory'],
   isdVerifyFailed: [
     '身份写入读回校验不一致（IDE 可能占库或写入被覆盖）',
     'Identity write verification failed (the IDE may be holding the db or the write was overwritten)',
@@ -330,7 +234,6 @@ const S: Record<string, [string, string]> = {
   usNoQuotaModels: ['响应中无可用配额模型（models 为空）', 'No quota models in the response (models is empty)'],
   secureBadAlgorithm: ['不支持的加密算法: {0}', 'Unsupported encryption algorithm: {0}'],
   secureUnknownKeyId: ['未知密钥标识: {0}', 'Unknown key id: {0}'],
-  srSpawnFailed: ['子进程创建失败', 'Failed to spawn child process'],
   credWindowsOnly: [
     '此功能依赖 Windows 凭据管理器，当前平台暂不支持（macOS Keychain 适配待实证）',
     'This relies on the Windows Credential Manager; current platform is not supported yet (macOS Keychain support pending verification)',
@@ -348,7 +251,6 @@ const S: Record<string, [string, string]> = {
   sbSwitchFail: ['无感切号失败: {0}', 'Seamless switch failed: {0}'],
   sbNotSignedInTip: ['未登录账号', 'Not signed in'],
   sbOpenPoolTip: ['点击打开号池面板', 'Click to open the account pool panel'],
-  sbSubscription: ['订阅', 'Subscription'],
   sbAiCredits: ['AI 积分', 'AI credits'],
   sbNoQuotaData: ['暂无额度数据', 'No quota data yet'],
   sbPool: ['池', 'Pool'],
@@ -505,7 +407,6 @@ const S: Record<string, [string, string]> = {
   'ui.sbStyleDual': ['状态灯 75% + AI 积分 — 双指标', 'Icon 75% + AI credits — dual gauge'],
   'ui.sbStyleLabeled': ['账号 + 各池配额 + 倒计时 — 标签式', 'Account + per-family quotas + countdowns — labeled'],
   'ui.sbStyleFull': ['账号 + 级别 + 各池配额 + 倒计时 + 积分 — 完整（默认）', 'Account + tier + per-family quotas + countdowns + credits — full (default)'],
-  'ui.sbRefreshRow': ['刷新间隔', 'Refresh'],
   'ui.sbRefreshHint': [
     '以上改动即时生效，无需点保存。极简样式只显示最低额度，标签式逐项列出各模型。',
     'Changes apply instantly, no save needed. Compact styles show the lowest quota only; labeled styles list every model.',
@@ -519,14 +420,13 @@ const S: Record<string, [string, string]> = {
   'ui.sbTagTier': ['会员级别', 'Tier'],
   'ui.sbTagReset': ['重置倒计时', 'Reset countdown'],
   'ui.sbFamilyRow': ['配额池', 'Quota families'],
-  'ui.unitSec': ['秒', 'sec'],
   'ui.unitMin': ['分钟', 'min'],
   'ui.unitMs': ['毫秒', 'ms'],
   'ui.quotaGroup': ['额度与刷新', 'Quota & refresh'],
   'ui.quotaPoolRow': ['全池后台刷新间隔', 'Background refresh (all accounts)'],
   'ui.quotaPoolHint': [
-    '驱动号池卡片、统计面板与底栏的全量刷新（修改即时生效）。底栏“当前号”另有短周期增量刷新，在状态栏组单独配置。',
-    'Drives the full-pool refresh behind cards, stats and the status bar (applies immediately). The status bar has a separate short-interval refresh for the current account.',
+    '驱动号池卡片、统计面板与底栏的统一后台刷新（修改即时生效）。',
+    'Drives the unified background refresh behind cards, stats and the status bar (applies immediately).',
   ],
   'ui.syncGeminiRow': ['切号同步 Gemini 配置', 'Sync Gemini config on switch'],
   'ui.syncRemoteAuthRow': ['同步 Remote SSH 登录态', 'Sync Remote SSH auth state'],
@@ -542,7 +442,6 @@ const S: Record<string, [string, string]> = {
   'ui.quotaWeekly': ['周额度', 'Weekly'],
   'ui.quota5h': ['5h', '5h'],
   'ui.resetDefaults': ['恢复默认', 'Reset defaults'],
-  'ui.saveSettings': ['保存设置', 'Save'],
   'ui.askCancelBtn': ['取消', 'Cancel'],
   'ui.untagged': ['未分类', 'Untagged'],
   'ui.cdpStatusChecking': ['正在检测调试端口…', 'Checking debug port…'],
@@ -632,7 +531,7 @@ const S: Record<string, [string, string]> = {
   'lp.accountQuotas': ['账号配额一览', 'Account quotas'],
   'lp.colAccount': ['账号', 'Account'],
   'lp.colTags': ['标签', 'Tags'],
-  'lp.colUsed': ['已用配额', 'Used'],
+  'lp.colUsed': ['剩余配额', 'Remaining'],
   'lp.colStatus': ['状态', 'Status'],
   'lp.searchPh': ['搜索账号...', 'Search accounts...'],
   'lp.current': ['当前', 'Current'],
@@ -676,6 +575,7 @@ const S: Record<string, [string, string]> = {
   'ui.activeFilters': ['当前筛选', 'Active filters'],
   'ui.clearFilterShort': ['清除', 'Clear'],
   'ui.closeSettings': ['关闭', 'Close'],
+  'ui.renderPanelError': ['面板渲染异常：{0}', 'Panel render failed: {0}'],
 };
 
 /** 取文案；{0}{1} 为占位符 */

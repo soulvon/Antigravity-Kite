@@ -29,7 +29,7 @@ function check(name, cond, extra) {
 console.log('=== agy 引擎热重载门控 ===\n');
 
 const rt = read('ideRuntime.ts');
-const ext = read('extension.ts');
+const sw = read('switchOrchestrator.ts');
 const i18n = read('i18n.ts');
 
 // A1 独立进程校验：不得把 powershell -EncodedCommand 当唯一来源
@@ -58,8 +58,8 @@ check('A4b 无 agy 分支有 i18n 文案', !!noEngineBranch && /t\('agyReload/.t
 check('A4c 无 agy 分支保留结构化的 agyWasRunning', !!noEngineBranch && /agyWasRunning:\s*false/.test(noEngineBranch[0]));
 
 // A5 切号收口必须把引擎重载失败透出到 toast
-check('A5a 切号 toast 收集 agyReload.error', /notes\.push\(agyReload\.error\)/.test(ext));
-check('A5b 切号日志记录 agyWasRunning', /switch\.hot\.agyReload[\s\S]{0,300}agyWasRunning/.test(ext));
+check('A5a 切号 toast 收集 agyReload.error', /notes\.push\(agyReload\.error\)/.test(sw));
+check('A5b 切号日志记录 agyWasRunning', /switch\.hot\.agyReload[\s\S]{0,300}agyWasRunning/.test(sw));
 
 // A6 新增文案必须中英双全
 for (const key of ['agyReloadNoEngine', 'agyReloadEnumFail']) {

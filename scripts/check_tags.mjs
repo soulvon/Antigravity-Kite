@@ -26,7 +26,8 @@ function gate(name, ok, detail = '') {
 const impSrc = fs.readFileSync(path.join(root, 'src', 'importService.ts'), 'utf8');
 const lrSrc = fs.readFileSync(path.join(root, 'src', 'localReader.ts'), 'utf8');
 const storeSrc = fs.readFileSync(path.join(root, 'src', 'accountStore.ts'), 'utf8');
-const extSrc = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf8');
+const sidebarHostSrc = fs.readFileSync(path.join(root, 'src', 'sidebarProvider.ts'), 'utf8');
+const sidebarViewSrc = fs.readFileSync(path.join(root, 'resources', 'webview', 'sidebar.js'), 'utf8');
 
 console.log('[check_tags] 标签自愈、导入零污染与全局删除闭环 …');
 
@@ -50,18 +51,14 @@ gate(
 );
 
 // 3. 宿主与 Webview 全局删除闭环
-const htmlStart = extSrc.indexOf('return `<!DOCTYPE html>');
-const host = htmlStart >= 0 ? extSrc.slice(0, htmlStart) : extSrc;
-const view = htmlStart >= 0 ? extSrc.slice(htmlStart) : '';
-
 gate(
-  'extension.ts 宿主处理 deleteTag 消息并清理全量账号',
-  host.includes("case 'deleteTag':") && host.includes('accountStore.removeTagEverywhere('),
+  'sidebarProvider.ts 宿主处理 deleteTag 消息并清理全量账号',
+  sidebarHostSrc.includes("case 'deleteTag':") && sidebarHostSrc.includes('accountStore.removeTagEverywhere('),
   "宿主未接入 case 'deleteTag' 或未调用 accountStore.removeTagEverywhere"
 );
 gate(
-  'extension.ts 前端已有标签渲染全局删除按钮并经二次确认发 deleteTag',
-  view.includes('tag-edit-opt-del') && view.includes("type: 'deleteTag'") && view.includes("tl('confirmDeleteTag'"),
+  'sidebar.js 前端已有标签渲染全局删除按钮并经二次确认发 deleteTag',
+  sidebarViewSrc.includes('tag-edit-opt-del') && sidebarViewSrc.includes("type: 'deleteTag'") && sidebarViewSrc.includes("tl('confirmDeleteTag'"),
   '前端缺少 .tag-edit-opt-del、showConfirm 二次确认或 deleteTag 消息'
 );
 

@@ -143,11 +143,11 @@ try {
     '避免快照路径重复维护弱过滤条件'
   );
 
-  const mwSrc = fs.readFileSync(path.join(root, 'src', 'multiWindowManager.ts'), 'utf8');
+  const mwExists = fs.existsSync(path.join(root, 'src', 'multiWindowManager.ts'));
   gate(
-    'S4 multiWindowManager 仅透传 file:// 工作区路径',
-    /(?:uri|curUri)\??\.scheme\s*===\s*'file'/.test(mwSrc),
-    '防 vscode-remote:// 路径污染本地多开窗口参数'
+    'S4 multiWindowManager.ts 已下线清理（无多开路径参数污染风险）',
+    !mwExists,
+    mwExists ? '仍残留 src/multiWindowManager.ts' : ''
   );
 
   // S5 Remote SSH 切号时跳过本地 killAgyEngine（防误杀其他本地窗口 agy.exe 或报无引擎假错）
@@ -170,6 +170,8 @@ try {
   }
 
   const extSrc = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf8');
+  const switchSrc = fs.readFileSync(path.join(root, 'src', 'switchOrchestrator.ts'), 'utf8');
+  const sidebarSrc = fs.readFileSync(path.join(root, 'src', 'sidebarProvider.ts'), 'utf8');
   const i18nMod = require2(path.join(root, 'out', 'i18n.js'));
   const dict = i18nMod?.__dictForCheck?.() || {};
   const remotePair = dict.agyReloadRemoteNote;
@@ -177,8 +179,8 @@ try {
     && remotePair.length === 2
     && remotePair.every((s) => typeof s === 'string' && s.includes('{0}'));
   gate(
-    'S5c extension.ts 与 i18n 诚实提示远程窗口已跳过本地 agy 重载',
-    extSrc.includes('agyReload.remoteSkipped') && extSrc.includes('agyReloadRemoteNote') && hasI18n,
+    'S5c switchOrchestrator.ts 与 i18n 诚实提示远程窗口已跳过本地 agy 重载',
+    switchSrc.includes('agyReload.remoteSkipped') && switchSrc.includes('agyReloadRemoteNote') && hasI18n,
     `hasI18n=${hasI18n}`
   );
 
@@ -366,9 +368,9 @@ try {
     gate('S10a winCredential PS 回退失败统一返回非空错误信息', false, 'normalizePsCredResponse 未导出');
   }
   gate(
-    'S10b extension.ts switchCredFail 不再使用空串兜底',
-    !extSrc.includes("t('switchCredFail', cw.error || '')")
-      && /t\('switchCredFail',\s*cw\.error\s*\|\|\s*t\('ui\.unknown'\)\)/.test(extSrc),
+    'S10b switchOrchestrator.ts switchCredFail 不再使用空串兜底',
+    !switchSrc.includes("t('switchCredFail', cw.error || '')")
+      && /t\('switchCredFail',\s*cw\.error\s*\|\|\s*t\('ui\.unknown'\)\)/.test(switchSrc),
     '需改为 cw.error || t(\'ui.unknown\')'
   );
 
@@ -577,12 +579,12 @@ try {
     gate('S14 syncCredentialToRemote 写入 schema、幂等跳过、异号覆盖、AuthLogout->write 顺序及失败暴露', false, '模块未就绪');
   }
 
-  // S15 extension.ts 与 remoteAuthSync 集成及 i18n 文案检查
-  const hasExtWiring = extSrc.includes('syncCredentialForRemoteSession')
+  // S15 switchOrchestrator / extension / sidebarProvider 与 remoteAuthSync 集成及 i18n 文案检查
+  const hasExtWiring = switchSrc.includes('syncCredentialForRemoteSession')
     && extSrc.includes('syncStartupAuthToRemote')
-    && extSrc.includes('applyRemoteAuthRefresh')
-    && extSrc.includes('PENDING_REMOTE_NOTICE_KEY')
-    && extSrc.includes('syncRemoteAuth');
+    && switchSrc.includes('applyRemoteAuthRefresh')
+    && !remoteSrc.includes('PENDING_REMOTE_NOTICE_KEY')
+    && sidebarSrc.includes('syncRemoteAuth');
   const hasRefreshCmds = remoteSrc.includes('antigravity.reconnect')
     && !remoteSrc.includes('workbench.action.restartExtensionHost')
     && remoteSrc.includes('AuthLogout')
@@ -590,7 +592,7 @@ try {
   const remoteDictOk = ['remoteSyncDone', 'remoteSyncFail', 'remoteSyncStartupDone', 'remoteSyncAligned', 'remoteSyncNoAuthority', 'ui.syncRemoteAuthRow']
     .every((k) => Array.isArray(dict[k]) && dict[k].length === 2 && Boolean(dict[k][0]) && Boolean(dict[k][1]));
   gate(
-    'S15 extension.ts 集成远端登录态同步、无重启热刷新与完整双语文案',
+    'S15 扩展接入远端登录态同步、无重启热刷新与完整双语文案',
     hasExtWiring && hasRefreshCmds && remoteDictOk,
     `hasExtWiring=${hasExtWiring}, hasRefreshCmds=${hasRefreshCmds}, remoteDictOk=${remoteDictOk}`
   );

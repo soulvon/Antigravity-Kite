@@ -39,6 +39,8 @@ function lines(t) { return t.split('\n').filter(Boolean); }
 
 const INTERNAL_PATHS = [
   ['.codebuddy/', 'IDE 的 AI 配置、模型密钥与技能资产', false],
+  ['.agents/', '本地 Agent Hooks', true],
+  ['docs/', '本地内部文档', true],
   ['devloop.project.json', '本机工具绑定', false],
   ['x.identifier', '空占位文件', false],
   ['AGENTS.md', 'AI 操作手册（含本机路径）', true],
@@ -79,11 +81,70 @@ function matchInternal(file) {
 console.log('🔒 防泄漏门控：内部资料不得进入公开仓库');
 console.log(`   本地隔离区：${LOCAL_DIR_HINT}`);
 
+function auditLocalCodebuddyDir() {
+  const dir = path.join(root, '.codebuddy');
+  if (!fs.existsSync(dir)) return { ok: true, reason: '' };
+
+  const files = [];
+  const subdirs = [];
+  (function walk(cur, prefix) {
+    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const full = path.join(cur, entry.name);
+      if (entry.isDirectory()) {
+        subdirs.push(rel);
+        walk(full, rel);
+      } else {
+        files.push(rel);
+      }
+    }
+  })(dir, '');
+
+  if (subdirs.length > 0 || files.length !== 1 || files[0] !== 'settings.json') {
+    return {
+      ok: false,
+      reason: `发现非预期内容: ${[...subdirs.map(d => d + '/'), ...files].join(', ')}`,
+    };
+  }
+
+  let ignored = false;
+  try {
+    execSync('git check-ignore -q .codebuddy/settings.json', { cwd: root, stdio: 'pipe' });
+    ignored = true;
+  } catch {
+    ignored = false;
+  }
+  if (!ignored) {
+    return { ok: false, reason: '.codebuddy/settings.json 未被 .gitignore 忽略' };
+  }
+
+  const raw = fs.readFileSync(path.join(dir, 'settings.json'), 'utf8');
+  if (/(apiKey|api_key|secret|token|password|models)/i.test(raw)) {
+    return { ok: false, reason: '.codebuddy/settings.json 命中敏感字段' };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    const keys = parsed && typeof parsed === 'object' ? Object.keys(parsed) : [];
+    if (keys.length === 0 || keys.some(k => k !== 'hooks')) {
+      return { ok: false, reason: `.codebuddy/settings.json 包含非 hook 配置字段: ${keys.join(', ')}` };
+    }
+  } catch {
+    return { ok: false, reason: '.codebuddy/settings.json 解析失败' };
+  }
+
+  return { ok: true, reason: '仅含受 .gitignore 忽略的纯 Ailoop hook settings.json' };
+}
+
 section('物理隔离（内部资料不在仓库内）');
 {
-  const present = INTERNAL_PATHS.filter(([p, , keepLocal]) => !keepLocal && fs.existsSync(path.join(root, p)));
-  ok('仓库内无内部资料路径', present.length === 0,
-    present.map(([p, l]) => `${p}(${l})`).join(', '));
+  const present = INTERNAL_PATHS
+    .filter(([p, , keepLocal]) => !keepLocal && p !== '.codebuddy/' && fs.existsSync(path.join(root, p)))
+    .map(([p, l]) => `${p}(${l})`);
+  const cbAudit = auditLocalCodebuddyDir();
+  if (!cbAudit.ok) {
+    present.push(`.codebuddy/(${cbAudit.reason})`);
+  }
+  ok('仓库内无内部资料路径', present.length === 0, present.join(', '));
 }
 
 section('索引层（已跟踪文件）');

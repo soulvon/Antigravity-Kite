@@ -6,7 +6,7 @@
 
 **切号不重启 IDE · Claude / Gemini / Gemini 4 真实双窗配额流 · 安全声明自动确认 · 中英双语自适应**
 
-[![Version](https://img.shields.io/badge/version-1.4.0-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.5.0-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)]()
 [![GitHub release](https://img.shields.io/github/v/release/soulvon/Antigravity-Kite?color=orange&style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases)
@@ -47,7 +47,7 @@ Antigravity Kite 是一款面向 **Antigravity IDE** 的多账号管理与无感
 
 ### 方式一：扩展面板安装（推荐）
 
-1. 下载最新版 `antigravity-kite-1.4.0.vsix`（[GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest)）；
+1. 下载最新版 `antigravity-kite-1.5.0.vsix`（[GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest)）；
 2. 打开 **Antigravity IDE**；
 3. 进入左侧扩展面板（快捷键 `Ctrl+Shift+X` / macOS `Cmd+Shift+X`）；
 4. 点击面板右上角 `...` 菜单 ➔ 选择 **"从 VSIX 安装..." (Install from VSIX...)**；
@@ -56,7 +56,7 @@ Antigravity Kite 是一款面向 **Antigravity IDE** 的多账号管理与无感
 ### 方式二：命令行安装
 
 ```bash
-antigravity-ide --install-extension antigravity-kite-1.4.0.vsix --force
+antigravity-ide --install-extension antigravity-kite-1.5.0.vsix --force
 ```
 
 ---
@@ -107,8 +107,8 @@ antigravity-ide --install-extension antigravity-kite-1.4.0.vsix --force
 - **生态互通**：与 Cockpit Tools、Antigravity Manager 的号池数据互通，另支持 JSON 文件导入。
 
 ### 🔐 6. 凭证安全与 Gemini 同步
-- **系统级安全存储**：Windows 下接入凭据管理器（Credential Manager），敏感信息不落明文；
-- **隐私脱敏**：邮箱与 UID 星号掩蔽，直播录屏无忧；
+- **本地加密与系统凭据**：本地号池令牌通过独立随机密钥（AES-256-GCM）加密落盘保护，Windows 切号同步接入系统凭据管理器（Credential Manager）；
+- **隐私脱敏**：邮箱与 UID 星号掩蔽，侧栏、状态栏与统计面板三端联动，直播录屏无忧；
 - **Gemini 凭证同步**：切号时自动同步 `~/.gemini` 的 `oauth_creds.json` 与 `google_accounts.json`（与 AgyHop / Cockpit 等工具共管时可关闭）。
 
 ### 🌐 7. 双语自适应与统计面板
@@ -192,7 +192,7 @@ antigravity-ide --install-extension antigravity-kite-1.4.0.vsix --force
 <details>
 <summary><b>Q5: 账号 Token 存在哪里，安全吗？</b></summary>
 <br>
-全部凭证仅保存在本地（Windows 接入系统凭据管理器），无任何遥测与第三方上传，界面支持一键脱敏。
+全部凭证仅保存在本地，号池令牌采用本地独立密钥进行 AES-256-GCM 加密存储（Windows 同步接入系统凭据管理器），无任何遥测与第三方上传，界面支持三端联动脱敏。
 </details>
 
 ---

@@ -29,7 +29,7 @@ function check(name, cond, extra) {
 console.log('=== 切号链路健康门控 ===\n');
 
 const decl = read('src/declarationSuppressor.ts');
-const ext = read('src/extension.ts');
+const sw = read('src/switchOrchestrator.ts');
 const ss = read('src/seamlessSwitcher.ts');
 const cred = read('src/winCredential.ts');
 
@@ -53,12 +53,12 @@ check('H5 周期落 declGuard.surfaces', decl.includes('declGuard.surfaces'));
 
 // H6 切号后主动补扫，不等心跳自然轮询
 check('H6a 导出 pokeGuard', /export function pokeGuard/.test(decl));
-check('H6b 切号链路调用 pokeGuard', /switch\.hot\.identity[\s\S]{0,400}pokeGuard\(\)/.test(ext));
+check('H6b 切号链路调用 pokeGuard', /switch\.hot\.identity[\s\S]{0,400}pokeGuard\(\)/.test(sw));
 
 // H7 禁止双刷 token：seamlessSwitch 必须接受外部 token，且调用方传参
 check('H7a seamlessSwitch 接受 preparedExternal', /seamlessSwitch\(account: StoredAccount, preparedExternal\?: PreparedSwitchToken\)/.test(ss));
 check('H7b 外部 token 优先于内部刷新', /preparedExternal\s*\?[\s\S]{0,80}token: preparedExternal/.test(ss));
-check('H7c 切号链路传入 prepared.token', /seamlessSwitch\(account, prepared\.token\)/.test(ext));
+check('H7c 切号链路传入 prepared.token', /seamlessSwitch\(account, prepared\.token\)/.test(sw));
 
 // H8 凭据 P/Invoke 预编译 DLL（首次编译、后续加载；文件名绑定源码 hash）
 check('H8a DLL 文件名绑定 C# 源码 hash（杜绝旧 DLL）', cred.includes('createHash') && /KiteWinCred_\$\{/.test(cred));

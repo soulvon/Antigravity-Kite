@@ -51,8 +51,13 @@ assert('本机 ~/.antigravity_tools 存在 → 导入源可用', manager?.availa
 
 // ── 沙盒环境：USERPROFILE 管 ~/.antigravity_tools，APPDATA 管 Kite 账号库 ──
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'kite-manager-test-'));
+const home2 = fs.mkdtempSync(path.join(os.tmpdir(), 'kite-manager-nokey-'));
+delete process.env.KITE_SHARED_DIR;
+delete process.env.KITE_MASTER_KEY_FILE;
 process.env.USERPROFILE = sandboxHome;
+process.env.HOME = sandboxHome;
 process.env.APPDATA = path.join(sandboxHome, 'AppData', 'Roaming');
+process.env.XDG_CONFIG_HOME = path.join(sandboxHome, '.config');
 fs.mkdirSync(process.env.APPDATA, { recursive: true });
 const sandboxAppData = process.env.APPDATA;
 
@@ -132,15 +137,34 @@ async function run() {
   const s2 = stored.find(a => a.email === 'plain.two@example.com');
   assert('秒单位 expiry → 正确换算 ISO', !!s1 && isWithinIso(s1.expiresAt, secNow * 1000), s1?.expiresAt);
   assert('毫秒单位 expiry → 不再错误 *1000', !!s2 && isWithinIso(s2.expiresAt, msNow), s2?.expiresAt);
-  assert('tag = antigravity-manager / importMeta.source = local',
-    stored.every(a => a.tag === 'antigravity-manager' && a.importMeta?.source === 'local'),
-    JSON.stringify(stored.map(a => ({ tag: a.tag, src: a.importMeta?.source }))));
+  assert('无默认标签污染且 importMeta.source = local',
+    stored.every(a => a.tag === undefined && a.tags === undefined && a.importMeta?.source === 'local'),
+    JSON.stringify(stored.map(a => ({ tag: a.tag, tags: a.tags, src: a.importMeta?.source }))));
 
-  // ── [3] 去重：重导必须跳过，不得重复入库 ──
-  console.log('[3] 重导去重');
+  // ── [3] 去重与智能覆盖续期：同 Token 跳过，新 Token 覆盖续期且保留 tags ──
+  console.log('[3] 重导去重与新 Token 智能覆盖续期');
   const r2 = await importService.importFromAntigravityManager();
-  assert('重导全部 skipped', r2.imported === 0 && r2.skipped === 2, JSON.stringify(r2));
+  assert('同 Token 重导全部 skipped', r2.imported === 0 && r2.skipped === 2, JSON.stringify(r2));
   assert('库存仍为 2 条', accountStore.getAll().length === 2);
+
+  accountStore.update('plain.one@example.com', { tags: ['VIP'] });
+  writeManagerData(sandboxHome, {
+    accounts: [
+      { id: 'plain-1', body: { id: 'plain-1', email: 'PLAIN.ONE@example.com', name: '明文一',
+        token: { access_token: 'a1-renewed', refresh_token: 'r1-renewed', expiry_timestamp: secNow + 600 }, disabled: false } },
+      { id: 'plain-2', body: { id: 'plain-2', email: 'plain.two@example.com', name: '明文二',
+        token: { access_token: 'a2', refresh_token: 'r2', expiry_timestamp: msNow }, disabled: false } },
+    ],
+  });
+  const rRenew = await importService.importFromAntigravityManager();
+  const renewedOne = accountStore.getByEmail('plain.one@example.com');
+  assert('新 Token 重导覆盖续期 1 条且跳过 1 条（保留原 tags）',
+    rRenew.imported === 1 && rRenew.skipped === 1
+      && accountStore.getAll().length === 2
+      && renewedOne?.accessToken === 'a1-renewed'
+      && renewedOne?.refreshToken === 'r1-renewed'
+      && JSON.stringify(renewedOne?.tags) === JSON.stringify(['VIP']),
+    JSON.stringify({ rRenew, renewedOne }));
 
   // ── [4] 加密账号 + 密钥（有索引 → 索引路径；version 为字符串 "2.0" 与真实格式一致）──
   console.log('[4] 加密账号导入（索引路径）');
@@ -159,26 +183,32 @@ async function run() {
 
   // ── [5] 加密但密钥缺失 → 逐文件暴露失败，绝不静默伪装成 0 账号 ──
   console.log('[5] 密钥缺失时加密文件必须暴露为失败');
-  const home2 = fs.mkdtempSync(path.join(os.tmpdir(), 'kite-manager-nokey-'));
   process.env.USERPROFILE = home2;
+  process.env.HOME = home2;
   process.env.APPDATA = path.join(home2, 'AppData', 'Roaming');
+  process.env.XDG_CONFIG_HOME = path.join(home2, '.config');
   writeManagerData(home2, { accounts: [{ id: 'locked-1', body: enc.payload }], withKey: false });
   await expectReject('无密钥 → 报错同时点名文件与密钥缺失',
     importService.importFromAntigravityManager(),
     ['没有找到账号', 'locked-1.json', '为加密存储但无法解密（密钥缺失）']);
 
-  // ── [6] 沙盒库存落盘位置正确（APPDATA/.antigravity-kite/accounts.json；注意第一个沙盒的 APPDATA）──
-  console.log('[6] 账号库落盘位置');
-  const storeFile = path.join(sandboxAppData, '.antigravity-kite', 'accounts.json');
+  // ── [6] 沙盒库存落盘位置与 AES-256-GCM 加密落盘验证 ──
+  console.log('[6] 账号库落盘位置与静态加密');
+  const storeDir = accountStore.getStorageDirPath();
+  const storeFile = path.join(storeDir, 'accounts.json');
   const onDisk = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
-  assert('沙盒库中恰好 3 条', Array.isArray(onDisk) && onDisk.length === 3,
-    `实际 ${Array.isArray(onDisk) ? onDisk.length : typeof onDisk}`);
+  assert('沙盒库中恰好 3 条且 Token 已 AES-256-GCM 加密落盘',
+    Array.isArray(onDisk) && onDisk.length === 3
+      && onDisk.every(a => String(a.accessToken).startsWith('enc:v1:') && String(a.refreshToken).startsWith('enc:v1:')),
+    `实际 ${JSON.stringify(onDisk.map(a => ({ email: a.email, at: String(a.accessToken).slice(0, 12) })))}`);
 }
 
 try {
   await run();
 } finally {
   accountStore.dispose();
+  try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch {}
+  try { fs.rmSync(home2, { recursive: true, force: true }); } catch {}
 }
 
 console.log(`\n结果: ${passed} 通过, ${failed} 失败`);

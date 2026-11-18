@@ -1,5 +1,5 @@
 /**
- * ~/.gemini 下的本地凭据文件（切号必须同步的两处）。
+ * ~/.gemini 下的本地凭据文件与 agy active-account 指针（切号必须同步的两处）。
  *
  * 真机对照矩阵（基线：只改凭据管理器 → 每次必弹安全声明）：
  * | 写入项                       | 结果 |
@@ -17,6 +17,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { atomicWriteJsonSync, readJsonFileSafe } from './atomicFile';
 import { logInfo, logWarn } from './logger';
 import { getSharedStorageDir } from './storage';
 
@@ -46,15 +47,19 @@ function backupOnce(file: string, tag: string): void {
   }
 }
 
-function atomicWriteJson(filePath: string, data: unknown): void {
-  const tmpPath = `${filePath}.tmp.${process.pid}`;
-  try {
-    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
-    fs.renameSync(tmpPath, filePath);
-  } catch (e) {
-    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
-    throw e;
+function readJsonObjectOrWarn<T extends Record<string, unknown>>(filePath: string, tag: string): T {
+  const res = readJsonFileSafe<unknown>(filePath);
+  if (res.status === 'ok') {
+    if (res.data && typeof res.data === 'object' && !Array.isArray(res.data)) {
+      return { ...(res.data as T) };
+    }
+    logWarn(`geminiFiles.read.${tag}.notObject`, { filePath });
+    return {} as T;
   }
+  if (res.status === 'error') {
+    logWarn(`geminiFiles.read.${tag}.fail`, { filePath, error: res.error });
+  }
+  return {} as T;
 }
 
 /**
@@ -71,10 +76,7 @@ export function syncGeminiLocalCreds(creds: GeminiLocalCreds): { ok: boolean; er
     // 1) oauth_creds.json：token 为主体（email 字段非必需，但一并对齐避免歧义）
     const credFile = path.join(dir, 'oauth_creds.json');
     backupOnce(credFile, 'oauth_creds.json');
-    let cred: Record<string, unknown> = {};
-    if (fs.existsSync(credFile)) {
-      try { cred = JSON.parse(fs.readFileSync(credFile, 'utf8')) as Record<string, unknown>; } catch { cred = {}; }
-    }
+    const cred = readJsonObjectOrWarn<Record<string, unknown>>(credFile, 'oauthCreds');
     cred.access_token = creds.accessToken;
     if (creds.refreshToken) cred.refresh_token = creds.refreshToken;
     cred.token_type = 'Bearer';
@@ -82,20 +84,17 @@ export function syncGeminiLocalCreds(creds: GeminiLocalCreds): { ok: boolean; er
     // 兼容第三方写入的字段（Cockpit 等）：一律对齐，避免文件内部自相矛盾
     if ('antigravity_cockpit_active_email' in cred) cred.antigravity_cockpit_active_email = creds.email;
     cred.id_token_email = creds.email;
-    atomicWriteJson(credFile, cred);
+    atomicWriteJsonSync(credFile, cred, 0o600);
 
     // 2) google_accounts.json：active 指向目标账号，历史列表保留
     const accFile = path.join(dir, 'google_accounts.json');
     backupOnce(accFile, 'google_accounts.json');
-    let acc: { active?: string; old?: string[] } = {};
-    if (fs.existsSync(accFile)) {
-      try { acc = JSON.parse(fs.readFileSync(accFile, 'utf8')) as { active?: string; old?: string[] }; } catch { acc = {}; }
-    }
+    const acc = readJsonObjectOrWarn<{ active?: string; old?: string[] }>(accFile, 'googleAccounts');
     const oldList = Array.isArray(acc.old) ? acc.old.slice() : [];
     acc.active = creds.email;
     if (!oldList.includes(creds.email)) oldList.push(creds.email);
     acc.old = oldList;
-    atomicWriteJson(accFile, acc);
+    atomicWriteJsonSync(accFile, acc, 0o600);
 
     logInfo('geminiFiles.sync', { email: creds.email, expiryMs: creds.expiryMs, dir });
     return { ok: true };
@@ -106,14 +105,32 @@ export function syncGeminiLocalCreds(creds: GeminiLocalCreds): { ok: boolean; er
   }
 }
 
+/**
+ * agy.exe（IDE 内置 agent 引擎）的账号指针，agent 面板账号跟随它。
+ * 支持通过 KITE_AGY_ACCOUNT_FILE 注入测试路径。
+ */
+export function writeAgyActiveAccount(email: string): { ok: boolean; error?: string } {
+  const envFile = process.env.KITE_AGY_ACCOUNT_FILE?.trim();
+  const file = envFile || path.join(os.homedir(), '.gemini', 'antigravity', 'active-account.json');
+  try {
+    atomicWriteJsonSync(file, { email, updatedAt: Date.now() }, 0o600);
+    return { ok: true };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    logWarn('geminiFiles.agyActiveAccount.fail', { file, error });
+    return { ok: false, error };
+  }
+}
+
 /** 读取当前 ~/.gemini/google_accounts.json 的 active（诊断用） */
 export function readActiveAccount(): string {
-  try {
-    const accFile = path.join(geminiDir(), 'google_accounts.json');
-    if (!fs.existsSync(accFile)) return '';
-    const acc = JSON.parse(fs.readFileSync(accFile, 'utf8')) as { active?: string };
-    return acc.active || '';
-  } catch {
-    return '';
+  const accFile = path.join(geminiDir(), 'google_accounts.json');
+  const res = readJsonFileSafe<{ active?: unknown }>(accFile);
+  if (res.status === 'ok') {
+    return typeof res.data?.active === 'string' ? res.data.active : '';
   }
+  if (res.status === 'error') {
+    logWarn('geminiFiles.readActive.fail', { accFile, error: res.error });
+  }
+  return '';
 }

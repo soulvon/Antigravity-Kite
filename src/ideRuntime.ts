@@ -68,14 +68,14 @@ export async function detectExePath(): Promise<string | null> {
 
 async function detectExeWindows(): Promise<string | null> {
   // 1. 从 vscode.env.appRoot 推导
-  const appRoot = vscode.env.appRoot; // e.g. F:\Program\Antigravity IDE\resources\app
+  const appRoot = vscode.env.appRoot; // e.g. C:\Program Files\Antigravity IDE\resources\app
   const exeNames = ['Antigravity IDE.exe', 'Antigravity.exe'];
   for (const name of exeNames) {
     const fromAppRoot = path.resolve(appRoot, '..', '..', name);
     if (fs.existsSync(fromAppRoot)) return fromAppRoot;
   }
 
-  // 2. 常见安装路径及模糊子目录扫描（兼容 F:\Program\Antigravity1.18.4\Antigravity.exe 等多版本情况）
+  // 2. 常见安装路径及模糊子目录扫描（兼容 C:\Program Files\Antigravity1.18.4\Antigravity.exe 等多版本情况）
   const localAppData = process.env.LOCALAPPDATA || '';
   const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
   const candidates: string[] = [];
@@ -100,7 +100,9 @@ async function detectExeWindows(): Promise<string | null> {
                 candidates.push(path.join(rootPath, sub, name));
               }
             }
-          } catch {}
+          } catch (e) {
+            logWarn('ideRuntime.scanDir.fail', { rootPath, error: e instanceof Error ? e.message : String(e) });
+          }
         }
       }
     }
@@ -132,7 +134,7 @@ async function detectExeWindows(): Promise<string | null> {
       const out = cp.execSync(`where "${name}"`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
       const first = out.split('\n').map(l => l.trim()).find(l => l && fs.existsSync(l));
       if (first) return first;
-    } catch {}
+    } catch { /* PATH 中未找到该可执行名 */ }
   }
 
   return null;
@@ -141,7 +143,8 @@ async function detectExeWindows(): Promise<string | null> {
 function isRegularFile(p: string): boolean {
   try {
     return fs.existsSync(p) && !fs.statSync(p).isDirectory();
-  } catch {
+  } catch (e) {
+    logWarn('ideRuntime.isRegularFile.fail', { path: p, error: e instanceof Error ? e.message : String(e) });
     return false;
   }
 }
@@ -190,7 +193,7 @@ async function detectExeUnix(): Promise<string | null> {
       const out = cp.execSync(`which ${binName}`, { encoding: 'utf8', timeout: 3000 });
       const found = out.trim().split(/\r?\n/)[0]?.trim();
       if (found && isRegularFile(found)) return found;
-    } catch {}
+    } catch { /* PATH 中未找到该可执行名 */ }
   }
   return null;
 }
@@ -850,7 +853,10 @@ export function runShellAsync(cmd: string, timeoutMs: number): Promise<string | 
   return new Promise((resolve) => {
     try {
       cp.exec(cmd, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true }, (err, stdout) => resolve(err ? null : stdout));
-    } catch { resolve(null); }
+    } catch (e) {
+      logWarn('ideRuntime.runShell.threw', { cmd: cmd.slice(0, 80), message: e instanceof Error ? e.message : String(e) });
+      resolve(null);
+    }
   });
 }
 

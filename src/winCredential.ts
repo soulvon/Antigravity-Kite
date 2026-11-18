@@ -12,11 +12,15 @@
  */
 import * as cp from 'child_process';
 import { createHash } from 'crypto';
-import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { getAppDataDir } from './platformPaths';
-import { ensureWinNativeHelper, runWinCredRead, runWinCredWrite } from './winNativeHelper';
+import {
+  ensureWinNativeHelper,
+  runWinCredRead,
+  runWinCredWrite,
+  WIN32_CREDENTIAL_CS_STRUCT,
+} from './winNativeHelper';
+import { logWarn } from './logger';
 import { t } from './i18n';
 
 export const IDE_CRED_TARGET = 'gemini:antigravity';
@@ -45,32 +49,12 @@ export interface IdeCredential {
   writer_id: string;
 }
 
-/** P/Invoke C# 源码（单独常量：DLL 文件名要绑定它的 hash） */
+/** P/Invoke C# 源码（单独常量：DLL 文件名要绑定它的 hash，结构体与 Win32 定义复用 winNativeHelper） */
 const CS_SOURCE_LINES = [
   'using System;',
   'using System.Runtime.InteropServices;',
   'public static class KiteWinCred {',
-  '  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]',
-  '  public struct CREDENTIAL {',
-  '    public int Flags;',
-  '    public int Type;',
-  '    public string TargetName;',
-  '    public string Comment;',
-  '    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;',
-  '    public int CredentialBlobSize;',
-  '    public IntPtr CredentialBlob;',
-  '    public int Persist;',
-  '    public int AttributeCount;',
-  '    public IntPtr Attributes;',
-  '    public string TargetAlias;',
-  '    public string UserName;',
-  '  }',
-  '  [DllImport("Advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]',
-  '  public static extern bool CredReadW(string target, int type, int flags, out IntPtr credPtr);',
-  '  [DllImport("Advapi32.dll", EntryPoint = "CredWriteW", CharSet = CharSet.Unicode, SetLastError = true)]',
-  '  public static extern bool CredWriteW(ref CREDENTIAL cred, int flags);',
-  '  [DllImport("Advapi32.dll")]',
-  '  public static extern void CredFree(IntPtr cred);',
+  ...WIN32_CREDENTIAL_CS_STRUCT,
   '}',
 ];
 
@@ -98,13 +82,13 @@ const PS_TEMPLATE = [
   '  Add-Type -TypeDefinition $src | Out-Null',
   '  try {',
   '    $csc = Join-Path $env:WINDIR "Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe"',
-  '    if (Test-Path $csc) {',
-  '      $srcFile = [System.IO.Path]::ChangeExtension($Dll, ".cs")',
-  '      Set-Content -Path $srcFile -Value $src -Encoding UTF8',
-  '      & $csc /nologo /target:library /out:$Dll $srcFile | Out-Null',
-  '      Remove-Item -Force $srcFile -ErrorAction SilentlyContinue',
-  '    }',
-  '  } catch {}',
+  "      if (Test-Path $csc) {",
+  "        $srcFile = [System.IO.Path]::ChangeExtension($Dll, \".cs\")",
+  "        Set-Content -Path $srcFile -Value $src -Encoding UTF8",
+  "        & $csc /nologo /target:library /out:$Dll $srcFile | Out-Null",
+  "        Remove-Item -Force $srcFile -ErrorAction SilentlyContinue",
+  "      }",
+  "    } catch { <# 预编译缓存失败不影响当前即时加载 #> }",
   '}',
   'function Read-KiteCred([string]$target) {',
   '  $ptr = [IntPtr]::Zero',
@@ -148,7 +132,7 @@ const PS_TEMPLATE = [
   '    $oldB64 = $r.blob',
   '    $oldUser = $r.user',
   '    $oldJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($oldB64))',
-  '  } catch { }',
+  '  } catch { <# 尚无旧凭据或非 JSON 时跳过继承 #> }',
   '  $newText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($BlobBase64))',
   '  if ($oldJson -ne "") {',
   '    try {',
@@ -157,7 +141,7 @@ const PS_TEMPLATE = [
   '      if ($oldObj.writer_id) { $newObj.writer_id = $oldObj.writer_id }',
   '      if ($oldObj.auth_method) { $newObj.auth_method = $oldObj.auth_method }',
   '      $newText = $newObj | ConvertTo-Json -Depth 8 -Compress',
-  '    } catch { }',
+  '    } catch { <# 旧 blob 合并异常时保留原新凭据 #> }',
   '  }',
   '  $newBytes = [Text.Encoding]::UTF8.GetBytes($newText)',
   '  Write-KiteCred $Target $oldUser $newBytes',
@@ -337,28 +321,34 @@ export async function swapIdeCredential(
             let parsed: IdeCredential | undefined;
             try {
               parsed = JSON.parse(Buffer.from(raw.blobBase64, 'base64').toString('utf8')) as IdeCredential;
-            } catch { /* 非 JSON 旧 blob 仅跳过继承 */ }
-            prev = { ok: true, user: raw.user, blobBase64: raw.blobBase64, parsed };
-          } else {
-            prev = { ok: false, error: raw.error };
+          } catch (parseErr) {
+            logWarn('winCred.parsePrev.fail', parseErr);
           }
-        } catch {
-          prev = { ok: false };
+          prev = { ok: true, user: raw.user, blobBase64: raw.blobBase64, parsed };
+        } else {
+          prev = { ok: false, error: raw.error };
+        }
+      } catch (readErr) {
+        const msg = readErr instanceof Error ? readErr.message : String(readErr);
+        logWarn('winCred.preRead.fail', msg);
+        prev = { ok: false, error: msg };
+      }
+    }
+    let finalBlobBase64 = blobBase64;
+    let writeUser = user;
+    if (prev.ok) {
+      if (prev.user) writeUser = prev.user;
+      if (prev.parsed) {
+        try {
+          const newObj = JSON.parse(Buffer.from(blobBase64, 'base64').toString('utf8')) as Record<string, unknown>;
+          if (prev.parsed.writer_id) newObj.writer_id = prev.parsed.writer_id;
+          if (prev.parsed.auth_method) newObj.auth_method = prev.parsed.auth_method;
+          finalBlobBase64 = Buffer.from(JSON.stringify(newObj), 'utf8').toString('base64');
+        } catch (mergeErr) {
+          logWarn('winCred.mergeNewBlob.fail', mergeErr);
         }
       }
-      let finalBlobBase64 = blobBase64;
-      let writeUser = user;
-      if (prev.ok) {
-        if (prev.user) writeUser = prev.user;
-        if (prev.parsed) {
-          try {
-            const newObj = JSON.parse(Buffer.from(blobBase64, 'base64').toString('utf8')) as Record<string, unknown>;
-            if (prev.parsed.writer_id) newObj.writer_id = prev.parsed.writer_id;
-            if (prev.parsed.auth_method) newObj.auth_method = prev.parsed.auth_method;
-            finalBlobBase64 = Buffer.from(JSON.stringify(newObj), 'utf8').toString('base64');
-          } catch { /* 新 blob 解析异常时仍按原样写入 */ }
-        }
-      }
+    }
       const wRes = await runWinCredWrite(target, writeUser, finalBlobBase64);
       if (!wRes.ok) {
         return { ok: false, error: wRes.error || 'CredWriteW failed' };
@@ -376,7 +366,9 @@ export async function swapIdeCredential(
     if (res.ok && res.json.oldBlobBase64) {
       try {
         previous = JSON.parse(Buffer.from(res.json.oldBlobBase64, 'base64').toString('utf8')) as IdeCredential;
-      } catch { /* 旧 blob 非 JSON：只影响备份，不影响切换 */ }
+      } catch (parseErr) {
+        logWarn('winCred.psSwapParsePrev.fail', parseErr);
+      }
     }
     if (!res.ok) {
       return { ok: false, error: res.error };
@@ -420,39 +412,4 @@ export function buildIdeCredentialBlob(params: {
     writer_id: params.writerId || '',
   };
   return { blobBase64: Buffer.from(JSON.stringify(obj), 'utf8').toString('base64'), parsed: obj };
-}
-
-/** 同步 ~/.gemini 下的账号文件（google_accounts.json / oauth_creds.json），保留未知字段 */
-export function syncGeminiAccountFiles(params: { email: string; accessToken: string; refreshToken: string; expiryMs: number }): { ok: boolean; error?: string } {
-  try {
-    const dir = path.join(os.homedir(), '.gemini');
-    fs.mkdirSync(dir, { recursive: true });
-
-    // google_accounts.json：active 指向目标号，原 active 挪入 old
-    const gaFile = path.join(dir, 'google_accounts.json');
-    let ga: { active?: string; old?: string[] } = { active: params.email, old: [] };
-    try { ga = { ...ga, ...JSON.parse(fs.readFileSync(gaFile, 'utf8')) }; } catch { /* 不存在即用默认 */ }
-    const prevActive = ga.active;
-    ga.active = params.email;
-    if (prevActive && prevActive !== params.email) {
-      if (!Array.isArray(ga.old)) ga.old = [];
-      if (!ga.old.includes(prevActive)) ga.old.push(prevActive);
-    }
-    fs.writeFileSync(gaFile, JSON.stringify(ga, null, 2), 'utf8');
-
-    // oauth_creds.json：整体替换 token 相关字段，保留其它字段（如 cockpit 标记）
-    const ocFile = path.join(dir, 'oauth_creds.json');
-    let oc: Record<string, unknown> = {};
-    try { oc = JSON.parse(fs.readFileSync(ocFile, 'utf8')); } catch { /* 不存在即新建 */ }
-    oc.access_token = params.accessToken;
-    oc.token_type = 'Bearer';
-    oc.refresh_token = params.refreshToken;
-    oc.expiry_date = params.expiryMs;
-    oc.id_token_email = params.email;
-    fs.writeFileSync(ocFile, JSON.stringify(oc, null, 2), 'utf8');
-
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
 }

@@ -12,13 +12,29 @@ function gate(name, ok) {
   ok ? passed++ : failed++;
 }
 
-const ext = fs.readFileSync(path.join(ROOT, 'src', 'extension.ts'), 'utf8');
+const sidebarHtml = fs.readFileSync(path.join(ROOT, 'resources', 'webview', 'sidebar.html'), 'utf8');
+const sidebarProvider = fs.readFileSync(path.join(ROOT, 'src', 'sidebarProvider.ts'), 'utf8');
 const lp = fs.readFileSync(path.join(ROOT, 'src', 'logPanelProvider.ts'), 'utf8');
 const css = fs.readFileSync(path.join(ROOT, 'resources', 'webview', 'main.css'), 'utf8');
 
-gate('H1 侧栏 CSP: _getHtmlForWebview 自声明 Content-Security-Policy', /Content-Security-Policy[^`]*script-src \$\{webview\.cspSource\}/.test(ext));
-gate('H1 侧栏 CSP: cspSource 注入资源白名单', ext.includes('${webview.cspSource}'));
-gate('H1 统计面板 CSP: buildHtml 自声明 CSP + cspSource 参数', /Content-Security-Policy[^`]*script-src \$\{cspSource\}/.test(lp) && lp.includes('cspSource: string'));
+gate(
+  'H1 侧栏 CSP: sidebar.html 自声明严格 Nonce Content-Security-Policy',
+  /Content-Security-Policy[^>]*script-src 'nonce-\{\{NONCE\}\}'/.test(sidebarHtml)
+    && !/script-src[^;"]*unsafe-inline/.test(sidebarHtml)
+);
+gate(
+  'H1 侧栏 CSP: sidebarProvider.ts 注入 webview.cspSource 与随机 nonce',
+  sidebarHtml.includes('{{CSP_SOURCE}}')
+    && sidebarProvider.includes("split('{{CSP_SOURCE}}').join(webview.cspSource)")
+    && sidebarProvider.includes("split('{{NONCE}}').join(nonce)")
+);
+gate(
+  'H1 统计面板 CSP: buildHtml 自声明严格 Nonce CSP + cspSource 参数',
+  /Content-Security-Policy[^`]*script-src 'nonce-\$\{nonce\}'/.test(lp)
+    && !/script-src[^;"]*unsafe-inline/.test(lp)
+    && lp.includes('cspSource: string')
+    && lp.includes('${cspSource}')
+);
 gate('H2 flex 塌陷: modal-body 使用 flex-basis auto (纵向容器禁 0)', /\.modal-body\s*\{[^}]*flex:\s*1\s+1\s+auto/.test(css));
 gate('H2 flex 塌陷: 无纵向容器 flex-basis 0 残留 (排除横向等宽按钮组)', !/\.modal-body\s*\{[^}]*flex:\s*1\s+1\s+0/.test(css));
 gate('H3 打包卫生: .vscodeignore 排除 tmp/', fs.readFileSync(path.join(ROOT, '.vscodeignore'), 'utf8').includes('tmp/**'));

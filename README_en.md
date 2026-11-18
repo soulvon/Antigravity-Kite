@@ -6,7 +6,7 @@
 
 **Switch without restart · Real dual-window quotas for Claude / Gemini / Gemini 4 · Auto-confirm security notice · Bilingual UI**
 
-[![Version](https://img.shields.io/badge/version-1.4.0-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.5.0-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)]()
 [![GitHub release](https://img.shields.io/github/v/release/soulvon/Antigravity-Kite?color=orange&style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases)
@@ -47,7 +47,7 @@ Sidebar account card flow: **single-column vertical quota bars for Claude / Gemi
 
 ### Option 1: Extensions panel (recommended)
 
-1. Download the latest `antigravity-kite-1.4.0.vsix` ([GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest));
+1. Download the latest `antigravity-kite-1.5.0.vsix` ([GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest));
 2. Open the **Antigravity IDE**;
 3. Open the Extensions view (`Ctrl+Shift+X` / macOS `Cmd+Shift+X`);
 4. Click the `...` menu ➔ **"Install from VSIX..."**;
@@ -56,7 +56,7 @@ Sidebar account card flow: **single-column vertical quota bars for Claude / Gemi
 ### Option 2: Command line
 
 ```bash
-antigravity-ide --install-extension antigravity-kite-1.4.0.vsix --force
+antigravity-ide --install-extension antigravity-kite-1.5.0.vsix --force
 ```
 
 ---
@@ -107,8 +107,8 @@ antigravity-ide --install-extension antigravity-kite-1.4.0.vsix --force
 - **Ecosystem**: interops with Cockpit Tools and Antigravity Manager pools, plus JSON file import.
 
 ### 🔐 6. Credential safety & Gemini sync
-- **System-grade storage**: integrates the Windows Credential Manager — no plaintext secrets;
-- **Privacy masking**: emails and UIDs are masked on screen, safe for streaming;
+- **Local key encryption & Credential Manager**: Pool tokens are encrypted at rest with a local AES-256-GCM key (`master.key`), integrated with Windows Credential Manager on switch;
+- **Privacy masking**: Emails and UIDs are masked across sidebar, status bar, and stats panel, safe for streaming;
 - **Gemini sync**: `~/.gemini` `oauth_creds.json` and `google_accounts.json` are synced on switch (disable if tools like AgyHop / Cockpit also manage them).
 
 ### 🌐 7. Bilingual UI & stats panel
@@ -192,7 +192,7 @@ Kite syncs <code>~/.gemini</code> credential files on switch by default. If othe
 <details>
 <summary><b>Q5: Where are tokens stored? Is it safe?</b></summary>
 <br>
-All credentials stay on your machine (Windows Credential Manager integration) — no telemetry, no third-party uploads, with one-click on-screen masking.
+All credentials stay on your machine, with pool tokens encrypted at rest via a local AES-256-GCM key (plus Windows Credential Manager integration on switch) — no telemetry, no third-party uploads, with synchronized on-screen masking.
 </details>
 
 ---

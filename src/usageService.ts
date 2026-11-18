@@ -3,22 +3,15 @@
  * 调用 Cloud Code API 获取账号配额信息
  */
 
-import * as crypto from 'crypto';
-import * as https from 'https';
 import { StoredAccount, UsageSnapshot, AccountHealth } from './types';
 import * as accountStore from './accountStore';
 import { t } from './i18n';
+import { computeTokenFingerprint, refreshGoogleAccessToken } from './googleOAuth';
 
-/** 计算 accessToken 短指纹（仅用于绑定验证来源，绝不明文落盘） */
-export function computeTokenFingerprint(accessToken: string): string {
-  return crypto.createHash('sha256').update(accessToken).digest('hex').slice(0, 16);
-}
+export { computeTokenFingerprint } from './googleOAuth';
 
 const CLOUDCODE_DAILY_URL = 'https://daily-cloudcode-pa.googleapis.com';
 const CLOUDCODE_PROD_URL = 'https://cloudcode-pa.googleapis.com';
-const TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
-const CLIENT_SECRET = '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';
 const HTTP_TIMEOUT_MS = 15000;
 const OFFICIAL_IDE_VERSION = '1.20.5';
 const GOOGLE_API_CLIENT_VERSION = '10.3.0';
@@ -110,51 +103,20 @@ function getSummaryUA(): string {
 
 /** 刷新 accessToken（Google 刷新响应可能携带 id_token，一并取回） */
 export async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; idToken?: string } | null> {
-  return new Promise((resolve) => {
-    const postData = new URLSearchParams({
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token'
-    }).toString();
-    const url = new URL(TOKEN_URL);
-    const options = {
-      hostname: url.hostname,
-      path: url.pathname,
-      method: 'POST' as const,
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(postData)
-      }
-    };
-    const req = https.request(options, (res) => {
-      // 严禁字符串拼接 chunk：多字节 UTF-8 跨切片会被截断成乱码
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          if (!json.access_token) { resolve(null); return; }
-          resolve({
-            accessToken: json.access_token,
-            idToken: typeof json.id_token === 'string' ? json.id_token : undefined,
-          });
-        } catch { resolve(null); }
-      });
-    });
-    req.on('error', () => resolve(null));
-    req.setTimeout(10000, () => { req.destroy(); resolve(null); });
-    req.write(postData);
-    req.end();
-  });
+  const refreshed = await refreshGoogleAccessToken(refreshToken);
+  if (!refreshed) return null;
+  return {
+    accessToken: refreshed.accessToken,
+    idToken: refreshed.idToken,
+  };
 }
 
 const tokenRefreshInFlight = new Map<string, Promise<string | null>>();
 
-/** 确保 token 有效，必要时刷新（按邮箱并发去重）。minValidityMs：剩余有效期低于该值即刷新（切号链路要求 5 分钟） */
-export async function ensureFreshToken(account: StoredAccount, minValidityMs = 60000): Promise<string> {
-  // 检查是否过期
-  if (account.expiresAt) {
+/** 确保 token 有效，必要时刷新（按邮箱并发去重）。minValidityMs：剩余有效期低于该值即刷新；forceRefresh：遇 401 时绕过缓存强制重刷 */
+export async function ensureFreshToken(account: StoredAccount, minValidityMs = 60000, forceRefresh = false): Promise<string> {
+  // 检查非空 accessToken 是否仍在有效期内
+  if (!forceRefresh && account.accessToken && account.expiresAt) {
     const expiresMs = new Date(account.expiresAt).getTime();
     if (Date.now() < expiresMs - minValidityMs) {
       return account.accessToken; // 还有效
@@ -457,7 +419,7 @@ function resolveQuotaPercent(fraction: unknown, resetTime?: string): number | nu
   return null;
 }
 
-/** 从官方摘要构建窗口级配额（全中文标签：5h / 周额度；没有的数据不生成条目） */
+/** 从官方摘要构建窗口级配额（标签跟随当前语言：5h / quotaWeekly；没有的数据不生成条目） */
 export function extractQuotaFromSummary(response: QuotaSummaryResponse): import('./types').ModelQuota[] {
   const modelQuotas: import('./types').ModelQuota[] = [];
   const unmapped: string[] = [];
@@ -473,7 +435,7 @@ export function extractQuotaFromSummary(response: QuotaSummaryResponse): import(
       if (percent === null) continue;
       const familyLabel = FAMILY_LABELS[mapped.family];
       modelQuotas.push({
-        label: mapped.window === '5h' ? `${familyLabel} 5h` : `${familyLabel} 周额度`,
+        label: mapped.window === '5h' ? `${familyLabel} 5h` : `${familyLabel} ${t('quotaWeekly')}`,
         modelId: `${mapped.family}:${mapped.window}`,
         remainingPercent: percent,
         resetTime: bucket.resetTime,
@@ -586,11 +548,27 @@ export async function fetchUsage(account: StoredAccount): Promise<UsageSnapshot>
     throw new Error('No access token');
   }
 
-  // 0. 确保 token 有效
-  const accessToken = await ensureFreshToken(account);
+  // 0. 确保 token 有效；若缓存 AT 被服务端提前 401 吊销且持有 refreshToken，自动强制重刷重试一次
+  let accessToken = await ensureFreshToken(account);
 
   // 1. 获取项目信息（projectId、tierId、availableAICredits）并缓存 projectId
-  const projectInfo = await loadProjectInfo(accessToken);
+  let projectInfo: ProjectInfo;
+  try {
+    projectInfo = await loadProjectInfo(accessToken);
+  } catch (firstErr) {
+    const errText = firstErr instanceof Error ? firstErr.message : String(firstErr);
+    if (account.refreshToken && /AUTH_EXPIRED|HTTP 401\b/i.test(errText)) {
+      const refreshedToken = await ensureFreshToken(account, 60000, true);
+      if (refreshedToken && refreshedToken !== accessToken) {
+        accessToken = refreshedToken;
+        projectInfo = await loadProjectInfo(accessToken);
+      } else {
+        throw firstErr;
+      }
+    } else {
+      throw firstErr;
+    }
+  }
   if (projectInfo.projectId && projectInfo.projectId !== account.projectId) {
     account.projectId = projectInfo.projectId;
     accountStore.update(account.email, { projectId: projectInfo.projectId });
@@ -750,7 +728,8 @@ export async function checkAccountHealth(account: StoredAccount): Promise<Accoun
     if (!account.accessToken && !account.refreshToken) {
       return fail('auth_invalid', 'No access token');
     }
-    const accessToken = await ensureFreshToken(account);
+    let accessToken = await ensureFreshToken(account);
+    let refreshedOn401 = false;
 
     // 1) project + 凭据层（优先复用缓存 projectId，缺失时探测并落库）
     let projectId: string | undefined = account.projectId;
@@ -768,13 +747,32 @@ export async function checkAccountHealth(account: StoredAccount): Promise<Accoun
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        if (/auth_expired|http 401/i.test(msg)) return fail('auth_invalid', msg);
+        if (/auth_expired|http 401/i.test(msg)) {
+          if (account.refreshToken) {
+            const renewed = await ensureFreshToken(account, 60000, true);
+            refreshedOn401 = true;
+            if (renewed && renewed !== accessToken) {
+              accessToken = renewed;
+            } else {
+              return fail('auth_invalid', msg);
+            }
+          } else {
+            return fail('auth_invalid', msg);
+          }
+        }
         // 元数据失败不致命：project 缺省走共享池，继续推理探测
       }
     }
 
-    // 2) 推理探测——封禁唯一现形点
-    const res = await probeGenerateContent(accessToken, projectId);
+    // 2) 推理探测——封禁唯一现形点（若缓存 AT 首次 401 且有 RT，补刷重试一次）
+    let res = await probeGenerateContent(accessToken, projectId);
+    if (res.status === 401 && !refreshedOn401 && account.refreshToken) {
+      const renewed = await ensureFreshToken(account, 60000, true);
+      if (renewed && renewed !== accessToken) {
+        accessToken = renewed;
+        res = await probeGenerateContent(accessToken, projectId);
+      }
+    }
     if (res.status >= 200 && res.status < 300) {
       return { status: 'ok', checkedAt };
     }

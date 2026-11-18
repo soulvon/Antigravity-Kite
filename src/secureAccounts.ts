@@ -1,9 +1,12 @@
 /**
- * Cockpit Tools 加密账号存储的解密支持
+ * Cockpit Tools / Antigravity Manager 外部加密账号存储的解密支持
  *
- * Cockpit Tools 新版把账号文件加密为：
+ * 注意：本模块专用于导入阶段读取外部工具（Cockpit Tools / Antigravity Manager）的加密账号文件，
+ * 与 Kite 自身 accounts.json 的磁盘静态加密（src/accountCrypto.ts）相互独立。
+ *
+ * Cockpit Tools / Manager 账号加密格式：
  *   { version, kind, algorithm: 'AES-256-GCM', key_id, nonce, ciphertext, encrypted_at }
- * 密钥存放在数据目录下的 secure-account-storage.key（base64 文本，32 字节 AES-256 密钥）。
+ * 密钥存放在其数据目录下的 secure-account-storage.key（base64 文本，32 字节 AES-256 密钥）。
  * ciphertext = base64(body || GCM authTag(16B))，nonce = base64(12B IV)。
  * 解密后的明文即账号 JSON：{ id, email, name, token: {...}, disabled, ... }
  */
@@ -31,13 +34,19 @@ export function readSecureStorageKey(dataDir: string): Buffer | null {
   let raw: string;
   try {
     raw = fs.readFileSync(keyPath, 'utf8').trim();
-  } catch {
+  } catch (err) {
+    // 密钥缺失（ENOENT）或不可读时按「未知」返回 null，由上层导入流程按加密文件逐一报错
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code && code !== 'ENOENT') {
+      console.warn(`[secureAccounts] Failed to read key file ${keyPath}:`, err instanceof Error ? err.message : String(err));
+    }
     return null;
   }
   try {
     const key = Buffer.from(raw, 'base64');
     return key.length === 32 ? key : null;
-  } catch {
+  } catch (err) {
+    console.warn(`[secureAccounts] Invalid base64 key in ${keyPath}:`, err instanceof Error ? err.message : String(err));
     return null;
   }
 }

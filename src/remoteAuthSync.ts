@@ -12,17 +12,15 @@
  *   无需额外派生 ssh 进程，兼容密码登录 / 跳板机 / 2FA / 自定义 SSH 配置，绝不触碰受 resolvers 提案限制的 API。
  */
 import * as fs from 'fs';
-import * as http from 'http';
-import * as https from 'https';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { IdeCredential } from './winCredential';
+import { httpRequest } from './httpClient';
+import { t } from './i18n';
 import { logInfo, logWarn } from './logger';
 
 export const STANDALONE_TOKEN_DIR = '.gemini';
 export const STANDALONE_TOKEN_FILE = 'jetski-standalone-oauth-token';
-export const PENDING_REMOTE_NOTICE_KEY = 'kite.remoteSyncPendingNotice';
-export const REMOTE_SYNC_COOLDOWN_KEY = 'kite.remoteSyncLastTrigger';
 
 const SUPPORTED_REMOTE_NAMES = new Set(['ssh-remote']);
 const SAFE_POSIX_USER_RE = /^[a-zA-Z0-9._-]+$/;
@@ -91,7 +89,8 @@ export function isSupportedRemoteSession(remoteName?: string): boolean {
 export function isRemoteAuthSyncEnabled(): boolean {
   try {
     return vscode.workspace.getConfiguration('antigravityKite').get<boolean>('remote.syncAuth', true) !== false;
-  } catch {
+  } catch (e) {
+    logWarn('remote.sync.readConfigFail', e);
     return true;
   }
 }
@@ -154,7 +153,12 @@ function listCandidateRemoteLogs(logUriFsPath?: string): string[] {
 
   const logs: { file: string; mtimeMs: number; priority: number }[] = [];
   let entries: fs.Dirent[] = [];
-  try { entries = fs.readdirSync(exthostDir, { withFileTypes: true }); } catch { return []; }
+  try {
+    entries = fs.readdirSync(exthostDir, { withFileTypes: true });
+  } catch (e) {
+    logWarn('remote.sync.readLogDirFail', { exthostDir, error: e instanceof Error ? e.message : String(e) });
+    return [];
+  }
 
   for (const ent of entries) {
     if (!ent.isDirectory()) continue;
@@ -164,7 +168,12 @@ function listCandidateRemoteLogs(logUriFsPath?: string): string[] {
     if (!isSshDir && !isOutputDir) continue;
 
     let files: string[] = [];
-    try { files = fs.readdirSync(subDir); } catch { continue; }
+    try {
+      files = fs.readdirSync(subDir);
+    } catch (e) {
+      logWarn('remote.sync.readSubLogDirFail', { subDir, error: e instanceof Error ? e.message : String(e) });
+      continue;
+    }
     for (const f of files) {
       if (!f.endsWith('.log')) continue;
       if (isOutputDir && !/remote/i.test(f)) continue;
@@ -174,7 +183,9 @@ function listCandidateRemoteLogs(logUriFsPath?: string): string[] {
         if (st.size > 0) {
           logs.push({ file: fp, mtimeMs: st.mtimeMs, priority: isSshDir ? 0 : 1 });
         }
-      } catch { /* ignore */ }
+      } catch (e) {
+        logWarn('remote.sync.statLogFail', { fp, error: e instanceof Error ? e.message : String(e) });
+      }
     }
   }
 
@@ -253,7 +264,10 @@ async function isRemoteDir(fsApi: Pick<RemoteFsLike, 'stat'>, authority: string,
   try {
     const st = await fsApi.stat(buildRemoteUri(authority, posixPath));
     return (st.type & vscode.FileType.Directory) !== 0;
-  } catch {
+  } catch (e) {
+    if (!isFileNotFoundErr(e)) {
+      logWarn('remote.sync.statDirFail', { posixPath, error: e instanceof Error ? e.message : String(e) });
+    }
     return false;
   }
 }
@@ -322,7 +336,7 @@ export async function resolveRemoteHomeDir(
     }
   }
 
-  return { ok: false, error: '无法解析并验证远端用户主目录' };
+  return { ok: false, error: t('remoteHomeNotFound') };
 }
 
 function isFileNotFoundErr(e: unknown): boolean {
@@ -332,51 +346,21 @@ function isFileNotFoundErr(e: unknown): boolean {
   return code === 'FileNotFound' || code === 'ENOENT' || /\b(?:FileNotFound|ENOENT)\b/i.test(msg);
 }
 
-function defaultPostJson(
+async function defaultPostJson(
   url: string,
   headers: Record<string, string>,
   body: string,
   timeoutMs: number
 ): Promise<number> {
-  return new Promise((resolve, reject) => {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch (e) {
-      reject(e);
-      return;
-    }
-    const client = parsed.protocol === 'https:' ? https : http;
-    const payload = Buffer.from(body, 'utf8');
-    let settled = false;
-    const done = (err: Error | null, status?: number) => {
-      if (settled) return;
-      settled = true;
-      if (err) reject(err);
-      else resolve(status || 0);
-    };
-    const req = client.request(
-      parsed,
-      {
-        method: 'POST',
-        headers: {
-          ...headers,
-          'Content-Length': String(payload.length),
-        },
-        timeout: timeoutMs,
-      },
-      (res) => {
-        res.resume();
-        res.on('end', () => done(null, res.statusCode || 0));
-      }
-    );
-    req.on('timeout', () => {
-      req.destroy(new Error(`HTTP POST timeout after ${timeoutMs}ms`));
-    });
-    req.on('error', (err) => done(err));
-    req.write(payload);
-    req.end();
+  const res = await httpRequest(url, {
+    method: 'POST',
+    headers,
+    body,
+    timeoutMs,
+    maxRedirects: 0,
+    allowHttpRedirect: false,
   });
+  return res.status;
 }
 
 function formatMappedBaseUrl(extUri: unknown, fallback: string): string {
@@ -410,7 +394,10 @@ export async function discoverRemoteHubDaemons(
   let entries: [string, number][];
   try {
     entries = await fsApi.readDirectory(buildRemoteUri(authority, daemonDirPath));
-  } catch {
+  } catch (e) {
+    if (!isFileNotFoundErr(e)) {
+      logWarn('remote.sync.readDaemonDirFail', { daemonDirPath, error: e instanceof Error ? e.message : String(e) });
+    }
     return [];
   }
 
@@ -444,7 +431,9 @@ export async function discoverRemoteHubDaemons(
       }
 
       out.push({ httpPort, csrfToken, pid, fileName });
-    } catch { /* 跳过损坏或并发删除的 discovery 文件 */ }
+    } catch (e) {
+      logWarn('remote.sync.daemonParseFail', { filePath, error: e instanceof Error ? e.message : String(e) });
+    }
   }
   return out;
 }
@@ -473,7 +462,9 @@ export async function logoutRemoteHubSessions(
         const extUri = await vscode.env.asExternalUri(vscode.Uri.parse(rawBase));
         mappedBase = formatMappedBaseUrl(extUri, rawBase);
       }
-    } catch { /* 映射失败回退原始环回端口 */ }
+    } catch (e) {
+      logWarn('remote.sync.mapUriFail', { rawBase, error: e instanceof Error ? e.message : String(e) });
+    }
 
     const rpcPath = '/exa.language_server_pb.LanguageServerService/AuthLogout';
     const headers = {

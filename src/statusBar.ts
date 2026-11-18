@@ -24,6 +24,16 @@ import * as accountStore from './accountStore';
 import { UsageSnapshot, AccountHealth, StoredAccount, ModelQuota } from './types';
 import { t } from './i18n';
 import { notifyUi } from './uiChannel';
+import { logWarn } from './logger';
+
+function safeDispose(item: vscode.Disposable | undefined, label: string): void {
+  if (!item) return;
+  try {
+    item.dispose();
+  } catch (err) {
+    logWarn('statusBar.dispose', { label, error: err instanceof Error ? err.message : String(err) });
+  }
+}
 
 /** 状态栏左段信息密度：full 全量（默认：账号+级别+族分格+倒计时+积分）；smart 聚合段等其余档位为极简可选 */
 export type StatusBarStyle = 'smart' | 'dot' | 'percent' | 'compact' | 'dual' | 'labeled' | 'full';
@@ -378,12 +388,14 @@ export class StatusBarManager implements vscode.Disposable {
   private _ensureAlignment(position: StatusBarPosition): void {
     const target = position === 'left' ? vscode.StatusBarAlignment.Left : vscode.StatusBarAlignment.Right;
     if (target === this._currentAlignment) return;
-    try { this._main.dispose(); } catch { /* ignore */ }
-    try { this._pool.dispose(); } catch { /* ignore */ }
+    safeDispose(this._main, 'main');
+    safeDispose(this._pool, 'pool');
     this._main = vscode.window.createStatusBarItem(target, 100);
     this._pool = vscode.window.createStatusBarItem(target, 99);
     this._main.command = 'antigravityKite.quickSwitchAccount';
+    this._main.name = 'Kite Quota';
     this._pool.command = OPEN_SIDEBAR_CMD;
+    this._pool.name = 'Kite Pool';
     this._currentAlignment = target;
   }
 
@@ -850,10 +862,10 @@ export class StatusBarManager implements vscode.Disposable {
   }
 
   dispose(): void {
-    this._main.dispose();
-    this._pool.dispose();
+    safeDispose(this._main, 'main');
+    safeDispose(this._pool, 'pool');
     for (const d of this._disposables) {
-      try { d.dispose(); } catch { /* ignore */ }
+      safeDispose(d, 'subscription');
     }
     this._disposables = [];
   }

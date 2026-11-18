@@ -5,9 +5,10 @@
  *   1. 字典双语同构：每个 key 的 [zh, en] 齐全、非空，且英文不得等于 key 本身（= 未翻译）
  *   2. 使用覆盖：源码用到的 key 必须全部在字典中
  *      - t(<宿主key>)        → 字典直查
- *      - tl(<ui-key>) / data-i18n*（extension.ts）→ 必须存在 ui.* 条目
+ *      - tl(<ui-key>) / data-i18n*（sidebar.html / sidebar.js / sidebarProvider.ts）→ 必须存在 ui.* 条目
  *      - l(<lp-key>) / data-i18n*（log-panel.js / logPanelProvider.ts）→ 必须存在 lp.* 条目
- *   3. package.json nls 对齐：%key% 占位符与两份 package.nls*.json 双向一致、值非空
+ *   3. 字典零死键：字典中每条 key 都必须被源码或动态映射表引用
+ *   4. package.json nls 对齐：%key% 占位符与两份 package.nls*.json 双向一致、值非空
  *
  * 约定：修改任何用户可见文案时，必须同步补齐中英双语，否则编译不过。
  */
@@ -48,9 +49,9 @@ function listFiles(dir, out) {
     const st = fs.statSync(p);
     if (st.isDirectory()) {
       // scripts/ = 构建工具脚本（含本文件），不含业务文案，排除防自匹配
-      if (name === 'node_modules' || name === 'out' || name === 'tmp' || name === 'scripts') continue;
+      if (name === 'node_modules' || name === 'out' || name === 'tmp' || name === 'scripts' || name === '.preview' || name === 'docs' || name === 'spec' || name.startsWith('.')) continue;
       listFiles(p, out);
-    } else if (/\.(ts|js)$/.test(name)) {
+    } else if (/\.(ts|js|html)$/.test(name)) {
       out.push(p);
     }
   }
@@ -59,8 +60,8 @@ function listFiles(dir, out) {
 
 const files = listFiles(root, []);
 const hostKeys = new Set(); // t() 直查字典的 key
-const uiKeys = new Set();   // tl() / data-i18n（extension.ts）
-const lpKeys = new Set();   // l() / data-i18n（log-panel.js、logPanelProvider.ts）
+const uiKeys = new Set();   // tl() / data-i18n（sidebar.html / sidebar.js / sidebarProvider.ts）
+const lpKeys = new Set();   // l() / data-i18n（log-panel.js / logPanelProvider.ts）
 
 for (const file of files) {
   const rel = path.relative(root, file).replace(/\\/g, '/');
@@ -68,10 +69,14 @@ for (const file of files) {
 
   for (const m of text.matchAll(/\bt\(\s*['"]([a-zA-Z0-9_.]+)['"]/g)) hostKeys.add(m[1]);
 
-  // ui.* 条目：extension.ts 的 tl() 与 data-i18n 属性
-  if (rel === 'src/extension.ts') {
+  // ui.* 条目：sidebar.html / sidebar.js / sidebarProvider.ts 的 tl()、data-i18n 属性及已知键值映射
+  if (rel === 'resources/webview/sidebar.html' || rel === 'resources/webview/sidebar.js' || rel === 'src/sidebarProvider.ts') {
     for (const m of text.matchAll(/\btl\(\s*['"]([a-zA-Z0-9_]+)['"]/g)) uiKeys.add(m[1]);
     for (const m of text.matchAll(/data-i18n(?:-ph|-title)?="([a-zA-Z0-9_]+)"/g)) uiKeys.add(m[1]);
+    const healthMap = text.match(/HEALTH_LABEL_KEYS\s*=\s*\{([^}]+)\}/);
+    if (healthMap) {
+      for (const m of healthMap[1].matchAll(/:\s*['"]([a-zA-Z0-9_]+)['"]/g)) uiKeys.add(m[1]);
+    }
   }
   // lp.* 条目：log-panel.js 的 l() 与 data-i18n；logPanelProvider.ts 的 t('lp.*') 与 data-i18n
   if (rel === 'resources/webview/log-panel.js') {
@@ -91,6 +96,18 @@ for (const k of uiKeys) {
 }
 for (const k of lpKeys) {
   if (!('lp.' + k in dict)) problems.push(`统计面板缺 key: lp.${k}`);
+}
+
+// ── 2b. 未使用的字典死键检测 ──
+const usedDictKeys = new Set([
+  ...hostKeys,
+  ...[...uiKeys].map(k => 'ui.' + k),
+  ...[...lpKeys].map(k => 'lp.' + k),
+]);
+for (const k of Object.keys(dict)) {
+  if (!usedDictKeys.has(k)) {
+    problems.push(`字典存在未使用死键: ${k}`);
+  }
 }
 
 // ── 3. package.json nls 对齐 ──
@@ -139,16 +156,18 @@ if (fs.existsSync(readmeZhPath) && fs.existsSync(readmeEnPath)) {
 
 // ── 5. 源码关键 UI 渲染区硬编码中文防御 ──
 // 重点扫描卡片配额渲染与状态栏渲染区，杜绝直接写死汉字
-const extSrc = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf8');
-const quotasBlockMatch = extSrc.match(/\/\/ 模型配额：单列竖排[\s\S]*?quotasHtml = phHtml \+ loadErrorHtml;/);
+const sidebarJsSrc = fs.readFileSync(path.join(root, 'resources', 'webview', 'sidebar.js'), 'utf8');
+const quotasBlockMatch = sidebarJsSrc.match(/\/\/ 模型配额：单列竖排[\s\S]*?quotasHtml = phHtml \+ loadErrorHtml;/);
 if (quotasBlockMatch) {
   const quotasCode = quotasBlockMatch[0];
   // 排除注释后，不应出现中文字符串字面量
   const codeWithoutComments = quotasCode.replace(/\/\/.*/g, '');
   const chineseInCode = codeWithoutComments.match(/['"][^'"]*[\u4e00-\u9fa5]+[^'"]*['"]/g);
   if (chineseInCode) {
-    problems.push(`src/extension.ts 配额渲染区包含裸露的硬编码中文字符串: ${chineseInCode.join(', ')}（必须使用 tl()）`);
+    problems.push(`resources/webview/sidebar.js 配额渲染区包含裸露的硬编码中文字符串: ${chineseInCode.join(', ')}（必须使用 tl()）`);
   }
+} else {
+  problems.push('resources/webview/sidebar.js 未匹配到配额渲染区（请确认区域标记未丢失）');
 }
 
 // ── 结果 ──

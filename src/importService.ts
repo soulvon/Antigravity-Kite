@@ -1,3 +1,8 @@
+/**
+ * 多源账号导入服务（Cockpit Tools / Antigravity Manager / 本地 JSON 文件）
+ *
+ * 约定：禁止在导入阶段自动写入任何来源或状态标签属性。
+ */
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -25,6 +30,25 @@ interface AccountIndex {
   current_account_id?: string;
 }
 
+interface JsonImportItem {
+  email?: string;
+  refresh_token?: string;
+  refreshToken?: string;
+  access_token?: string;
+  accessToken?: string;
+  expiresAt?: string;
+  expires_at?: string;
+  expiry_timestamp?: number;
+  expires_in?: number;
+}
+
+interface LocalAppImportSpec {
+  label: string;
+  getDir: () => string;
+  dirMissingMsg: () => string;
+  noAccountsMsg: (detail: string) => string;
+}
+
 function getHomeDir(): string {
   return os.homedir();
 }
@@ -39,8 +63,7 @@ function getAntigravityManagerDir(): string {
 
 function tokenExpiryToIso(token: ExternalAccount['token']): string | undefined {
   if (typeof token.expiry_timestamp === 'number' && Number.isFinite(token.expiry_timestamp)) {
-    // 秒/毫秒自适应（阈值 1e10 ≈ 2286 年）：Cockpit Tools 数据单位未经契约保证，
-    // 写死 *1000 时毫秒数据会算出公元五万年、账号永不判过期
+    // 秒/毫秒自适应（阈值 1e10 ≈ 2286 年）：兼容外部工具未契约化的时间戳单位
     const ms = token.expiry_timestamp > 10_000_000_000 ? token.expiry_timestamp : token.expiry_timestamp * 1000;
     return new Date(ms).toISOString();
   }
@@ -87,18 +110,15 @@ async function loadAccountsFromDir(dataDir: string): Promise<{ accounts: Externa
 
   const accounts: ExternalAccount[] = [];
   const failures: string[] = [];
-  // Cockpit Tools 新版加密存储：密钥缺失时加密文件必须逐个暴露为失败，而不是当成 0 账号
   const secureKey = readSecureStorageKey(dataDir);
-  if (!secureKey) {
-    failures.push(t('impSecureKeyMissing'));
-  }
+  let missingKeyReported = false;
 
   // 读取索引文件获取账号列表
   let accountIds: string[] = [];
   if (fs.existsSync(indexPath)) {
     try {
       const indexData = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as AccountIndex;
-      accountIds = indexData.accounts.map(a => a.id);
+      accountIds = Array.isArray(indexData.accounts) ? indexData.accounts.map((a) => a.id) : [];
     } catch (e) {
       console.warn('[importService] Failed to read index:', e);
       failures.push(t('impIndexParseFailed'));
@@ -110,8 +130,8 @@ async function loadAccountsFromDir(dataDir: string): Promise<{ accounts: Externa
     try {
       const files = fs.readdirSync(accountsDir);
       accountIds = files
-        .filter(f => f.endsWith('.json'))
-        .map(f => f.replace('.json', ''));
+        .filter((f) => f.endsWith('.json'))
+        .map((f) => f.replace('.json', ''));
     } catch (e) {
       console.warn('[importService] Failed to scan accounts dir:', e);
       failures.push(t('impDirScanFailed'));
@@ -130,6 +150,11 @@ async function loadAccountsFromDir(dataDir: string): Promise<{ accounts: Externa
       let account: unknown = data;
       if (isEncryptedPayload(data)) {
         if (!secureKey) {
+          // 仅在真实存在加密账号文件却缺失密钥时才暴露缺失密钥错误
+          if (!missingKeyReported) {
+            failures.push(t('impSecureKeyMissing'));
+            missingKeyReported = true;
+          }
           failures.push(t('impEncryptedNoKey', `${id}.json`));
           continue;
         }
@@ -152,72 +177,49 @@ async function loadAccountsFromDir(dataDir: string): Promise<{ accounts: Externa
   return { accounts, failures };
 }
 
-export async function importFromCockpitTools(): Promise<{ imported: number; skipped: number }> {
-  const dataDir = getCockpitToolsDir();
+async function importFromLocalApp(spec: LocalAppImportSpec): Promise<{ imported: number; skipped: number }> {
+  const dataDir = spec.getDir();
 
   if (!fs.existsSync(dataDir)) {
-    throw new Error(t('impCockpitDirMissing'));
+    throw new Error(spec.dirMissingMsg());
   }
 
   const { accounts, failures } = await loadAccountsFromDir(dataDir);
   if (accounts.length === 0) {
-    const detail = failures.length > 0 ? `：${failures.slice(0, 3).join('；')}${failures.length > 3 ? t('errImportMore', failures.length) : ''}` : '';
-    throw new Error(t('impCockpitNoAccounts', detail));
+    const detail = failures.length > 0
+      ? `：${failures.slice(0, 3).join('；')}${failures.length > 3 ? t('errImportMore', failures.length) : ''}`
+      : '';
+    throw new Error(spec.noAccountsMsg(detail));
   }
   if (failures.length > 0) {
-    console.warn(`[importService] Cockpit Tools 部分账号读取失败: ${failures.join('；')}`);
+    console.warn(`[importService] ${spec.label} 部分账号读取失败: ${failures.join('；')}`);
   }
 
-  let imported = 0;
-  let skipped = 0;
+  const batch = accounts.map(convertToStoredAccount);
+  const res = accountStore.upsertBatch(batch, { overwriteTokens: true });
+  return { imported: res.added + res.updated, skipped: res.skipped };
+}
 
-  for (const ext of accounts) {
-    const existing = accountStore.getAll().find(a => a.email === ext.email);
-    if (existing) {
-      skipped++;
-      continue;
-    }
+const COCKPIT_IMPORT_SPEC: LocalAppImportSpec = {
+  label: 'Cockpit Tools',
+  getDir: getCockpitToolsDir,
+  dirMissingMsg: () => t('impCockpitDirMissing'),
+  noAccountsMsg: (detail) => t('impCockpitNoAccounts', detail),
+};
 
-    const stored = convertToStoredAccount(ext);
-    accountStore.add(stored);
-    imported++;
-  }
+const MANAGER_IMPORT_SPEC: LocalAppImportSpec = {
+  label: 'Antigravity Manager',
+  getDir: getAntigravityManagerDir,
+  dirMissingMsg: () => t('impManagerDirMissing'),
+  noAccountsMsg: (detail) => t('impManagerNoAccounts', detail),
+};
 
-  return { imported, skipped };
+export async function importFromCockpitTools(): Promise<{ imported: number; skipped: number }> {
+  return importFromLocalApp(COCKPIT_IMPORT_SPEC);
 }
 
 export async function importFromAntigravityManager(): Promise<{ imported: number; skipped: number }> {
-  const dataDir = getAntigravityManagerDir();
-
-  if (!fs.existsSync(dataDir)) {
-    throw new Error(t('impManagerDirMissing'));
-  }
-
-  const { accounts, failures } = await loadAccountsFromDir(dataDir);
-  if (accounts.length === 0) {
-    const detail = failures.length > 0 ? `：${failures.slice(0, 3).join('；')}${failures.length > 3 ? t('errImportMore', failures.length) : ''}` : '';
-    throw new Error(t('impManagerNoAccounts', detail));
-  }
-  if (failures.length > 0) {
-    console.warn(`[importService] Antigravity Manager 部分账号读取失败: ${failures.join('；')}`);
-  }
-
-  let imported = 0;
-  let skipped = 0;
-
-  for (const ext of accounts) {
-    const existing = accountStore.getAll().find(a => a.email === ext.email);
-    if (existing) {
-      skipped++;
-      continue;
-    }
-
-    const stored = convertToStoredAccount(ext);
-    accountStore.add(stored);
-    imported++;
-  }
-
-  return { imported, skipped };
+  return importFromLocalApp(MANAGER_IMPORT_SPEC);
 }
 
 export async function importFromJsonFile(): Promise<{ imported: number; skipped: number }> {
@@ -234,51 +236,37 @@ export async function importFromJsonFile(): Promise<{ imported: number; skipped:
 
   const filePath = uris[0].fsPath;
   const content = fs.readFileSync(filePath, 'utf8');
-  let data: any;
-  
+  let data: unknown;
+
   try {
     data = JSON.parse(content);
-  } catch {
+  } catch (err) {
+    console.warn('[importService] Failed to parse selected JSON file:', err instanceof Error ? err.message : String(err));
     throw new Error(t('impBadJson'));
   }
 
-  // 支持多种格式
-  let accounts: Array<{
-    email: string;
-    refresh_token?: string;
-    refreshToken?: string;
-    access_token?: string;
-    accessToken?: string;
-    expiresAt?: string;
-    expires_at?: string;
-    expiry_timestamp?: number;
-    expires_in?: number;
-  }> = [];
-  
+  let accounts: JsonImportItem[] = [];
   if (Array.isArray(data)) {
-    accounts = data;
-  } else if (data.email) {
-    accounts = [data];
-  } else if (data.accounts && Array.isArray(data.accounts)) {
-    accounts = data.accounts;
+    accounts = data as JsonImportItem[];
+  } else if (data && typeof data === 'object') {
+    const obj = data as { email?: unknown; accounts?: unknown };
+    if (typeof obj.email === 'string' && obj.email) {
+      accounts = [obj as JsonImportItem];
+    } else if (Array.isArray(obj.accounts)) {
+      accounts = obj.accounts as JsonImportItem[];
+    } else {
+      throw new Error(t('impUnsupportedFormat'));
+    }
   } else {
     throw new Error(t('impUnsupportedFormat'));
   }
 
-  let imported = 0;
-  let skipped = 0;
-
+  const nowIso = new Date().toISOString();
+  const batch: StoredAccount[] = [];
   for (const acc of accounts) {
-    if (!acc.email) continue;
-    
-    const existing = accountStore.getAll().find(a => a.email === acc.email);
-    if (existing) {
-      skipped++;
-      continue;
-    }
-
-    const stored: StoredAccount = {
-      email: acc.email,
+    if (!acc || typeof acc.email !== 'string' || !acc.email.trim()) continue;
+    batch.push({
+      email: acc.email.trim(),
       accessToken: acc.access_token || acc.accessToken || '',
       refreshToken: acc.refresh_token || acc.refreshToken,
       expiresAt: normalizeExpiryToIso(acc.expiresAt ?? acc.expires_at ?? acc.expiry_timestamp)
@@ -287,15 +275,13 @@ export async function importFromJsonFile(): Promise<{ imported: number; skipped:
           : undefined),
       importMeta: {
         source: 'manual',
-        importedAt: new Date().toISOString(),
+        importedAt: nowIso,
       },
-    };
-    
-    accountStore.add(stored);
-    imported++;
+    });
   }
 
-  return { imported, skipped };
+  const res = accountStore.upsertBatch(batch, { overwriteTokens: true });
+  return { imported: res.added + res.updated, skipped: res.skipped };
 }
 
 export function getAvailableImportSources(): Array<{ id: string; name: string; description: string; available: boolean }> {

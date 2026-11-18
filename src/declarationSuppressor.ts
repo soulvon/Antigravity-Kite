@@ -37,8 +37,17 @@ function getHeartbeatMs(): number {
 }
 
 let timer: NodeJS.Timeout | null = null;
+let startInitialTimer: NodeJS.Timeout | null = null;
+let pokeTimers: NodeJS.Timeout[] = [];
 let running = false;
 let burstUntil = 0;
+
+function clearPokeTimers(): void {
+  for (const id of pokeTimers) {
+    clearTimeout(id);
+  }
+  pokeTimers = [];
+}
 
 /** 自适应心跳间隔：启动/切号唤醒窗口内用配置基础间隔快速捕获，稳态后退避至 >=3.5s 降耗 */
 export function getNextIntervalMs(
@@ -86,7 +95,8 @@ function httpGetJson<T>(url: string, timeoutMs = 1500): Promise<T | null> {
       res.on('end', () => {
         try {
           resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as T);
-        } catch {
+        } catch (e) {
+          logWarn('declGuard.httpGetJson.parse', { url, error: e instanceof Error ? e.message : String(e) });
           resolve(null);
         }
       });
@@ -216,13 +226,13 @@ const GUARD_SCRIPT = `(() => {
         bubbles: true, cancelable: true, composed: true, view: window,
         clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2, button: 0
       };
-      try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) {}
+      try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) { /* ignore */ }
       el.dispatchEvent(new MouseEvent('mousedown', opts));
-      try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (e) {}
+      try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (e) { /* ignore */ }
       el.dispatchEvent(new MouseEvent('mouseup', opts));
       el.dispatchEvent(new MouseEvent('click', opts));
       if (typeof el.click === 'function') el.click();
-    } catch (e) {}
+    } catch (e) { /* ignore */ }
   };
 
   const walkAll = (root, visit, depth) => {
@@ -242,7 +252,7 @@ const GUARD_SCRIPT = `(() => {
     const tag = el.tagName;
     const role = el.getAttribute ? (el.getAttribute('role') || '') : '';
     if (tag === 'BUTTON' || tag === 'A' || role === 'button') return true;
-    try { if (el.onclick) return true; } catch (e) {}
+    try { if (el.onclick) return true; } catch (e) { /* ignore */ }
     try { return window.getComputedStyle(el).cursor === 'pointer'; } catch (e) { return false; }
   };
 
@@ -332,11 +342,11 @@ const GUARD_SCRIPT = `(() => {
       }
       target.style.visibility = 'hidden';
       hiddenEl = target;
-    } catch (e) {}
+    } catch (e) { /* ignore */ }
   };
   const restoreHidden = () => {
     if (!hiddenEl) return;
-    try { hiddenEl.style.visibility = ''; } catch (e) {}
+    try { hiddenEl.style.visibility = ''; } catch (e) { /* ignore */ }
     hiddenEl = null;
   };
 
@@ -344,7 +354,7 @@ const GUARD_SCRIPT = `(() => {
     try {
       stat.scans += 1;
       let quick = '';
-      try { quick = (document.body ? document.body.textContent : '') || ''; } catch (e) {}
+      try { quick = (document.body ? document.body.textContent : '') || ''; } catch (e) { /* ignore */ }
 
       const quickHit =
         quick.indexOf('One last thing before getting started') >= 0 ||
@@ -393,10 +403,25 @@ const GUARD_SCRIPT = `(() => {
         }
       }, 0);
 
-      const btn = findClickable(card, CONTINUE_RE)
-        || findClickable(card, /继续|Continue|下一步|Next/i)
-        // 兜底：引导卡片在场时，页面上唯一的"继续"就是它（实测按钮在 agy 的 webview 里）
-        || findClickable(document, CONTINUE_RE)
+      const findInCardOrSibling = (cardEl, re) => {
+        const inCard = findClickable(cardEl, re);
+        if (inCard) return inCard;
+        const parent = cardEl && cardEl.parentElement;
+        if (!parent || parent === document.body || parent === document.documentElement) return null;
+        for (const sib of parent.children) {
+          if (sib === cardEl) continue;
+          if (isClickable(sib)) {
+            const t = textOf(sib);
+            if (t && t.length <= 16 && re.test(t)) return sib;
+          }
+          const hit = findClickable(sib, re);
+          if (hit) return hit;
+        }
+        return null;
+      };
+
+      const btn = findInCardOrSibling(card, CONTINUE_RE)
+        || findInCardOrSibling(card, /继续|Continue|下一步|Next/i)
         || pickPrimaryButton(card);
       if (btn) {
         hideOverlay(btn);
@@ -408,15 +433,15 @@ const GUARD_SCRIPT = `(() => {
           if (still) restoreHidden();
         }, 1200);
       }
-    } catch (e) {}
+    } catch (e) { /* ignore */ }
   };
 
   // 版本号：脚本升级后必须能顶掉旧闭包，否则页面里永远跑的是旧逻辑（踩过）
-  const GUARD_VERSION = 3;
+  const GUARD_VERSION = 4;
   const install = () => {
     if (window.__kiteDeclGuardV === GUARD_VERSION) { tryAccept(); return; }
-    try { if (window.__kiteDeclGuardTimer) clearInterval(window.__kiteDeclGuardTimer); } catch (e) {}
-    try { if (window.__kiteDeclGuardObserver) window.__kiteDeclGuardObserver.disconnect(); } catch (e) {}
+    try { if (window.__kiteDeclGuardTimer) clearInterval(window.__kiteDeclGuardTimer); } catch (e) { /* ignore */ }
+    try { if (window.__kiteDeclGuardObserver) window.__kiteDeclGuardObserver.disconnect(); } catch (e) { /* ignore */ }
     window.__kiteDeclGuardV = GUARD_VERSION;
     window.__kiteDeclGuardInstalled = true;
     try {
@@ -427,7 +452,7 @@ const GUARD_SCRIPT = `(() => {
       });
       mo.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
       window.__kiteDeclGuardObserver = mo;
-    } catch (e) {}
+    } catch (e) { /* ignore */ }
     window.__kiteDeclGuardTimer = setInterval(tryAccept, 800);
     tryAccept();
   };
@@ -442,7 +467,7 @@ const GUARD_SCRIPT = `(() => {
 })()`;
 
 /** 存活探针：页面重建或脚本版本落后时都会返回 missing，触发重装（版本号与 GUARD_SCRIPT 内 GUARD_VERSION 保持一致） */
-const ALIVE_PROBE = `(() => (window.__kiteDeclGuardV === 3 ? 'ok' : 'missing'))()`;
+const ALIVE_PROBE = `(() => (window.__kiteDeclGuardV === 4 ? 'ok' : 'missing'))()`;
 
 /**
  * 常驻 CDP 会话：一条 WebSocket 反复 evaluate，断线由心跳重建。
@@ -473,7 +498,11 @@ class CdpSession {
   connect(): Promise<boolean> {
     return new Promise((resolve) => {
       let ws: WebSocket;
-      try { ws = new WebSocket(this.url); } catch { resolve(false); return; }
+      try { ws = new WebSocket(this.url); } catch (e) {
+        logWarn('declGuard.wsInitFail', { url: this.url, error: e instanceof Error ? e.message : String(e) });
+        resolve(false);
+        return;
+      }
       this.ws = ws;
       let settled = false;
       const watchdog = setTimeout(() => {
@@ -523,9 +552,10 @@ class CdpSession {
       this.pending.set(id, (value) => { clearTimeout(timer); resolve(value); });
       try {
         ws.send(JSON.stringify({ id, method, params }));
-      } catch {
+      } catch (e) {
         clearTimeout(timer);
         this.pending.delete(id);
+        logWarn('declGuard.wsSendFail', { url: this.url, method, error: e instanceof Error ? e.message : String(e) });
         resolve(undefined);
       }
     });
@@ -629,7 +659,9 @@ async function heartbeat(): Promise<void> {
               seenLogged = true;
               logInfo('declGuard.seen', { port, hit: st.lastHit, clicks: st.clicks || 0 });
             }
-          } catch { /* 统计解析失败不影响守护 */ }
+          } catch (e) {
+            logWarn('declGuard.statParseFail', e);
+          }
         }
       }
     }
@@ -686,11 +718,17 @@ export function startDeclarationSuppressor(): void {
   if (timer) return;
   burstUntil = Date.now() + BURST_WINDOW_MS;
   loop();
-  setTimeout(() => { void tick(); }, 1000);
+  if (startInitialTimer) clearTimeout(startInitialTimer);
+  startInitialTimer = setTimeout(() => { startInitialTimer = null; void tick(); }, 1000);
   logInfo('declGuard.start', { heartbeatMs: getHeartbeatMs() });
 }
 
 export function stopDeclarationSuppressor(): void {
+  clearPokeTimers();
+  if (startInitialTimer) {
+    clearTimeout(startInitialTimer);
+    startInitialTimer = null;
+  }
   if (timer) {
     clearTimeout(timer);
     timer = null;
@@ -704,9 +742,10 @@ export function stopDeclarationSuppressor(): void {
  * 切号后立即补扫：agy 重建会换端口/新表面，开启 20s 高频窗口 + 0/1/2.5/5s 补扫。
  */
 export function pokeGuard(): void {
+  clearPokeTimers();
   burstUntil = Date.now() + BURST_WINDOW_MS;
   if (timer) loop();
   for (const d of [0, 1000, 2500, 5000]) {
-    setTimeout(() => { void tick(); }, d);
+    pokeTimers.push(setTimeout(() => { void tick(); }, d));
   }
 }

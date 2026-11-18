@@ -59,13 +59,19 @@ async function patchShortcuts(port: number): Promise<{ patched: number; details:
     "        $patched++; $details += $lnk.FullName",
     "      }",
     "    }",
-    "  } catch {}",
+    "  } catch { <# 忽略损坏或权限受限的快捷方式 #> }",
     "}",
     "Write-Output ($patched.ToString() + '|' + ($details -join ';'))",
   ].join('\n');
 
-  const tmp = path.join(os.tmpdir(), 'kite-patch-lnk.ps1');
-  fs.writeFileSync(tmp, ps, 'utf8');
+  const tmp = path.join(os.tmpdir(), `kite-patch-lnk-${process.pid}.ps1`);
+  try {
+    fs.writeFileSync(tmp, ps, 'utf8');
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    logWarn('cdpGate.patchShortcuts.writeFail', { tmp, error });
+    return { patched: 0, details: [error] };
+  }
   return new Promise((resolve) => {
     cp.exec(
       `powershell -NoProfile -ExecutionPolicy Bypass -File "${tmp}"`,
@@ -107,7 +113,7 @@ export function buildRelaunchScript(launch: { exePath: string; args: string[]; p
     `const exe = ${JSON.stringify(launch.exePath)};`,
     `const args = ${JSON.stringify(cleanArgs)};`,
     `const logFile = ${JSON.stringify(logFile)};`,
-    'const logErr = (tag, err) => { try { fs.appendFileSync(logFile, new Date().toISOString() + " " + tag + ": " + String(err && err.stack || err) + "\\n"); } catch {} };',
+    'const logErr = (tag, err) => { try { fs.appendFileSync(logFile, new Date().toISOString() + " " + tag + ": " + String(err && err.stack || err) + "\\n"); } catch (e) { console.error(tag, err, e); } };',
     'const cleanEnv = Object.assign({}, process.env);',
     'for (const k of ["ELECTRON_RUN_AS_NODE","ELECTRON_NO_ATTACH_CONSOLE","VSCODE_IPC_HOOK","VSCODE_IPC_HOOK_CLI","VSCODE_PID","VSCODE_CWD","VSCODE_HANDLES_UNCAUGHT_ERRORS"]) { delete cleanEnv[k]; }',
     'const isAlive = (p) => {',

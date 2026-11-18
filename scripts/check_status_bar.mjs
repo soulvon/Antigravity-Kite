@@ -266,7 +266,10 @@ assert('QuickPick 排序：网络异常号不与可用号混同（额度再高�
 
 // ── 12. 刷新收敛 + 缓存展示（事故：30s 私有定时器叠加；刷新失败时被误读成数据出问题）──
 const statusBarSrc = fs.readFileSync(path.join(root, 'src', 'statusBar.ts'), 'utf8');
-const extSrc = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf8');
+const quotaOrchSrc = fs.readFileSync(path.join(root, 'src', 'quotaOrchestrator.ts'), 'utf8');
+const sidebarProviderSrc = fs.readFileSync(path.join(root, 'src', 'sidebarProvider.ts'), 'utf8');
+const sidebarJsSrc = fs.readFileSync(path.join(root, 'resources', 'webview', 'sidebar.js'), 'utf8');
+const sidebarHtmlSrc = fs.readFileSync(path.join(root, 'resources', 'webview', 'sidebar.html'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
 assert('状态栏不再自建 30s 网络刷新定时器（全池刷新唯一权威）',
@@ -287,17 +290,17 @@ assert('设置里不再暴露已失效的 30s 刷新间隔',
   !('antigravityKite.statusBar.refreshSeconds' in pkg.contributes.configuration.properties),
   '配置仍暴露 refreshSeconds');
 assert('设置面板不再读写已删除的刷新间隔字段',
-  !/statusBarRefresh|setStatusRefresh/.test(extSrc), '设置面板仍引用旧字段');
-assert('宿主维护按号失败明细并注入刷新在跑闸',
-  /usageErrors/.test(extSrc) && /refreshAllInFlight/.test(extSrc), '缺少失败明细或并发闸');
+  !/statusBarRefresh|setStatusRefresh/.test(sidebarProviderSrc + sidebarJsSrc + sidebarHtmlSrc), '设置面板仍引用旧字段');
+assert('宿主配额编排器维护按号失败明细并注入刷新在跑闸',
+  /_usageErrors/.test(quotaOrchSrc) && /_refreshAllInFlight/.test(quotaOrchSrc), '缺少失败明细或并发闸');
 assert('侧栏卡片在刷新失败时渲染缓存标记',
-  /quota-cache-note/.test(extSrc) && /tl\('quotaCached'/.test(extSrc), '缓存标记未接入卡片');
+  /quota-cache-note/.test(sidebarJsSrc) && /tl\('quotaCached'/.test(sidebarJsSrc), '缓存标记未接入卡片');
 assert('命令面板全池刷新也走同一把并发闸',
-  /async function refreshAllUsageInteractive[\s\S]{0,500}refreshAllInFlight/.test(extSrc),
+  /async refreshAllInteractive[\s\S]{0,500}_refreshAllInFlight/.test(quotaOrchSrc),
   '手动全池刷新仍可与后台刷新叠罗汉');
 assert('侧栏「刷新全部」走并发闸且跳过时仍收口旋转态',
-  /private async _refreshAllUsage\(\)[\s\S]{0,900}refreshAllInFlight/.test(extSrc)
-  && /private async _refreshAllUsage\(\)[\s\S]{0,900}refreshDone/.test(extSrc),
+  /private async _refreshAllUsage\(\)[\s\S]{0,900}isRefreshInFlight/.test(sidebarProviderSrc)
+  && /private async _refreshAllUsage\(\)[\s\S]{0,900}refreshDone/.test(sidebarProviderSrc),
   '跳过时未收口 spinner 或缺少闸');
 const i18nSrc = fs.readFileSync(path.join(root, 'src', 'i18n.ts'), 'utf8');
 assert('缓存失败说明是「当前数据更新于 X」而非裸时间',

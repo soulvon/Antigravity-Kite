@@ -54,6 +54,9 @@ function gate(name, ok, detail = '') {
 const readSrc = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
 
 const extSrc = readSrc('src/extension.ts');
+const sidebarSrc = readSrc('src/sidebarProvider.ts');
+const sidebarHtmlSrc = readSrc('resources/webview/sidebar.html');
+const sidebarJsSrc = readSrc('resources/webview/sidebar.js');
 const cssSrc = readSrc('resources/webview/main.css');
 const i18nSrc = readSrc('src/i18n.ts');
 const declSrc = readSrc('src/declarationSuppressor.ts');
@@ -62,20 +65,26 @@ const cdpSrc = readSrc('src/cdpGate.ts');
 const oauthSrc = readSrc('src/oauthService.ts');
 const lrSrc = readSrc('src/localReader.ts');
 const updSrc = readSrc('src/updater.ts');
+const httpSrc = readSrc('src/httpClient.ts');
 
 console.log('[check_hardening] 检查工程健壮性与尾项修复 …');
 
-// ── 1. extension.ts / main.css 尾项清理 ───────────────────────────────
+// ── 1. extension.ts / sidebarProvider.ts / webview / main.css 尾项清理 ───────────────────────────────
 gate('E1 无死代码 openTagColorPicker 及孤立 .tag-color-picker CSS',
-  !/function openTagColorPicker/.test(extSrc) && !cssSrc.includes('.tag-color-picker'),
+  !/function openTagColorPicker/.test(extSrc)
+    && !/function openTagColorPicker/.test(sidebarSrc)
+    && !/function openTagColorPicker/.test(sidebarJsSrc)
+    && !cssSrc.includes('.tag-color-picker'),
   '仍残留死函数 openTagColorPicker 或 .tag-color-picker 样式');
 gate('E2 设置面板 statusBarStyle 默认回退为 full（非 smart）',
-  /set\('setStatusStyle',\s*s\.statusBarStyle\s*\|\|\s*'full'\)/.test(extSrc),
+  /set\('setStatusStyle',\s*s\.statusBarStyle\s*\|\|\s*'full'\)/.test(sidebarJsSrc),
   "仍存在 s.statusBarStyle || 'smart'");
 gate('E3 Webview cssUri 不拼接 ?v=${Date.now()}',
-  !/\$\{cssUri\}\?v=\$\{Date\.now\(\)\}/.test(extSrc),
+  !/\$\{cssUri\}\?v=\$\{Date\.now\(\)\}/.test(extSrc)
+    && !/\$\{cssUri\}\?v=\$\{Date\.now\(\)\}/.test(sidebarSrc)
+    && !/\{\{CSS_URI\}\}\?v=/.test(sidebarHtmlSrc),
   '仍存在 ?v=${Date.now()}');
-gate('E4 Webview 内联 <script> 运行时渲染语法可编译（new Function）', (() => {
+gate('E4 Webview 内联与外联脚本运行时渲染语法可编译（new Function）', (() => {
   try {
     const extMod = require2(path.join(root, 'out', 'extension.js'));
     if (typeof extMod.SidebarProvider !== 'function') return false;
@@ -84,9 +93,10 @@ gate('E4 Webview 内联 <script> 运行时渲染语法可编译（new Function�
       cspSource: 'https://test.invalid',
       asWebviewUri: () => 'https://test.invalid/main.css',
     });
-    const m = html.match(/<script>([\s\S]*?)<\/script>/);
+    const m = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/);
     if (!m) return false;
     new Function(m[1]);
+    new Function(sidebarJsSrc);
     return true;
   } catch (e) {
     console.error('        E4 detail:', e && e.message);
@@ -342,15 +352,18 @@ gate('O3 oauthService 遇到错误 state 的杂波请求不终止等待中的 OA
   !/if\s*\(gotState !== state\)[\s\S]{0,180}reject\(/.test(oauthSrc),
   '错误 state 仍调用 cleanup()/reject() 导致正常登录被预请求提前中止');
 
-// ── 8. localReader.ts & updater.ts HTTP 安全 ──────────────────────────
-gate('H1 localReader.ts 使用 Buffer.concat 收包，无 += chunk 字符串拼接',
-  !/(?:body|data)\s*\+=\s*chunk/.test(lrSrc) && lrSrc.includes('Buffer.concat')
-  && lrSrc.includes("t('errSqliteUnavailable')"),
-  'localReader 仍存在 += chunk 或未复用 i18n errSqliteUnavailable');
-gate('H2 updater.ts 使用 Buffer.concat 收包、重定向前清 timer、非 200 resume 排水',
-  !/(?:body|data)\s*\+=\s*chunk/.test(updSrc) && updSrc.includes('Buffer.concat')
-  && updSrc.includes('setTimeout(0'),
-  'updater 仍存在 += chunk 或重定向未清 timer');
+// ── 8. localReader.ts & updater.ts & httpClient.ts HTTP 安全 ──────────────────────────
+gate('H1 localReader.ts 无 += chunk 并下沉至 httpClient.ts 使用 Buffer.concat',
+  !/(?:body|data)\s*\+=\s*chunk/.test(lrSrc)
+    && httpSrc.includes('Buffer.concat')
+    && lrSrc.includes("t('errSqliteUnavailable')"),
+  'localReader 仍存在 += chunk、httpClient 缺 Buffer.concat 或未复用 i18n errSqliteUnavailable');
+gate('H2 updater.ts 复用 httpClient.ts，使用 Buffer.concat 收包、重定向前清 timer、非 200 resume 排水',
+  !/(?:body|data)\s*\+=\s*chunk/.test(updSrc)
+    && updSrc.includes("from './httpClient'")
+    && httpSrc.includes('Buffer.concat')
+    && /REDIRECT_STATUSES[\s\S]{0,180}clearTimer\(\)[\s\S]{0,80}res\.resume\(\)/.test(httpSrc),
+  'updater 未委托 httpClient 或 httpClient 缺重定向清理');
 
 // ── 9. 轻量收口清理（K1-K3） ──────────────────────────────────────────
 const ssSrc = readSrc('src/seamlessSwitcher.ts');

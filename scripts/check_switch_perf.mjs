@@ -158,10 +158,10 @@ gate('P5 canReuseVerifiedSwitchToken 仅复用 Kite 已验 scope 且未篡改/�
   p5Ok,
   canReuseFn ? '判定分支不符合预期' : '未导出 canReuseVerifiedSwitchToken');
 
-// P6: extension.ts 并发切号流水线
-const extSrc = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf8');
-gate('P6 extension.ts 将 agy 目标探查/helper 预热与 prepareSwitchToken 并发执行',
-  /Promise\.all\(\[\s*prepareSwitchToken\(account\),\s*ideRuntime\.prepareAgyReload/.test(extSrc),
+// P6: switchOrchestrator.ts 并发切号流水线
+const switchSrc = fs.readFileSync(path.join(root, 'src', 'switchOrchestrator.ts'), 'utf8');
+gate('P6 switchOrchestrator.ts 将 agy 目标探查/helper 预热与 prepareSwitchToken 并发执行',
+  /Promise\.all\(\[\s*prepareSwitchToken\(account\),\s*ideRuntime\.prepareAgyReload/.test(switchSrc),
   '尚未并发重排 Phase A 流水线');
 
 try { fs.rmSync(stubDir, { recursive: true, force: true }); } catch {}

@@ -52,16 +52,20 @@
   function maskEmail(em) {
     if (!privacyMode || !em) return em;
     const at = em.indexOf('@');
-    if (at <= 0) return '***';
-    return em[0] + '***' + em.slice(at);
+    if (at <= 0) return em.slice(0, 2) + '***';
+    const name = em.slice(0, at);
+    const maskedName = name.length <= 2 ? name[0] + '***' : name.slice(0, 2) + '***' + name.slice(-1);
+    return maskedName + '@***';
   }
   function maskEmailShort(em) { return privacyMode ? maskEmail(em) : shortEmail(em); }
 
+  let toastTimer = null;
   function showToast(msg, dur) {
     const el = document.getElementById('lpToast');
     if (!el) return;
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
     el.textContent = msg; el.hidden = false; el.classList.add('lp-toast-show');
-    setTimeout(() => { el.classList.remove('lp-toast-show'); el.hidden = true; }, dur || 2000);
+    toastTimer = setTimeout(() => { toastTimer = null; el.classList.remove('lp-toast-show'); el.hidden = true; }, dur || 2000);
   }
 
   // Tab 切换
@@ -82,12 +86,20 @@
   window.addEventListener('message', ev => {
     const msg = ev.data;
     if (msg.type === 'switchTab' && msg.tab) switchTab(msg.tab);
+    if (msg.type === 'privacyMode') {
+      applyPrivacyMode(!!msg.enabled);
+      renderOverview();
+      renderQuota();
+    }
     if (msg.type === 'allData') {
       allQuotaEntries = msg.quotaEntries || [];
       allQuotaEmails = msg.quotaEmails || [];
       allAccountOverview = msg.accountOverview || [];
       allSummary = msg.summary || {};
       currentEmail = msg.currentEmail || '';
+      if (typeof msg.privacyMode === 'boolean') {
+        applyPrivacyMode(msg.privacyMode);
+      }
       rebuildTagMeta();
       if (activeTab === 'overview') renderOverview();
       if (activeTab === 'quota') renderQuota();
@@ -97,13 +109,19 @@
 
   // 隐私模式
   const privacyBtn = document.getElementById('lpPrivacy');
+  function applyPrivacyMode(enabled) {
+    privacyMode = !!enabled;
+    if (!privacyBtn) return;
+    privacyBtn.classList.toggle('lp-btn-active', privacyMode);
+    const svg = privacyBtn.querySelector('svg');
+    if (svg) svg.style.opacity = privacyMode ? '1' : '0.6';
+  }
   if (privacyBtn) {
-    privacyBtn.querySelector('svg').style.opacity = '0.6';
+    applyPrivacyMode(privacyMode);
     privacyBtn.addEventListener('click', () => {
-      privacyMode = !privacyMode;
-      privacyBtn.classList.toggle('lp-btn-active', privacyMode);
-      privacyBtn.querySelector('svg').style.opacity = privacyMode ? '1' : '0.6';
+      applyPrivacyMode(!privacyMode);
       renderOverview(); renderQuota();
+      vscode.postMessage({ type: 'privacyChanged', enabled: privacyMode });
       showToast(privacyMode ? l('privacyOn') : l('privacyOff'));
     });
   }
@@ -221,12 +239,11 @@
     const ms = { '1h': 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3 }[timeRange];
     return ms ? (now - ts) <= ms : true;
   }
-  function passesFilters(entry) {
+  function passesFilters(entry, recentEmailSet) {
     if (!isInTimeRange(entry.ts)) return false;
     if (filterEmail) {
       if (filterEmail === '_recent_') {
-        const recentEmails = allQuotaEntries.slice(-20).map(e => e.email);
-        if (!recentEmails.includes(entry.email)) return false;
+        if (!recentEmailSet || !recentEmailSet.has(entry.email)) return false;
       } else if (entry.email !== filterEmail) return false;
     }
     if (searchQuery && !entry.email.toLowerCase().includes(searchQuery)) return false;
@@ -266,7 +283,7 @@
       const tagsHtml = (a.tags || []).map(t => '<span class="lp-tag" style="background:' + getTagColor(t) + '20;color:' + getTagColor(t) + ';border-color:' + getTagColor(t) + '60">' + escHtml(t) + '</span>').join('');
       return '<tr class="' + (a.isCurrent ? 'lp-row-current' : '') + '">' +
         '<td>' + (a.isCurrent ? '<span class="lp-cur-dot">●</span>' : '') + '</td>' +
-        '<td class="lp-email-cell" title="' + escHtml(a.email) + '">' + escHtml(maskEmail(a.email)) + '</td>' +
+        '<td class="lp-email-cell" title="' + escHtml(maskEmail(a.email)) + '">' + escHtml(maskEmail(a.email)) + '</td>' +
         '<td>' + tagsHtml + '</td>' +
         '<td><div class="lp-pct-cell"><span>' + pctText + '</span>' + (remaining !== null ? '<div class="lp-mini-bar"><div class="lp-mini-fill ' + fillClass + '" style="width:' + remaining + '%"></div></div>' : '') + '</div></td>' +
         '<td class="' + statusClass + '">' + statusText + '</td>' +
@@ -277,7 +294,10 @@
   // 渲染配额历史
   function renderQuota() {
     buildTagChips();
-    const filtered = allQuotaEntries.filter(passesFilters);
+    const recentEmailSet = filterEmail === '_recent_'
+      ? new Set(allQuotaEntries.slice(-20).map(e => e.email))
+      : null;
+    const filtered = allQuotaEntries.filter(e => passesFilters(e, recentEmailSet));
     const countEl = document.getElementById('lpQuotaCount');
     if (countEl) countEl.textContent = l('entriesUnit', filtered.length);
 
@@ -367,7 +387,7 @@
       const tierBadge = entry.tierId ? '<span class="lp-tag">' + escHtml(entry.tierId) + '</span>' : '';
       return '<tr>' +
         '<td>' + time + '</td>' +
-        '<td class="lp-email-cell" title="' + escHtml(entry.email) + '">' + escHtml(maskEmailShort(entry.email)) + '</td>' +
+        '<td class="lp-email-cell" title="' + escHtml(maskEmail(entry.email)) + '">' + escHtml(maskEmailShort(entry.email)) + '</td>' +
         '<td>' + entry.remaining + '%</td>' +
         '<td>' + deltaStr + '</td>' +
         '<td>' + tierBadge + '</td>' +
@@ -398,6 +418,6 @@
     }).observe(chartWrap);
   }
 
-  // 初始请求数据
-  vscode.postMessage({ type: 'refresh' });
+  // 就绪信号：通知宿主立即推送全量数据（含全局隐私态）
+  vscode.postMessage({ type: 'webviewReady' });
 })();

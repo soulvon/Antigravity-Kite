@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -257,7 +257,8 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_agy_reload.mjs && node scripts/check_switch_health.mjs && node scripts/check_switch_perf.mjs && node scripts/check_webview_hardening.mjs && node scripts/check_platform_gates.mjs && node scripts/check_decl_suppressor.mjs && node scripts/check_status_bar.mjs && node scripts/check_mw_feedback.mjs && node scripts/check_mw_launch.mjs && node scripts/check_tags.mjs && node scripts/check_hardening.mjs && node scripts/check_remote_ssh.mjs",
+    "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_agy_reload.mjs && node scripts/check_switch_health.mjs && node scripts/check_switch_perf.mjs && node scripts/check_webview_hardening.mjs && node scripts/check_platform_gates.mjs && node scripts/check_decl_suppressor.mjs && node scripts/check_status_bar.mjs && node scripts/check_tags.mjs && node scripts/check_hardening.mjs && node scripts/check_remote_ssh.mjs && node scripts/check_architecture_and_security.mjs",
+    "verify": "npm run compile && node scripts/check_cockpit_decrypt.mjs && node scripts/check_manager_import.mjs && node scripts/check_sb_demo.mjs && node scripts/check-no-leak.mjs --fast",
     "watch": "tsc -watch -p ./",
     "package": "node ./scripts/update-version.js && npm run compile && vsce package --skip-license",
     "check:release": "node scripts/check_release_readiness.mjs"

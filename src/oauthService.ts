@@ -1,22 +1,22 @@
+/**
+ * Google OAuth 登录流程服务
+ */
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import * as http from 'http';
-import * as https from 'https';
 import { StoredAccount } from './types';
 import { t } from './i18n';
-
-// Antigravity OAuth 配置
-const CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
-const CLIENT_SECRET = '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';
-const SCOPES = [
-  'openid',
-  'https://www.googleapis.com/auth/cloud-platform',
-  'https://www.googleapis.com/auth/userinfo.email',
-  'https://www.googleapis.com/auth/userinfo.profile',
-];
-const TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const AUTH_URL = 'https://accounts.google.com/o/oauth2/auth';
-const USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
+import { logWarn } from './logger';
+import { httpRequest } from './httpClient';
+import {
+  OAUTH_CLIENT_ID,
+  OAUTH_CLIENT_SECRET,
+  OAUTH_SCOPES,
+  OAUTH_TOKEN_URL,
+  OAUTH_AUTH_URL,
+  computeTokenFingerprint,
+  fetchGoogleUserInfo,
+} from './googleOAuth';
 
 const CALLBACK_PORT_START = 11451;
 const CALLBACK_PORT_RANGE = 100;
@@ -24,51 +24,6 @@ const OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
 
 function randomState(): string {
   return crypto.randomBytes(24).toString('hex');
-}
-
-function httpsPost(url: string, data: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
-  return new Promise((resolve, reject) => {
-    const urlObj = new URL(url);
-    const options: https.RequestOptions = {
-      hostname: urlObj.hostname,
-      port: 443,
-      path: urlObj.pathname + urlObj.search,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(data),
-        ...headers
-      }
-    };
-    const req = https.request(options, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', chunk => chunks.push(Buffer.from(chunk)));
-      res.on('end', () => resolve({ status: res.statusCode || 0, body: Buffer.concat(chunks).toString('utf8') }));
-    });
-    req.on('error', reject);
-    req.write(data);
-    req.end();
-  });
-}
-
-function httpsGet(url: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
-  return new Promise((resolve, reject) => {
-    const urlObj = new URL(url);
-    const options: https.RequestOptions = {
-      hostname: urlObj.hostname,
-      port: 443,
-      path: urlObj.pathname + urlObj.search,
-      method: 'GET',
-      headers
-    };
-    const req = https.request(options, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', chunk => chunks.push(Buffer.from(chunk)));
-      res.on('end', () => resolve({ status: res.statusCode || 0, body: Buffer.concat(chunks).toString('utf8') }));
-    });
-    req.on('error', reject);
-    req.end();
-  });
 }
 
 function successHtml(): string {
@@ -95,7 +50,7 @@ export function failHtml(message: string): string {
 async function findAvailablePort(): Promise<number> {
   for (let i = 0; i < CALLBACK_PORT_RANGE; i++) {
     const port = CALLBACK_PORT_START + i;
-    const available = await new Promise<boolean>(resolve => {
+    const available = await new Promise<boolean>((resolve) => {
       const server = http.createServer();
       server.once('error', () => resolve(false));
       server.once('listening', () => {
@@ -122,7 +77,11 @@ export async function startOAuth(): Promise<StoredAccount> {
     const cleanup = () => {
       if (timer) clearTimeout(timer);
       timer = null;
-      try { server?.close(); } catch {}
+      try {
+        server?.close();
+      } catch (err) {
+        logWarn('oauth.server.close', err instanceof Error ? err.message : String(err));
+      }
     };
 
     const finishOk = (acc: StoredAccount) => {
@@ -176,44 +135,46 @@ export async function startOAuth(): Promise<StoredAccount> {
         // 交换 token
         const tokenData = new URLSearchParams({
           code,
-          client_id: CLIENT_ID,
-          client_secret: CLIENT_SECRET,
+          client_id: OAUTH_CLIENT_ID,
+          client_secret: OAUTH_CLIENT_SECRET,
           redirect_uri: redirectUri,
-          grant_type: 'authorization_code'
+          grant_type: 'authorization_code',
         }).toString();
 
-        const tokenRes = await httpsPost(TOKEN_URL, tokenData);
+        const tokenRes = await httpRequest(OAUTH_TOKEN_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: tokenData,
+          timeoutMs: 15_000,
+        });
         if (tokenRes.status !== 200) {
-          throw new Error(`Token 交换失败: HTTP ${tokenRes.status}`);
+          throw new Error(`Token exchange failed: HTTP ${tokenRes.status}`);
         }
 
-        const tokenJson = JSON.parse(tokenRes.body);
-        const accessToken = tokenJson.access_token;
-        const refreshToken = tokenJson.refresh_token;
-        const expiresIn = tokenJson.expires_in || 3600;
+        const tokenJson = JSON.parse(tokenRes.body) as Record<string, unknown>;
+        const accessToken = typeof tokenJson.access_token === 'string' ? tokenJson.access_token : '';
+        const refreshToken = typeof tokenJson.refresh_token === 'string' ? tokenJson.refresh_token : undefined;
+        const expiresIn = typeof tokenJson.expires_in === 'number' ? tokenJson.expires_in : 3600;
 
         if (!accessToken) {
           throw new Error(t('oauthNoAccessToken'));
         }
 
         // 获取用户信息
-        const userRes = await httpsGet(USERINFO_URL, {
-          Authorization: `Bearer ${accessToken}`
-        });
-
-        if (userRes.status !== 200) {
-          throw new Error(t('oauthUserInfoFailed', userRes.status));
+        const userInfo = await fetchGoogleUserInfo(accessToken);
+        if (!userInfo) {
+          throw new Error(t('oauthUserInfoFailed', 'request'));
         }
 
-        const userJson = JSON.parse(userRes.body);
-        const email = userJson.email || '';
-        const name = userJson.name || email.split('@')[0];
+        const email = userInfo.email || '';
+        const name = userInfo.name || email.split('@')[0];
 
         if (!email) {
           throw new Error(t('oauthNoEmail'));
         }
 
-        const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+        const now = Date.now();
+        const expiresAt = new Date(now + expiresIn * 1000).toISOString();
 
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(successHtml());
@@ -225,12 +186,13 @@ export async function startOAuth(): Promise<StoredAccount> {
           expiresAt,
           name,
           idToken: typeof tokenJson.id_token === 'string' ? tokenJson.id_token : undefined,
+          verifiedAtHash: computeTokenFingerprint(accessToken),
+          verifiedAt: now,
           importMeta: {
             source: 'oauth',
-            importedAt: new Date().toISOString()
-          }
+            importedAt: new Date(now).toISOString(),
+          },
         });
-
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(failHtml(err instanceof Error ? err.message : String(err)));
@@ -239,14 +201,14 @@ export async function startOAuth(): Promise<StoredAccount> {
     });
 
     server.listen(port, '127.0.0.1', async () => {
-      const authUrl = `${AUTH_URL}?` + new URLSearchParams({
-        client_id: CLIENT_ID,
+      const authUrl = `${OAUTH_AUTH_URL}?` + new URLSearchParams({
+        client_id: OAUTH_CLIENT_ID,
         redirect_uri: redirectUri,
         response_type: 'code',
-        scope: SCOPES.join(' '),
+        scope: OAUTH_SCOPES.join(' '),
         state,
         access_type: 'offline',
-        prompt: 'consent'
+        prompt: 'consent',
       }).toString();
 
       timer = setTimeout(() => {

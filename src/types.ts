@@ -26,28 +26,6 @@ export interface StoredAccount {
   verifiedAt?: number;
 }
 
-/** 多开窗口配置 */
-export interface MultiWindowConfig {
-  id: string;
-  name: string;
-  userDataDir: string;
-  bindEmail: string;
-  assignedTag?: string;
-  createdAt: number;
-  lastPid?: number;
-  source?: 'cockpit';
-}
-
-/** 多开窗口视图（带实时运行状态与当前窗口判定） */
-export interface MultiWindowView extends MultiWindowConfig {
-  running: boolean;
-  current: boolean;
-  isRunning: boolean;
-  isCurrent: boolean;
-  isDefault: boolean;
-  currentEmail?: string;
-}
-
 /** 账号健康状态：封禁检测结论（读失败 = unknown，绝不当 ok） */
 export interface AccountHealth {
   /**
@@ -64,7 +42,7 @@ export interface AccountHealth {
 export interface WebviewMessage {
   type: string;
   email?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /** 单个模型的配额信息 */

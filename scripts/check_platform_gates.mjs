@@ -28,15 +28,27 @@ const pp = readSrc('platformPaths.ts');
 check('G1a platformPaths.ts 不依赖 vscode', !pp.includes(`from 'vscode'`) && !pp.includes('require(\'vscode\')'));
 check('G1b platformPaths 覆盖 win32/darwin/linux', pp.includes("'win32'") && pp.includes("'darwin'") && pp.includes("XDG_CONFIG_HOME"));
 
-// G2 共享目录两端一致：助手不得再出现裸 APPDATA 回退（否则日志/交接文件与扩展端分裂）
-const helper = readSrc('switchRestartHelper.ts');
-check('G2a switchRestartHelper 引用 platformPaths.getAppDataDir', helper.includes("from './platformPaths'"));
-check('G2b 助手无裸 APPDATA||homedir 回退', !/process\.env\.APPDATA\s*\|\|\s*os\.homedir\(\)/.test(helper));
+// G2 共享目录与路径真源一致：storage/ideStateDb/declarationSuppressor 引用 platformPaths，geminiFiles 经 storage 复用共享目录
+const storageSrc = readSrc('storage.ts');
+const geminiSrc = readSrc('geminiFiles.ts');
+const declSrc = readSrc('declarationSuppressor.ts');
+const ideStateSrc = readSrc('ideStateDb.ts');
+check('G2a 路径调用方统一经 platformPaths / storage 获取共享目录',
+  storageSrc.includes("from './platformPaths'")
+    && ideStateSrc.includes("from './platformPaths'")
+    && declSrc.includes("from './platformPaths'")
+    && geminiSrc.includes("from './storage'"));
+check('G2b 核心模块无裸 APPDATA||homedir 回退',
+  !/process\.env\.APPDATA\s*\|\|\s*os\.homedir\(\)/.test(storageSrc + geminiSrc));
 
-// G3 关 IDE 进程必须双平台：Windows taskkill + POSIX SIGTERM/SIGKILL
-check('G3a closeIde 含 Windows taskkill 分支', helper.includes('taskkill'));
-check('G3b closeIde 含 POSIX SIGTERM/SIGKILL 分支', helper.includes('SIGTERM') && helper.includes('SIGKILL'));
-check('G3c closeIde 按平台分支', helper.includes("process.platform === 'win32'"));
+// G3 关/重启 IDE 进程必须双平台：Windows taskkill + POSIX SIGTERM/SIGKILL
+const cdpSrc = readSrc('cdpGate.ts');
+const rtSrcForKill = readSrc('ideRuntime.ts');
+check('G3a cdpGate 含 Windows taskkill 分支', cdpSrc.includes('taskkill'));
+check('G3b cdpGate 与 ideRuntime 含 POSIX SIGTERM/SIGKILL 分支',
+  cdpSrc.includes('SIGTERM') && cdpSrc.includes('SIGKILL') && rtSrcForKill.includes('SIGKILL'));
+check('G3c 跨平台按 process.platform === win32 分支',
+  cdpSrc.includes("process.platform === 'win32'") && rtSrcForKill.includes("process.platform === 'win32'"));
 
 // G4 凭据服务显式平台门控：非 Windows 必须结构化失败，不得让 powershell ENOENT 裸暴露
 const cred = readSrc('winCredential.ts');

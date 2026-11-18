@@ -1,14 +1,16 @@
 /**
  * 用量统计追踪器
  *
- * 追踪每个账号和全局的用量数据，持久化到 globalState。
- * - 切号次数
- * - 配额刷新次数
- * - 每账号已用配额百分比（基于模型分组最低值）
- * - 配额变动历史（配额变化时记录快照）
- * - 每日自动重置计数
+ * - 每日汇总计数持久化到 globalState（轻量小对象）
+ * - 配额变动历史（最多 10000 条）持久化到共享目录下的 quota-history.json（走 atomicFile）
+ * - 首次构造时若 globalState 仍存有旧 usageTracker.quotaHistory，自动迁移至独立文件并从 globalState 清除
  */
-import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import type * as vscode from 'vscode';
+import { getSharedStorageDir } from './storage';
+import { atomicWriteJsonSync, readJsonFileSafe, withFileLockSync } from './atomicFile';
+import { logError, logInfo, logWarn } from './logger';
 
 // ─── 类型 ───────────────────────────────────────────────
 
@@ -49,8 +51,40 @@ export interface StatsSummary {
 // ─── 常量 ───────────────────────────────────────────────
 
 const STORAGE_KEY = 'usageTracker.stats';
-const HISTORY_KEY = 'usageTracker.quotaHistory';
+const LEGACY_HISTORY_KEY = 'usageTracker.quotaHistory';
+const HISTORY_FILE = 'quota-history.json';
 const MAX_HISTORY = 10000;
+
+function normalizeHistoryEntry(item: unknown): QuotaHistoryEntry | null {
+  if (!item || typeof item !== 'object') return null;
+  const e = item as Partial<QuotaHistoryEntry>;
+  if (
+    typeof e.ts !== 'number' ||
+    !Number.isFinite(e.ts) ||
+    typeof e.email !== 'string' ||
+    !e.email ||
+    typeof e.remaining !== 'number' ||
+    !Number.isFinite(e.remaining)
+  ) {
+    return null;
+  }
+  return {
+    ts: e.ts,
+    email: e.email,
+    remaining: e.remaining,
+    delta: typeof e.delta === 'number' && Number.isFinite(e.delta) ? e.delta : 0,
+    ...(typeof e.tierId === 'string' && e.tierId ? { tierId: e.tierId } : {}),
+  };
+}
+
+function parseValidHistory(items: unknown[]): QuotaHistoryEntry[] {
+  const out: QuotaHistoryEntry[] = [];
+  for (const item of items) {
+    const normalized = normalizeHistoryEntry(item);
+    if (normalized) out.push(normalized);
+  }
+  return out;
+}
 
 // ─── 实现 ───────────────────────────────────────────────
 
@@ -64,12 +98,91 @@ export class UsageTracker {
   private _historyDirty = false;
   private _historySaveTimer: NodeJS.Timeout | null = null;
   private _historyListeners = new Set<() => void>();
+  private _historyLoaded = false;
+  private _historyLoadHealthy = true;
+  private _disposed = false;
 
   constructor(ctx: vscode.ExtensionContext) {
     this._ctx = ctx;
     this._stats = this._load();
     this._maybeResetDaily();
-    this._quotaHistory = this._ctx.globalState.get<QuotaHistoryEntry[]>(HISTORY_KEY, []);
+    this._loadHistoryOnce();
+  }
+
+  private _getHistoryFilePath(): string {
+    return path.join(getSharedStorageDir(), HISTORY_FILE);
+  }
+
+  private _loadHistoryOnce(): void {
+    if (this._historyLoaded) return;
+    this._historyLoaded = true;
+
+    const historyPath = this._getHistoryFilePath();
+    const diskRes = readJsonFileSafe<unknown>(historyPath);
+    const legacy = this._ctx.globalState.get<unknown>(LEGACY_HISTORY_KEY);
+    const hasLegacyArray = Array.isArray(legacy);
+    const legacyEntries = hasLegacyArray ? parseValidHistory(legacy) : [];
+
+    if (diskRes.status === 'error') {
+      // 读失败 = 未知：绝不盲目置空或覆盖原磁盘历史文件
+      this._historyLoadHealthy = false;
+      this._quotaHistory = [];
+      logError('usageTracker.history.loadFail', { file: historyPath, error: diskRes.error });
+    } else if (diskRes.status === 'ok') {
+      if (!Array.isArray(diskRes.data)) {
+        this._historyLoadHealthy = false;
+        this._quotaHistory = [];
+        logError('usageTracker.history.loadFail', { file: historyPath, error: 'quota-history.json root is not an array' });
+      } else {
+        this._historyLoadHealthy = true;
+        this._quotaHistory = parseValidHistory(diskRes.data).slice(-MAX_HISTORY);
+
+        // 若 globalState 仍有遗留数据，合并去重后清除旧键
+        if (hasLegacyArray) {
+          if (legacyEntries.length > 0) {
+            const seen = new Set(this._quotaHistory.map((e) => `${e.ts}:${e.email}`));
+            const merged = [...this._quotaHistory];
+            let added = 0;
+            for (const entry of legacyEntries) {
+              const key = `${entry.ts}:${entry.email}`;
+              if (!seen.has(key)) {
+                seen.add(key);
+                merged.push(entry);
+                added++;
+              }
+            }
+            if (added > 0) {
+              merged.sort((a, b) => a.ts - b.ts);
+              this._quotaHistory = merged.slice(-MAX_HISTORY);
+              if (this._writeHistorySync()) {
+                void this._ctx.globalState.update(LEGACY_HISTORY_KEY, undefined);
+              }
+            } else {
+              void this._ctx.globalState.update(LEGACY_HISTORY_KEY, undefined);
+            }
+          } else {
+            void this._ctx.globalState.update(LEGACY_HISTORY_KEY, undefined);
+          }
+        }
+      }
+    } else {
+      // 磁盘尚无 quota-history.json：若 globalState 有旧历史则自动迁移落盘
+      this._historyLoadHealthy = true;
+      if (hasLegacyArray) {
+        this._quotaHistory = legacyEntries.slice(-MAX_HISTORY);
+        if (this._quotaHistory.length > 0) {
+          if (this._writeHistorySync()) {
+            void this._ctx.globalState.update(LEGACY_HISTORY_KEY, undefined);
+            logInfo('usageTracker.history.migrated', { count: this._quotaHistory.length, file: historyPath });
+          }
+        } else {
+          void this._ctx.globalState.update(LEGACY_HISTORY_KEY, undefined);
+        }
+      } else {
+        this._quotaHistory = [];
+      }
+    }
+
     // 恢复 lastQuotaMap
     for (let i = this._quotaHistory.length - 1; i >= 0; i--) {
       const e = this._quotaHistory[i];
@@ -79,9 +192,49 @@ export class UsageTracker {
     }
   }
 
+  private _writeHistorySync(): boolean {
+    const historyPath = this._getHistoryFilePath();
+    try {
+      withFileLockSync(historyPath, () => {
+        if (!this._historyLoadHealthy) {
+          const check = readJsonFileSafe<unknown>(historyPath);
+          if (check.status === 'error' || (check.status === 'ok' && !Array.isArray(check.data))) {
+            const bakPath = path.join(path.dirname(historyPath), `quota-history.corrupt.${Date.now()}.bak`);
+            try {
+              fs.copyFileSync(historyPath, bakPath);
+              logWarn('usageTracker.history.corruptBackup', { backup: bakPath });
+            } catch (copyErr) {
+              logError('usageTracker.history.corruptBackupFail', copyErr instanceof Error ? copyErr.message : String(copyErr));
+              throw copyErr;
+            }
+          }
+          this._historyLoadHealthy = true;
+        }
+        atomicWriteJsonSync(historyPath, this._quotaHistory, 0o600);
+      });
+      return true;
+    } catch (err) {
+      logError('usageTracker.history.saveFail', {
+        file: historyPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+
   addHistoryListener(cb: () => void): { dispose(): void } {
     this._historyListeners.add(cb);
     return { dispose: () => { this._historyListeners.delete(cb); } };
+  }
+
+  private _notifyHistoryListeners(): void {
+    for (const cb of this._historyListeners) {
+      try {
+        cb();
+      } catch (err) {
+        logWarn('usageTracker.listener.fail', err instanceof Error ? err.message : String(err));
+      }
+    }
   }
 
   // ── 记录事件 ──
@@ -123,7 +276,7 @@ export class UsageTracker {
       }
       this._lastQuotaMap.set(email, remaining);
       this._debounceHistorySave();
-      for (const cb of this._historyListeners) { try { cb(); } catch {} }
+      this._notifyHistoryListeners();
     }
 
     this._debounceSave();
@@ -165,20 +318,25 @@ export class UsageTracker {
 
   getQuotaHistory(email?: string, limit = 200): QuotaHistoryEntry[] {
     let result = this._quotaHistory;
-    if (email) result = result.filter(e => e.email === email);
+    if (email) result = result.filter((e) => e.email === email);
     return result.slice(-limit);
   }
 
   clearQuotaHistory(email?: string): void {
     if (email) {
-      this._quotaHistory = this._quotaHistory.filter(e => e.email !== email);
+      this._quotaHistory = this._quotaHistory.filter((e) => e.email !== email);
       this._lastQuotaMap.delete(email);
     } else {
       this._quotaHistory = [];
       this._lastQuotaMap.clear();
     }
-    this._ctx.globalState.update(HISTORY_KEY, this._quotaHistory);
-    for (const cb of this._historyListeners) { try { cb(); } catch {} }
+    if (this._historySaveTimer) {
+      clearTimeout(this._historySaveTimer);
+      this._historySaveTimer = null;
+    }
+    this._historyDirty = false;
+    this._writeHistorySync();
+    this._notifyHistoryListeners();
   }
 
   getHistoryEmails(): string[] {
@@ -206,25 +364,26 @@ export class UsageTracker {
   }
 
   private _debounceSave(): void {
+    if (this._disposed) return;
     this._dirty = true;
     if (this._saveTimer) return;
     this._saveTimer = setTimeout(() => {
       this._saveTimer = null;
       if (this._dirty) {
         this._dirty = false;
-        this._ctx.globalState.update(STORAGE_KEY, this._stats);
+        void this._ctx.globalState.update(STORAGE_KEY, this._stats);
       }
     }, 2000);
   }
 
   private _debounceHistorySave(): void {
+    if (this._disposed) return;
     this._historyDirty = true;
     if (this._historySaveTimer) return;
     this._historySaveTimer = setTimeout(() => {
       this._historySaveTimer = null;
       if (this._historyDirty) {
-        this._historyDirty = false;
-        this._ctx.globalState.update(HISTORY_KEY, this._quotaHistory);
+        this._historyDirty = !this._writeHistorySync();
       }
     }, 3000);
   }
@@ -253,16 +412,25 @@ export class UsageTracker {
   }
 
   dispose(): void {
-    if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
-    if (this._historySaveTimer) { clearTimeout(this._historySaveTimer); this._historySaveTimer = null; }
+    if (this._disposed) return;
+    this._disposed = true;
+
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    if (this._historySaveTimer) {
+      clearTimeout(this._historySaveTimer);
+      this._historySaveTimer = null;
+    }
     if (this._dirty) {
       this._dirty = false;
-      this._ctx.globalState.update(STORAGE_KEY, this._stats);
+      void this._ctx.globalState.update(STORAGE_KEY, this._stats);
     }
     if (this._historyDirty) {
-      this._historyDirty = false;
-      this._ctx.globalState.update(HISTORY_KEY, this._quotaHistory);
+      this._historyDirty = !this._writeHistorySync();
     }
+    this._historyListeners.clear();
   }
 }
 

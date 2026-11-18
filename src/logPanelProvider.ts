@@ -1,20 +1,41 @@
 import * as vscode from 'vscode';
+import * as crypto from 'crypto';
 import { UsageTracker } from './usageTracker';
 import * as accountStore from './accountStore';
 import { t, localeBundle, getLang } from './i18n';
+import { logWarn } from './logger';
+
+interface AccountOverviewItem {
+  email: string;
+  name: string;
+  tags: string[];
+  disabled: boolean;
+  usedPct: number | null;
+  lastCheckTs: number;
+  isCurrent: boolean;
+}
 
 let _panel: vscode.WebviewPanel | undefined;
 let _listenerDisposable: { dispose(): void } | undefined;
+let _msgDisposable: vscode.Disposable | undefined;
+let _panelDisposeDisposable: vscode.Disposable | undefined;
+let _onPrivacyChanged: ((enabled: boolean) => void) | undefined;
+
+export function broadcastPrivacyToLogPanel(enabled: boolean): void {
+  void _panel?.webview.postMessage({ type: 'privacyMode', enabled: !!enabled });
+}
 
 export function openLogPanel(
   ctx: vscode.ExtensionContext,
   tracker: UsageTracker,
   extensionUri: vscode.Uri,
-  tab?: string
+  tab?: string,
+  onPrivacyChanged?: (enabled: boolean) => void
 ): void {
+  _onPrivacyChanged = onPrivacyChanged;
   if (_panel) {
     _panel.reveal(vscode.ViewColumn.One);
-    if (tab) _panel.webview.postMessage({ type: 'switchTab', tab });
+    if (tab) void _panel.webview.postMessage({ type: 'switchTab', tab });
     pushAllData(ctx, tracker, _panel.webview);
     return;
   }
@@ -35,23 +56,34 @@ export function openLogPanel(
   const ver = ext?.packageJSON?.version || '0.0.0';
   const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'webview', 'log-panel.css'));
   const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'webview', 'log-panel.js'));
+  const nonce = crypto.randomBytes(16).toString('base64');
 
-  webview.html = buildHtml(cssUri.toString(), jsUri.toString(), ver, tab || 'quota', webview.cspSource);
+  webview.html = buildHtml(cssUri.toString(), jsUri.toString(), ver, tab || 'quota', webview.cspSource, nonce);
 
-  setTimeout(() => pushAllData(ctx, tracker, webview), 300);
-
-  webview.onDidReceiveMessage(async (msg: any) => {
-    if (msg.type === 'refresh') {
+  _msgDisposable?.dispose();
+  _msgDisposable = webview.onDidReceiveMessage(async (rawMsg: unknown) => {
+    const msg = (rawMsg && typeof rawMsg === 'object') ? rawMsg as Record<string, unknown> : {};
+    const type = typeof msg.type === 'string' ? msg.type : '';
+    if (type === 'webviewReady') {
       pushAllData(ctx, tracker, webview);
-      webview.postMessage({ type: 'refreshDone' });
-    } else if (msg.type === 'clearQuotaHistory') {
-      tracker.clearQuotaHistory(msg.email);
+    } else if (type === 'refresh') {
       pushAllData(ctx, tracker, webview);
+      void webview.postMessage({ type: 'refreshDone' });
+    } else if (type === 'clearQuotaHistory') {
+      const email = typeof msg.email === 'string' ? msg.email : undefined;
+      tracker.clearQuotaHistory(email);
+      pushAllData(ctx, tracker, webview);
+    } else if (type === 'privacyChanged') {
+      const enabled = msg.enabled === true;
+      await ctx.globalState.update('privacyMode', enabled);
+      _onPrivacyChanged?.(enabled);
+      void webview.postMessage({ type: 'privacyMode', enabled });
     }
   });
 
   // 实时推送配额变动（200ms 防抖）
   let _pushDebounceTimer: NodeJS.Timeout | null = null;
+  _listenerDisposable?.dispose();
   _listenerDisposable = tracker.addHistoryListener(() => {
     if (_pushDebounceTimer) clearTimeout(_pushDebounceTimer);
     _pushDebounceTimer = setTimeout(() => {
@@ -60,12 +92,46 @@ export function openLogPanel(
     }, 200);
   });
 
-  _panel.onDidDispose(() => {
+  _panelDisposeDisposable?.dispose();
+  _panelDisposeDisposable = _panel.onDidDispose(() => {
+    _msgDisposable?.dispose();
+    _msgDisposable = undefined;
+    _panelDisposeDisposable?.dispose();
+    _panelDisposeDisposable = undefined;
     _listenerDisposable?.dispose();
     _listenerDisposable = undefined;
     if (_pushDebounceTimer) { clearTimeout(_pushDebounceTimer); _pushDebounceTimer = null; }
+    _onPrivacyChanged = undefined;
     _panel = undefined;
   });
+}
+
+/** 语言切换后若统计面板已打开，同步更新标题与 Webview 模板 */
+export function reloadLogPanelForLocale(extensionUri: vscode.Uri): void {
+  if (!_panel) return;
+  _panel.title = t('lp.title');
+  const webview = _panel.webview;
+  const ext = vscode.extensions.getExtension('soulvon.antigravity-kite') || vscode.extensions.getExtension('antigravity-kite');
+  const ver = ext?.packageJSON?.version || '0.0.0';
+  const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'webview', 'log-panel.css'));
+  const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'resources', 'webview', 'log-panel.js'));
+  const nonce = crypto.randomBytes(16).toString('base64');
+  webview.html = buildHtml(cssUri.toString(), jsUri.toString(), ver, 'overview', webview.cspSource, nonce);
+}
+
+/** 扩展停用时释放已打开的统计面板及监听器 */
+export function disposeLogPanel(): void {
+  if (_panel) {
+    _panel.dispose();
+  } else {
+    _msgDisposable?.dispose();
+    _msgDisposable = undefined;
+    _panelDisposeDisposable?.dispose();
+    _panelDisposeDisposable = undefined;
+    _listenerDisposable?.dispose();
+    _listenerDisposable = undefined;
+    _onPrivacyChanged = undefined;
+  }
 }
 
 /** 推送全量数据给面板 */
@@ -76,7 +142,7 @@ function pushAllData(ctx: vscode.ExtensionContext, tracker: UsageTracker, webvie
   const summary = tracker.getSummary();
 
   // 账号总览
-  let accountOverview: any[] = [];
+  let accountOverview: AccountOverviewItem[] = [];
   try {
     const accounts = accountStore.getAll();
     accountOverview = accounts.map(a => {
@@ -91,15 +157,18 @@ function pushAllData(ctx: vscode.ExtensionContext, tracker: UsageTracker, webvie
         isCurrent: a.email === currentEmail,
       };
     });
-  } catch {}
+  } catch (e) {
+    logWarn('logPanel.overview.fail', e);
+  }
 
-  webview.postMessage({
+  void webview.postMessage({
     type: 'allData',
     currentEmail,
     quotaEntries,
     quotaEmails,
     summary,
     accountOverview,
+    privacyMode: ctx.globalState.get<boolean>('privacyMode', false),
   });
 }
 
@@ -108,11 +177,12 @@ export function pushLogPanelData(ctx: vscode.ExtensionContext, tracker: UsageTra
   if (_panel) pushAllData(ctx, tracker, _panel.webview);
 }
 
-function buildHtml(cssUri: string, jsUri: string, version: string, initialTab: string, cspSource: string): string {
+function buildHtml(cssUri: string, jsUri: string, version: string, initialTab: string, cspSource: string, nonce: string): string {
+  const safeI18nJson = JSON.stringify({ __lang: getLang(), ...localeBundle('lp.') }).replace(/</g, '\\u003c');
   return `<!DOCTYPE html>
 <html lang="${getLang() === 'zh' ? 'zh-CN' : 'en'}"><head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} data: blob:; script-src ${cspSource} 'unsafe-inline'; style-src ${cspSource} 'unsafe-inline'; font-src ${cspSource} data:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} data: blob:; script-src 'nonce-${nonce}'; style-src ${cspSource} 'unsafe-inline'; font-src ${cspSource} data:;">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="${cssUri}">
 </head>
@@ -225,7 +295,7 @@ function buildHtml(cssUri: string, jsUri: string, version: string, initialTab: s
 
   <div class="lp-toast" id="lpToast" hidden></div>
 </div>
-<script>var vscode = acquireVsCodeApi(); window.LP_L = ${JSON.stringify({ __lang: getLang(), ...localeBundle('lp.') })};</script>
-<script src="${jsUri}"></script>
+<script nonce="${nonce}">var vscode = acquireVsCodeApi(); window.LP_L = ${safeI18nJson};</script>
+<script nonce="${nonce}" src="${jsUri}"></script>
 </body></html>`;
 }
