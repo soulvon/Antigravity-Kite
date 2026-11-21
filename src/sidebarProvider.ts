@@ -7,6 +7,8 @@ import { startOAuth } from './oauthService';
 import { previewLocalAccount, confirmImport, cancelImport } from './localReader';
 import * as importService from './importService';
 import { WebviewMessage, UsageSnapshot, AccountHealth } from './types';
+import type { TokenLedgerSummary } from './tokenLedger';
+import type { StatsSummary } from './usageTracker';
 import { enableCdp } from './cdpGate';
 import { probeCdpPort } from './declarationSuppressor';
 import { t, localeBundle, getLang } from './i18n';
@@ -23,6 +25,8 @@ export interface SidebarActionHandlers {
   probeOneHealth: (email: string) => Promise<AccountHealth | null>;
   onQuotaRefreshMinutesChanged: () => void;
   onPrivacyChanged: (enabled: boolean) => void;
+  getTrackerSummary?: () => StatsSummary | null;
+  getLedgerSummary?: (forceRescan?: boolean) => Promise<TokenLedgerSummary> | TokenLedgerSummary;
 }
 
 const _htmlTemplateCache = new Map<string, string>();
@@ -36,8 +40,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
   private _askResolvers = new Map<string, (ok: boolean, reason?: string) => void>();
   private _askTimers = new Set<NodeJS.Timeout>();
   private _savingSettingsDepth = 0;
+  private _statsTimer: NodeJS.Timeout | null = null;
+  private _cachedPerAccountTokens: Record<string, unknown> = {};
+  private _disposed = false;
   private _messageDisposable?: vscode.Disposable;
   private _viewDisposeDisposable?: vscode.Disposable;
+  private _visibilityDisposable?: vscode.Disposable;
   private _context: vscode.ExtensionContext;
   private _handlers: Partial<SidebarActionHandlers>;
 
@@ -53,6 +61,45 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
   public refresh(): void {
     if (this._view) {
       this._pushAccounts();
+    }
+  }
+
+  public refreshStatsSummary(forceRescan = false): void {
+    if (this._disposed || !this._view) return;
+    if (this._statsTimer) {
+      clearTimeout(this._statsTimer);
+      this._statsTimer = null;
+    }
+    this._statsTimer = setTimeout(() => {
+      this._statsTimer = null;
+      void this._pushStatsSummary(forceRescan);
+    }, 300);
+  }
+
+  private async _pushStatsSummary(forceRescan: boolean): Promise<void> {
+    if (this._disposed || !this._view) return;
+    try {
+      const tracker = this._handlers.getTrackerSummary?.() ?? null;
+      const ledger = this._handlers.getLedgerSummary ? await this._handlers.getLedgerSummary(forceRescan) : null;
+      if (this._disposed || !this._view) return;
+      if (ledger?.perAccount) {
+        this._cachedPerAccountTokens = ledger.perAccount;
+      }
+      void this._view.webview.postMessage({
+        type: 'sidebarStats',
+        todayTokens: ledger?.totals.today.total ?? 0,
+        todayWeighted: ledger?.totals.today.weighted ?? 0,
+        todayCostUsd: ledger?.totals.today.costUsd ?? 0,
+        todaySavedUsd: ledger?.totals.today.savedByCacheUsd ?? 0,
+        todayDesktopTokens: ledger?.totals.today.desktopTotal ?? 0,
+        todayCliTokens: ledger?.totals.today.cliTotal ?? 0,
+        todaySteps: ledger?.totals.today.steps ?? 0,
+        todaySwitches: tracker?.totalSwitches ?? 0,
+        todayRefreshes: tracker?.totalRefreshes ?? 0,
+        perAccountTokens: this._cachedPerAccountTokens,
+      });
+    } catch (err) {
+      logWarn('sidebar.pushStatsFail', err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -153,6 +200,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
   ): void {
     this._messageDisposable?.dispose();
     this._viewDisposeDisposable?.dispose();
+    this._visibilityDisposable?.dispose();
     this._view = webviewView;
     this._webviewReady = false;
     logInfo('webview.resolve', { viewType: SidebarProvider.viewType });
@@ -173,9 +221,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
     this._messageDisposable = webviewView.webview.onDidReceiveMessage(async (msg: WebviewMessage) => {
       await this._handleMessage(msg);
     });
+    this._visibilityDisposable = webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) this.refreshStatsSummary(false);
+    });
     this._viewDisposeDisposable = webviewView.onDidDispose(() => {
       this._messageDisposable?.dispose();
       this._messageDisposable = undefined;
+      this._visibilityDisposable?.dispose();
+      this._visibilityDisposable = undefined;
       this._viewDisposeDisposable?.dispose();
       this._viewDisposeDisposable = undefined;
       if (this._view === webviewView) {
@@ -188,8 +241,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
   }
 
   public dispose(): void {
+    this._disposed = true;
+    if (this._statsTimer) {
+      clearTimeout(this._statsTimer);
+      this._statsTimer = null;
+    }
     this._messageDisposable?.dispose();
     this._messageDisposable = undefined;
+    this._visibilityDisposable?.dispose();
+    this._visibilityDisposable = undefined;
     this._viewDisposeDisposable?.dispose();
     this._viewDisposeDisposable = undefined;
     for (const timer of this._askTimers) {
@@ -217,6 +277,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
       accounts: accountsWithUsage,
       currentEmail,
       privacyMode: this._context.globalState.get<boolean>('privacyMode', false),
+      perAccountTokens: this._cachedPerAccountTokens,
     };
     const res = this._view?.webview.postMessage(payload);
     if (res && typeof (res as unknown as PromiseLike<boolean>).then === 'function') {
@@ -234,10 +295,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
     await this._handleMessage({ type: 'setCurrentAccount', email });
   }
 
-  /** 底栏"打开设置"快捷入口：聚焦侧栏并弹出设置模态框 */
-  public openSettingsUi(): void {
+  /** 底栏"打开设置"快捷入口：聚焦侧栏并弹出设置模态框（可选定位至视图区块） */
+  public openSettingsUi(section?: string): void {
     void vscode.commands.executeCommand('antigravityKite.sidebar.focus');
-    this._post({ type: 'openSettings' }, true);
+    this._post({ type: 'openSettings', section: section || '' }, true);
   }
 
   /** 推送设置到 webview */
@@ -255,15 +316,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
         syncRemoteAuth: cfg.get<boolean>('remote.syncAuth', true),
         quotaRefreshMinutes: cfg.get<number>('quotaRefreshMinutes', 15),
         locale: cfg.get<string>('locale', 'auto'),
+        sidebarCardView: cfg.get<string>('sidebar.cardView', 'classic'),
+        sidebarShowCardTokens: cfg.get<boolean>('sidebar.showCardTokens', true),
         statusBarEnabled: cfg.get<boolean>('statusBar.enabled', true),
         statusBarPosition: cfg.get<string>('statusBar.position', 'right'),
-        statusBarStyle: cfg.get<string>('statusBar.style', 'full'),
+        statusBarStyle: cfg.get<string>('statusBar.style', 'pulse'),
         statusBarAccount: cfg.get<boolean>('statusBar.showAccount', true),
         statusBarModels: cfg.get<boolean>('statusBar.showModels', true),
         statusBarCredits: cfg.get<boolean>('statusBar.showCredits', true),
         statusBarPool: cfg.get<boolean>('statusBar.showPool', true),
         statusBarTier: cfg.get<boolean>('statusBar.showTier', true),
         statusBarResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
+        statusBarLiveContext: cfg.get<boolean>('statusBar.showLiveContext', true),
+        statusBarLiveSpeed: cfg.get<boolean>('statusBar.showLiveSpeed', true),
         statusBarFamilies: cfg.get<string[]>('statusBar.families', ['claude', 'gemini', 'argon']),
       },
     });
@@ -305,17 +370,22 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
       await cfg.update('remote.syncAuth', s.syncRemoteAuth !== false, target);
       await cfg.update('quotaRefreshMinutes', normalizedQuotaMin, target);
       await cfg.update('locale', nextLocale, target);
+      const cardView = String(s.sidebarCardView ?? 'classic');
+      await cfg.update('sidebar.cardView', cardView === 'compact' ? 'compact' : 'classic', target);
+      await cfg.update('sidebar.showCardTokens', s.sidebarShowCardTokens !== false, target);
       await cfg.update('statusBar.enabled', s.statusBarEnabled !== false, target);
       const sbPosition = String(s.statusBarPosition ?? 'right');
-      const sbStyle = String(s.statusBarStyle ?? 'full');
+      const sbStyle = String(s.statusBarStyle ?? 'pulse');
       await cfg.update('statusBar.position', sbPosition === 'left' ? 'left' : 'right', target);
-      await cfg.update('statusBar.style', ['smart', 'dot', 'percent', 'compact', 'dual', 'labeled', 'full'].includes(sbStyle) ? sbStyle : 'full', target);
+      await cfg.update('statusBar.style', ['pulse', 'smart', 'dot', 'percent', 'compact', 'dual', 'labeled', 'full'].includes(sbStyle) ? sbStyle : 'pulse', target);
       await cfg.update('statusBar.showAccount', s.statusBarAccount !== false, target);
       await cfg.update('statusBar.showModels', s.statusBarModels !== false, target);
       await cfg.update('statusBar.showCredits', s.statusBarCredits !== false, target);
       await cfg.update('statusBar.showPool', s.statusBarPool !== false, target);
       await cfg.update('statusBar.showTier', s.statusBarTier !== false, target);
       await cfg.update('statusBar.showResetCountdown', s.statusBarResetCountdown !== false, target);
+      await cfg.update('statusBar.showLiveContext', s.statusBarLiveContext !== false, target);
+      await cfg.update('statusBar.showLiveSpeed', s.statusBarLiveSpeed !== false, target);
       const famsIn = Array.isArray(s.statusBarFamilies)
         ? s.statusBarFamilies.filter((x: unknown): x is string => typeof x === 'string' && ['claude', 'gemini', 'argon'].includes(x))
         : ['claude', 'gemini', 'argon'];
@@ -602,6 +672,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
         void this._view?.webview.postMessage({ type: 'openSettings' });
         break;
 
+      case 'openStatsPanel': {
+        const tab = typeof msg.tab === 'string' && msg.tab ? msg.tab : undefined;
+        const account = typeof msg.account === 'string' && msg.account ? msg.account : undefined;
+        const navTarget = account ? { tab: tab || 'tokens', account } : tab;
+        void vscode.commands.executeCommand('antigravityKite.openLogPanel', navTarget);
+        break;
+      }
+
       case 'getCdpStatus':
         await this._pushCdpStatus();
         break;
@@ -731,6 +809,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
         this._webviewReady = true;
         this._pushAccounts();
         this._pushSettings();
+        this.refreshStatsSummary(false);
         this._flushOutbox();
         break;
 

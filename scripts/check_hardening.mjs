@@ -76,9 +76,9 @@ gate('E1 无死代码 openTagColorPicker 及孤立 .tag-color-picker CSS',
     && !/function openTagColorPicker/.test(sidebarJsSrc)
     && !cssSrc.includes('.tag-color-picker'),
   '仍残留死函数 openTagColorPicker 或 .tag-color-picker 样式');
-gate('E2 设置面板 statusBarStyle 默认回退为 full（非 smart）',
-  /set\('setStatusStyle',\s*s\.statusBarStyle\s*\|\|\s*'full'\)/.test(sidebarJsSrc),
-  "仍存在 s.statusBarStyle || 'smart'");
+gate('E2 设置面板 statusBarStyle 默认回退为 pulse（灵动最佳视图）',
+  /set\('setStatusStyle',\s*s\.statusBarStyle\s*\|\|\s*'pulse'\)/.test(sidebarJsSrc),
+  "仍存在旧默认 statusBarStyle 回退");
 gate('E3 Webview cssUri 不拼接 ?v=${Date.now()}',
   !/\$\{cssUri\}\?v=\$\{Date\.now\(\)\}/.test(extSrc)
     && !/\$\{cssUri\}\?v=\$\{Date\.now\(\)\}/.test(sidebarSrc)

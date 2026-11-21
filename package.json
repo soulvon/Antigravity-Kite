@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.5.0",
+  "version": "1.5.6",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -85,6 +85,11 @@
       {
         "command": "antigravityKite.openSettings",
         "title": "%cmd.openSettings%",
+        "category": "Antigravity Kite"
+      },
+      {
+        "command": "antigravityKite.openAppearanceSettings",
+        "title": "%cmd.openAppearanceSettings%",
         "category": "Antigravity Kite"
       }
     ],
@@ -179,6 +184,7 @@
         "antigravityKite.statusBar.style": {
           "type": "string",
           "enum": [
+            "pulse",
             "smart",
             "dot",
             "percent",
@@ -188,6 +194,7 @@
             "full"
           ],
           "enumDescriptions": [
+            "%config.statusBar.style.pulse%",
             "%config.statusBar.style.smart%",
             "%config.statusBar.style.dot%",
             "%config.statusBar.style.percent%",
@@ -196,13 +203,41 @@
             "%config.statusBar.style.labeled%",
             "%config.statusBar.style.full%"
           ],
-          "default": "full",
+          "default": "pulse",
           "description": "%config.statusBar.style%"
+        },
+        "antigravityKite.sidebar.cardView": {
+          "type": "string",
+          "enum": [
+            "classic",
+            "compact"
+          ],
+          "enumDescriptions": [
+            "%config.sidebar.cardView.classic%",
+            "%config.sidebar.cardView.compact%"
+          ],
+          "default": "classic",
+          "description": "%config.sidebar.cardView%"
+        },
+        "antigravityKite.sidebar.showCardTokens": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.sidebar.showCardTokens%"
         },
         "antigravityKite.statusBar.showResetCountdown": {
           "type": "boolean",
           "default": true,
           "description": "%config.statusBar.showResetCountdown%"
+        },
+        "antigravityKite.statusBar.showLiveContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.statusBar.showLiveContext%"
+        },
+        "antigravityKite.statusBar.showLiveSpeed": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.statusBar.showLiveSpeed%"
         },
         "antigravityKite.statusBar.showTier": {
           "type": "boolean",
@@ -258,7 +293,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_agy_reload.mjs && node scripts/check_switch_health.mjs && node scripts/check_switch_perf.mjs && node scripts/check_webview_hardening.mjs && node scripts/check_platform_gates.mjs && node scripts/check_decl_suppressor.mjs && node scripts/check_status_bar.mjs && node scripts/check_tags.mjs && node scripts/check_hardening.mjs && node scripts/check_remote_ssh.mjs && node scripts/check_architecture_and_security.mjs",
-    "verify": "npm run compile && node scripts/check_cockpit_decrypt.mjs && node scripts/check_manager_import.mjs && node scripts/check_sb_demo.mjs && node scripts/check-no-leak.mjs --fast",
+    "verify": "npm run compile && node scripts/check_cockpit_decrypt.mjs && node scripts/check_manager_import.mjs && node scripts/check_sb_demo.mjs && node scripts/check_live_context_bar.mjs && node scripts/check_stats_panel.mjs && node scripts/check-no-leak.mjs --fast",
     "watch": "tsc -watch -p ./",
     "package": "node ./scripts/update-version.js && npm run compile && vsce package --skip-license",
     "check:release": "node scripts/check_release_readiness.mjs"

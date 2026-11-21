@@ -11,6 +11,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import * as accountStore from './accountStore';
+import { getAccountTimeline } from './accountTimeline';
 import { atomicWriteJsonSync } from './atomicFile';
 import { encryptSecret } from './accountCrypto';
 import { ensureCdpGate } from './cdpGate';
@@ -355,6 +356,7 @@ export async function switchAccount(
 
     await context.globalState.update('currentEmail', account.email);
     deps.usageTracker.recordSwitch(account.email);
+    getAccountTimeline().recordActiveAccount(account.email);
     deps.pushAccounts();
     deps.postMessage({ type: 'switchResult', ok: true });
     deps.onLogPanelUpdate();

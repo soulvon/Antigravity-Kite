@@ -21,12 +21,19 @@ export interface AccountStats {
   tierId?: string;
 }
 
+export interface QuotaPoolsSnapshot {
+  claude?: number | null;
+  gemini?: number | null;
+  argon?: number | null;
+}
+
 export interface QuotaHistoryEntry {
   ts: number;
   email: string;
   remaining: number;     // minRemainingPercent
   delta: number;         // 变化量（负数 = 消耗）
   tierId?: string;
+  pools?: QuotaPoolsSnapshot;
 }
 
 export interface PoolStats {
@@ -55,6 +62,28 @@ const LEGACY_HISTORY_KEY = 'usageTracker.quotaHistory';
 const HISTORY_FILE = 'quota-history.json';
 const MAX_HISTORY = 10000;
 
+function normalizePools(raw: unknown): QuotaPoolsSnapshot | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const out: QuotaPoolsSnapshot = {};
+  let hasAny = false;
+  for (const key of ['claude', 'gemini', 'argon'] as const) {
+    const v = r[key];
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      out[key] = Math.round(v);
+      hasAny = true;
+    } else if (v === null) {
+      out[key] = null;
+    }
+  }
+  return hasAny ? out : undefined;
+}
+
+function formatPoolSig(pools?: QuotaPoolsSnapshot): string {
+  if (!pools) return '';
+  return `${pools.claude ?? ''}:${pools.gemini ?? ''}:${pools.argon ?? ''}`;
+}
+
 function normalizeHistoryEntry(item: unknown): QuotaHistoryEntry | null {
   if (!item || typeof item !== 'object') return null;
   const e = item as Partial<QuotaHistoryEntry>;
@@ -68,12 +97,14 @@ function normalizeHistoryEntry(item: unknown): QuotaHistoryEntry | null {
   ) {
     return null;
   }
+  const pools = normalizePools(e.pools);
   return {
     ts: e.ts,
     email: e.email,
     remaining: e.remaining,
     delta: typeof e.delta === 'number' && Number.isFinite(e.delta) ? e.delta : 0,
     ...(typeof e.tierId === 'string' && e.tierId ? { tierId: e.tierId } : {}),
+    ...(pools ? { pools } : {}),
   };
 }
 
@@ -95,6 +126,7 @@ export class UsageTracker {
   private _saveTimer: NodeJS.Timeout | null = null;
   private _quotaHistory: QuotaHistoryEntry[] = [];
   private _lastQuotaMap: Map<string, number> = new Map(); // email → last remaining
+  private _lastPoolSigMap: Map<string, string> = new Map(); // email → last pools sig
   private _historyDirty = false;
   private _historySaveTimer: NodeJS.Timeout | null = null;
   private _historyListeners = new Set<() => void>();
@@ -183,11 +215,14 @@ export class UsageTracker {
       }
     }
 
-    // 恢复 lastQuotaMap
+    // 恢复 lastQuotaMap 与 lastPoolSigMap
     for (let i = this._quotaHistory.length - 1; i >= 0; i--) {
       const e = this._quotaHistory[i];
       if (!this._lastQuotaMap.has(e.email)) {
         this._lastQuotaMap.set(e.email, e.remaining);
+      }
+      if (e.pools && !this._lastPoolSigMap.has(e.email)) {
+        this._lastPoolSigMap.set(e.email, formatPoolSig(e.pools));
       }
     }
   }
@@ -252,17 +287,20 @@ export class UsageTracker {
     this._debounceSave();
   }
 
-  recordUsage(email: string, minRemainingPercent: number, tierId?: string): void {
+  recordUsage(email: string, minRemainingPercent: number, tierId?: string, pools?: QuotaPoolsSnapshot): void {
     this._maybeResetDaily();
     const acct = this._ensureAccount(email);
     acct.usedPct = Math.max(0, 100 - minRemainingPercent);
     acct.lastCheckTs = Date.now();
     acct.tierId = tierId;
 
-    // 配额变动历史（仅在数值变化时记录）
+    // 配额变动历史（总剩余或任意模型子池发生变动即记录）
     const remaining = Math.round(minRemainingPercent);
+    const normalizedPools = normalizePools(pools);
+    const poolSig = formatPoolSig(normalizedPools);
     const last = this._lastQuotaMap.get(email);
-    if (last === undefined || last !== remaining) {
+    const lastPoolSig = this._lastPoolSigMap.get(email) ?? '';
+    if (last === undefined || last !== remaining || (poolSig !== '' && lastPoolSig !== poolSig)) {
       const delta = last !== undefined ? remaining - last : 0;
       this._quotaHistory.push({
         ts: Date.now(),
@@ -270,11 +308,13 @@ export class UsageTracker {
         remaining,
         delta,
         tierId,
+        ...(normalizedPools ? { pools: normalizedPools } : {}),
       });
       if (this._quotaHistory.length > MAX_HISTORY) {
         this._quotaHistory.splice(0, this._quotaHistory.length - MAX_HISTORY);
       }
       this._lastQuotaMap.set(email, remaining);
+      if (poolSig) this._lastPoolSigMap.set(email, poolSig);
       this._debounceHistorySave();
       this._notifyHistoryListeners();
     }
@@ -326,9 +366,11 @@ export class UsageTracker {
     if (email) {
       this._quotaHistory = this._quotaHistory.filter((e) => e.email !== email);
       this._lastQuotaMap.delete(email);
+      this._lastPoolSigMap.delete(email);
     } else {
       this._quotaHistory = [];
       this._lastQuotaMap.clear();
+      this._lastPoolSigMap.clear();
     }
     if (this._historySaveTimer) {
       clearTimeout(this._historySaveTimer);
@@ -396,6 +438,7 @@ export class UsageTracker {
       this._stats.accounts = {};
       this._stats.lastResetDate = today;
       this._lastQuotaMap.clear();
+      this._lastPoolSigMap.clear();
       this._debounceSave();
     }
   }
@@ -437,4 +480,23 @@ export class UsageTracker {
 function todayStr(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+export function extractPoolsFromModels(
+  models: ReadonlyArray<{ modelId: string; remainingPercent: number }>,
+): QuotaPoolsSnapshot | undefined {
+  const out: QuotaPoolsSnapshot = {};
+  let hasAny = false;
+  for (const key of ['claude', 'gemini', 'argon'] as const) {
+    const five = models.find((m) => m.modelId === `${key}:5h`)?.remainingPercent;
+    const week = models.find((m) => m.modelId === `${key}:weekly`)?.remainingPercent;
+    const vals = [five, week].filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+    if (vals.length > 0) {
+      out[key] = Math.round(Math.min(...vals));
+      hasAny = true;
+    } else {
+      out[key] = null;
+    }
+  }
+  return hasAny ? out : undefined;
 }

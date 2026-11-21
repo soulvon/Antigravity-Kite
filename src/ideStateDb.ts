@@ -358,7 +358,7 @@ const USER_STATUS_KEY = 'antigravityUnifiedStateSync.userStatus';
 const OAUTH_SENTINEL = 'oauthTokenInfoSentinelKey';
 const USER_STATUS_SENTINEL = 'userStatusSentinelKey';
 
-function loadSqlite(): { DatabaseSync: any } | null {
+export function loadSqlite(): { DatabaseSync: any } | null {
   try {
     // Node 22.13+/23.4+ 内置 node:sqlite（ext host Node 22.21 可用）；@types/node 未收录，动态 require
     const moduleName = 'node:sqlite';

@@ -9,7 +9,7 @@
  */
 import * as vscode from 'vscode';
 import * as accountStore from './accountStore';
-import { UsageTracker } from './usageTracker';
+import { extractPoolsFromModels, UsageTracker } from './usageTracker';
 import { fetchUsage, checkAccountHealth, classifyAccountError, describeError } from './usageService';
 import { AccountHealth, UsageSnapshot } from './types';
 import { t } from './i18n';
@@ -80,7 +80,12 @@ export class QuotaOrchestrator implements vscode.Disposable {
         this._saveUsageCache();
       }
       this._usageTracker.recordRefresh();
-      this._usageTracker.recordUsage(email, snapshot.minRemainingPercent, snapshot.tierId);
+      this._usageTracker.recordUsage(
+        email,
+        snapshot.minRemainingPercent,
+        snapshot.tierId,
+        extractPoolsFromModels(snapshot.models),
+      );
       this._bridge.onUsageUpdated?.(email, snapshot);
       if (!opts.batch) {
         this._bridge.onTrackerChanged?.();

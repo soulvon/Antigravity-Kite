@@ -1,13 +1,16 @@
 import * as vscode from 'vscode';
 import * as accountStore from './accountStore';
+import { getAccountTimeline } from './accountTimeline';
 import { startDeclarationSuppressor, stopDeclarationSuppressor } from './declarationSuppressor';
 import { logInfo } from './logger';
 import * as logPanel from './logPanelProvider';
 import { QuotaOrchestrator } from './quotaOrchestrator';
+import { LiveContextMeter } from './liveContextMeter';
 import { isSupportedRemoteSession } from './remoteAuthSync';
 import { SidebarProvider } from './sidebarProvider';
 import { StatusBarManager } from './statusBar';
 import { disposeSwitchOrchestrator, switchAccount, syncStartupAuthToRemote } from './switchOrchestrator';
+import { TokenLedger } from './tokenLedger';
 import { registerUiPresenter } from './uiChannel';
 import { autoCheckOnStartup, checkForUpdates, showUpdateNotesOnStartup } from './updater';
 import { UsageTracker } from './usageTracker';
@@ -18,19 +21,20 @@ let sidebarProvider: SidebarProvider | undefined;
 let statusBarManager: StatusBarManager | undefined;
 let quotaOrchestrator: QuotaOrchestrator | undefined;
 let usageTracker: UsageTracker | undefined;
+let tokenLedger: TokenLedger | undefined;
 
-/** v1.1.28 一次性样式迁移：将旧默认 smart/labeled 迁至信息全开的 full */
+/** 一次性样式迁移：将旧默认迁至默认最佳视图 pulse（之后尊重用户手动选择） */
 function migrateLegacyStatusBarStyle(context: vscode.ExtensionContext): void {
-  const migrationKey = 'styleMigratedFull.v2';
-  if (context.globalState.get<boolean>(migrationKey)) return;
+  const pulseMigKey = 'styleMigratedPulse.v3';
+  if (context.globalState.get<boolean>(pulseMigKey)) return;
 
   const styleCfg = vscode.workspace.getConfiguration('antigravityKite');
-  const curStyle = styleCfg.get<string>('statusBar.style');
-  if (curStyle === 'smart' || curStyle === 'labeled') {
-    void styleCfg.update('statusBar.style', 'full', vscode.ConfigurationTarget.Global);
-    logInfo('migrate.statusBarStyle', { from: curStyle, to: 'full' });
+  const explicit = styleCfg.inspect<string>('statusBar.style')?.globalValue;
+  if (!explicit || explicit === 'full' || explicit === 'smart') {
+    void styleCfg.update('statusBar.style', 'pulse', vscode.ConfigurationTarget.Global);
+    logInfo('migrate.statusBarStyle', { from: explicit || 'unset', to: 'pulse' });
   }
-  void context.globalState.update(migrationKey, true);
+  void context.globalState.update(pulseMigKey, true);
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -42,6 +46,8 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   accountStore.init(context);
+  const bootEmail = context.globalState.get<string>('currentEmail') || '';
+  if (bootEmail) getAccountTimeline().recordActiveAccount(bootEmail);
   logInfo('activate.init-done', {
     accounts: accountStore.count(),
     storageDir: accountStore.getStorageDirPath(),
@@ -68,6 +74,7 @@ export function activate(context: vscode.ExtensionContext): void {
     },
     onTrackerChanged: () => {
       logPanel.pushLogPanelData(context, tracker);
+      sidebarProvider?.refreshStatsSummary(false);
     },
   });
   quotaOrchestrator = orchestrator;
@@ -81,6 +88,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   };
 
+  const ledger = new TokenLedger();
+  tokenLedger = ledger;
+
   const sidebar = new SidebarProvider(context.extensionUri, context, {
     requestSwitch: (email) =>
       switchAccount(context, email, {
@@ -90,7 +100,11 @@ export function activate(context: vscode.ExtensionContext): void {
         },
         pushAccounts: () => sidebar.refresh(),
         postMessage: (msg) => sidebar.postMessage(msg),
-        onLogPanelUpdate: () => logPanel.pushLogPanelData(context, tracker),
+        onLogPanelUpdate: () => {
+          ledger.invalidateSummaryCache();
+          sidebar.refreshStatsSummary(false);
+          logPanel.pushLogPanelData(context, tracker);
+        },
       }),
     refreshOneUsage: (email) => orchestrator.refreshOneAccountUsage(email).then(() => undefined),
     refreshAllWithProgress: (onProgress) => orchestrator.refreshAllWithProgress(onProgress),
@@ -100,11 +114,29 @@ export function activate(context: vscode.ExtensionContext): void {
     probeOneHealth: (email) => orchestrator.probeOneHealth(email),
     onQuotaRefreshMinutesChanged: () => orchestrator.applyRefreshInterval(),
     onPrivacyChanged: (enabled) => broadcastPrivacyAcrossHosts(enabled, 'sidebar'),
+    getTrackerSummary: () => tracker.getSummary(),
+    getLedgerSummary: (force) => ledger.getSummary(force),
   });
   sidebarProvider = sidebar;
   registerUiPresenter(sidebar);
 
   migrateLegacyStatusBarStyle(context);
+
+  const liveContextMeter = new LiveContextMeter();
+  logPanel.setLogPanelDeps({
+    getUsage: (email) => orchestrator.getUsage(email),
+    getUsageError: (email) => orchestrator.getUsageError(email),
+    getLiveContext: () => liveContextMeter.getSnapshot(),
+    refreshLiveContext: () => liveContextMeter.refreshNow(),
+    refreshAllPool: () => orchestrator.refreshAllInteractive().then(() => undefined),
+    refreshOneAccount: (email) => orchestrator.refreshOneAccountUsage(email).then(() => undefined),
+    requestSwitch: (email) => sidebar.requestSwitch(email),
+    openStatusBarSettings: () => {
+      void vscode.commands.executeCommand('antigravityKite.openSidebar');
+      sidebar.openSettingsUi('statusBar');
+    },
+    tokenLedger: ledger,
+  });
 
   const statusBar = new StatusBarManager(
     context,
@@ -116,11 +148,17 @@ export function activate(context: vscode.ExtensionContext): void {
       refreshAll: () => orchestrator.refreshAllInteractive().then(() => undefined),
       recheckHealth: () => orchestrator.probeAllHealth(),
       openSettings: () => sidebar.openSettingsUi(),
+      openAppearanceSettings: () => sidebar.openSettingsUi('appearance'),
       getPrivacy: () => context.globalState.get<boolean>('privacyMode', false),
       getUsageError: (email) => orchestrator.getUsageError(email),
+      getLiveContext: () => liveContextMeter.getSnapshot(),
+      refreshLiveContext: () => liveContextMeter.refreshNow(),
+      setLiveContextEnabled: (enabled) => liveContextMeter.setEnabled(enabled),
+      openLogPanel: () => void vscode.commands.executeCommand('antigravityKite.openLogPanel'),
     },
   );
   statusBarManager = statusBar;
+  statusBar.updateLiveContext();
 
   startDeclarationSuppressor();
 
@@ -135,6 +173,15 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     sidebar,
     statusBar,
+    liveContextMeter,
+    liveContextMeter.onDidChange(() => {
+      const snap = liveContextMeter.getSnapshot();
+      if (ledger.recordSpeedSample(snap)) {
+        sidebar.refreshStatsSummary(true);
+      }
+      statusBar.updateLiveContext();
+      logPanel.pushLiveContextToLogPanel(snap);
+    }),
     orchestrator.scheduleStartupTasks(),
     autoCheckOnStartup(),
     showUpdateNotesOnStartup(context),
@@ -157,8 +204,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('antigravityKite.checkForUpdates', async () => {
       await checkForUpdates(false);
     }),
-    vscode.commands.registerCommand('antigravityKite.openLogPanel', (tab?: string) => {
-      logPanel.openLogPanel(context, tracker, context.extensionUri, tab, (enabled) => {
+    vscode.commands.registerCommand('antigravityKite.openLogPanel', (target?: logPanel.LogPanelOpenTarget) => {
+      logPanel.openLogPanel(context, tracker, context.extensionUri, target, (enabled) => {
         broadcastPrivacyAcrossHosts(enabled, 'logPanel');
       });
     }),
@@ -171,6 +218,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('antigravityKite.openSettings', () => {
       sidebar.openSettingsUi();
     }),
+    vscode.commands.registerCommand('antigravityKite.openAppearanceSettings', () => {
+      sidebar.openSettingsUi('appearance');
+    }),
   );
 }
 
@@ -178,6 +228,7 @@ export function deactivate(): void {
   stopDeclarationSuppressor();
   disposeSwitchOrchestrator();
   logPanel.disposeLogPanel();
+  tokenLedger?.dispose();
   quotaOrchestrator?.dispose();
   sidebarProvider?.dispose();
   accountStore.dispose();

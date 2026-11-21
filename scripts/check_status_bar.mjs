@@ -63,11 +63,12 @@ try {
 if (typeof mod.validateStyle !== 'function') {
   fail('validateStyle 存在', '旧产物无此导出——底栏尚未引入 smart 聚合样式（本次重构核心行为）');
 } else {
+  assert('validateStyle(pulse) 保留灵动最佳视图', mod.validateStyle('pulse') === 'pulse');
   assert('validateStyle(smart) 保留极简档', mod.validateStyle('smart') === 'smart');
   assert('validateStyle(full) 保留旧样式', mod.validateStyle('full') === 'full');
   assert('validateStyle(dot/percent/compact/dual/labeled) 全保留',
     ['dot', 'percent', 'compact', 'dual', 'labeled'].every(s => mod.validateStyle(s) === s));
-  assert('validateStyle(非法值) 回退 full（默认信息全开）', mod.validateStyle('bogus') === 'full');
+  assert('validateStyle(非法值) 回退 pulse（默认最佳视图）', mod.validateStyle('bogus') === 'pulse');
 }
 
 // ── 2. sortPoolForQuickPick ───────────────────────────────────────
@@ -166,6 +167,7 @@ if (typeof mod.formatCredits !== 'function') {
   assert('有点数 → 🪙 金币（整数直显）', mod.formatCredits(120) === '🪙 120', mod.formatCredits(120));
   assert('小数保留两位内', mod.formatCredits(87.5) === '🪙 87.5', mod.formatCredits(87.5));
   assert('无点数 → 空串不显示', mod.formatCredits(undefined) === '' && mod.formatCredits(null) === '');
+  assert('0 或负积分 → 空串不显示', mod.formatCredits(0) === '' && mod.formatCredits(-5) === '');
 }
 
 // ── 8. maskEmailStr（隐私脱敏：G22 底栏/tooltip/QuickPick 同源）──
@@ -308,6 +310,41 @@ assert('缓存失败说明是「当前数据更新于 X」而非裸时间',
 const cssSrc = fs.readFileSync(path.join(root, 'resources', 'webview', 'main.css'), 'utf8');
 const noteCss = cssSrc.slice(cssSrc.indexOf('.quota-cache-note'), cssSrc.indexOf('.quota-cache-note') + 380);
 assert('缓存标记不被卡片 flex 拉成整行', /align-self:\s*flex-start/.test(noteCss));
+
+// ── 13. v1.5.4 pulse 灵动最佳视图与直达设置入口 ──
+if (typeof mod.formatPulseMainText !== 'function') {
+  fail('formatPulseMainText 存在', '尚未导出灵动视图主段格式化器 formatPulseMainText');
+} else {
+  const healthyText = mod.formatPulseMainText({
+    short: 'alice',
+    minPct: 86,
+    healthBanner: false,
+    healthIcon: '',
+    healthLabel: '',
+    resetStr: '🕐 Claude 5h 4h 20m',
+    showAccount: true,
+    showModels: true,
+  });
+  assert('pulse 健康充足(>=30%) → 紧凑只显账号与最紧色点+百分比，不挤倒计时',
+    healthyText === '$(account) alice · 🟢 86%', healthyText);
+
+  const lowText = mod.formatPulseMainText({
+    short: 'alice',
+    minPct: 18,
+    healthBanner: false,
+    healthIcon: '',
+    healthLabel: '',
+    resetStr: '🕐 Claude 5h 12m',
+    showAccount: true,
+    showModels: true,
+  });
+  assert('pulse 低额度(<30%) → 自动展开回血倒计时提醒',
+    lowText === '$(account) alice · 🟠 18% 🕐 Claude 5h 12m', lowText);
+}
+assert('底栏 Tooltip 与 QuickPick 均接入视图设置直达命令 antigravityKite.openAppearanceSettings',
+  statusBarSrc.includes('antigravityKite.openAppearanceSettings')
+  && statusBarSrc.includes('qpOpenAppearanceSettings'),
+  '缺少视图设置跳转命令或 QuickPick 入口');
 
 console.log(failures === 0
   ? '[check_status_bar] 全部通过 ✔'

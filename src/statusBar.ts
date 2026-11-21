@@ -1,30 +1,37 @@
 /**
- * 底部状态栏管理器（v1.1.16 重构：对标 12 家同类 + BuddyRelay 范式）
- *
- * 设计：
- *   [右·主]  $(account) 账号前缀 🟢 98% 🪙 87.5 —— smart 聚合段（默认）：账号+最紧额度+点数，异常才升级
- *   [右·副]  池 3/5（无图标）       —— 号池统计，点击开侧栏
- *
- * 模式收敛（对标结论）：
- * - 默认单段聚合，详情下沉 tooltip / QuickPick（Copilot 官方、Gravity Orchestrator、BuddyRelay 同款）
- * - 变色取"最吃紧"一档：min(各窗口) 决定，<30 警告底 / <10 错误底（社区阈值收敛区）
- * - 健康态上栏：封禁=🚫 红底、登录失效=🔑 橙底（账号级结论才顶栏）；检测异常/网络异常只进 tooltip，
- *   额度数据照常显示；刷新失败补 $(history) 标记（额度色点 🟢🟡🟠🔴）
- *   （元数据端点对封禁隐身，额度满格 ≠ 健康——v1.1.14 实测定案）
- * - 点击弹混合菜单：账号按最紧额度降序（最优号在顶，BoyGR 模式）+ 快捷操作区（BuddyRelay 模式）
- * - 数据管线合一：不再自建定时抓取，走 extension.ts 的共享 usageCache + 统一刷新管线（deps 注入）
- * - 平铺样式（labeled/full）保留给重度用户（自定义丰富），标签唯一权威源是 usageService.label
- *
- * 特性：
- * - 6 档旧样式全保留，新增 smart 聚合段并设为默认（validateStyle 兜底非法值）
- * - 订阅账号变化 / 配置变化事件，自动重绘；健康翻转由 persistHealthIfChanged 触发重绘
+ * 底部状态栏管理器（v1.5.4：保留 7 档传统样式 + 默认 pulse 灵动最佳视图）
  */
 import * as vscode from 'vscode';
 import * as accountStore from './accountStore';
-import { UsageSnapshot, AccountHealth, StoredAccount, ModelQuota } from './types';
 import { t } from './i18n';
-import { notifyUi } from './uiChannel';
+import { LiveContextSnapshot } from './liveContextMeter';
+import { LIVE_CONTEXT_CMD, LiveContextStatusBar } from './liveContextStatusBar';
 import { logWarn } from './logger';
+import {
+  StatusBarPosition,
+  StatusBarStyle,
+  VALID_POSITIONS,
+  barColor,
+  colorDot,
+  degradeFlat,
+  displayName,
+  displayTierLabel,
+  fmtDuration,
+  formatCredits,
+  formatFamilySegments,
+  formatPulseMainText,
+  formatResetHint,
+  formatResetHintIn,
+  formatWindowShort,
+  maskEmailStr,
+  pickHealthMark,
+  sortPoolForQuickPick,
+  validateStyle,
+} from './statusBarFormat';
+import { AccountHealth, ModelQuota, StoredAccount, UsageSnapshot } from './types';
+import { notifyUi } from './uiChannel';
+
+export * from './statusBarFormat';
 
 function safeDispose(item: vscode.Disposable | undefined, label: string): void {
   if (!item) return;
@@ -35,270 +42,31 @@ function safeDispose(item: vscode.Disposable | undefined, label: string): void {
   }
 }
 
-/** 状态栏左段信息密度：full 全量（默认：账号+级别+族分格+倒计时+积分）；smart 聚合段等其余档位为极简可选 */
-export type StatusBarStyle = 'smart' | 'dot' | 'percent' | 'compact' | 'dual' | 'labeled' | 'full';
-
-export type StatusBarPosition = 'left' | 'right';
-
-const VALID_STYLES: StatusBarStyle[] = ['smart', 'dot', 'percent', 'compact', 'dual', 'labeled', 'full'];
-const VALID_POSITIONS: StatusBarPosition[] = ['left', 'right'];
-
 const OPEN_SIDEBAR_CMD = 'antigravityKite.openSidebar';
 
-/** 样式白名单校验：非法值回退 smart（读失败 = 未知，走默认保守路径） */
-export function validateStyle(v: string): StatusBarStyle {
-  return VALID_STYLES.includes(v as StatusBarStyle) ? (v as StatusBarStyle) : 'full';
-}
-
-/**
- * 健康态 → 底栏标记。异常才亮牌：ok 与未检测返回空标记。
- * bg 用官方语义色（error/warning background 是官方告警条款的合理使用：额度监控类的危险档）。
- * banner=true 是账号级结论（封禁/登录失效），才允许顶掉额度段；
- * unknown/unreachable 只是「这次没测成」，必须继续显示已缓存的额度数据。
- */
-export function pickHealthMark(health?: AccountHealth): { icon: string; bg: 'error' | 'warning' | undefined; banner: boolean } {
-  switch (health?.status) {
-    case 'banned':
-      return { icon: '🚫', bg: 'error', banner: true };
-    case 'auth_invalid':
-      return { icon: '🔑', bg: 'warning', banner: true };
-    case 'unknown':
-      return { icon: '❓', bg: undefined, banner: false };
-    case 'unreachable':
-      return { icon: '$(cloud-offline)', bg: undefined, banner: false };
-    default:
-      return { icon: '', bg: undefined, banner: false };
-  }
-}
-
-/** 额度四档 emoji 色点：绿 ≥50 / 黄 30-50 / 橙 10-30 / 红 <10（参考项目收敛阈值） */
-export function colorDot(pct: number): string {
-  if (pct >= 50) return '🟢';
-  if (pct >= 30) return '🟡';
-  if (pct >= 10) return '🟠';
-  return '🔴';
-}
-
-/** 窗口短名：5h 直用；weekly 用 i18n 短词（周/W） */
-function windowShort(modelId: string): string {
-  return modelId.endsWith(':weekly') ? t('quotaWeeklyShort') : '5h';
-}
-
-const FAMILY_LABELS: Record<string, string> = { claude: 'Claude', gemini: 'Gemini', argon: 'Gemini 4' };
-
-/**
- * 重置倒计时（对标 Manager 的 🕐 窗口回血提示）——带归属：
- * 取过滤后窗口中"最近即将重置"的一个，形态 `🕐 Claude 5h 4h55m`（池名+窗口名+时长）。
- * 三个池两个窗口共 6 份倒计时，不带归属的数字等于没信息。
- * 无未来重置时间（数据缺失/全部过期）返回空串——没信息不占位。
- */
-export function formatResetHint(models: ModelQuota[]): string {
-  const now = Date.now();
-  let best: { m: ModelQuota; t: number } | null = null;
-  for (const m of models) {
-    const t = m.resetTime ? new Date(m.resetTime).getTime() : NaN;
-    if (!Number.isFinite(t) || t <= now) continue;
-    if (!best || t < best.t) best = { m, t };
-  }
-  if (!best) return '';
-  const famKey = (best.m.modelId || '').split(':')[0];
-  return `🕐 ${FAMILY_LABELS[famKey] || famKey} ${windowShort(best.m.modelId)} ${fmtDuration(best.t - now)}`;
-}
-
-/**
- * 族内重置倒计时（族分格用，池名由族格自带）：`🕐 5h 4h55m`。
- * 只看该族窗口，取最近即将重置的；无则空串。
- */
-export function formatResetHintIn(models: ModelQuota[], familyKey: string): string {
-  const now = Date.now();
-  let best: { m: ModelQuota; t: number } | null = null;
-  for (const m of models) {
-    if ((m.modelId || '').split(':')[0] !== familyKey) continue;
-    const t = m.resetTime ? new Date(m.resetTime).getTime() : NaN;
-    if (!Number.isFinite(t) || t <= now) continue;
-    if (!best || t < best.t) best = { m, t };
-  }
-  if (!best) return '';
-  return `🕐 ${windowShort(best.m.modelId)} ${fmtDuration(best.t - now)}`;
-}
-
-/**
- * 额度族分格（多池多窗口的紧凑表达，Wanow 斜杠范式）：
- * Claude / Gemini / Gemini 4 是三个独立配额池，各一格；
- * 族内 5h 与周额度斜杠并排（96%/100%），缺失窗口只显已有的——不对称账号天然兼容；
- * 色点取族内最紧窗口（变色取"最吃紧"一档的收敛共识）。
- */
-export function formatFamilySegments(models: ModelQuota[], families?: Set<string>, resetHints?: boolean): string {
-  const FAMILIES: { key: string; label: string }[] = [
-    { key: 'claude', label: 'Claude' },
-    { key: 'gemini', label: 'Gemini' },
-    { key: 'argon', label: 'Gemini 4' },
-  ];
-  const segments: string[] = [];
-  for (const fam of FAMILIES) {
-    if (families && !families.has(fam.key)) continue; // 用户关掉的池不显示（"某个池不用"）
-    const five = models.find(m => m.modelId === fam.key + ':5h');
-    const week = models.find(m => m.modelId === fam.key + ':weekly');
-    if (!five && !week) continue; // 该池无数据就不渲染（没有数据就没有发言权）
-    const pcts = [five?.remainingPercent, week?.remainingPercent].filter((v): v is number => typeof v === 'number');
-    const dot = colorDot(Math.min(...pcts));
-    const pair = pcts.map(v => v + '%').join('/');
-    const hint = resetHints ? formatResetHintIn(models, fam.key) : '';
-    segments.push(dot + ' ' + fam.label + ' ' + pair + (hint ? ' ' + hint : ''));
-  }
-  return segments.join(' · ');
-}
-
-/** 邮箱脱敏（与 webview 端 maskEmail 同一逻辑的宿主侧实现）：user@example.com → us***r@*** */
-export function maskEmailStr(email: string): string {
-  if (!email) return '';
-  const at = email.indexOf('@');
-  if (at <= 0) return email.slice(0, 2) + '***';
-  const name = email.slice(0, at);
-  const domain = email.slice(at + 1);
-  const maskedName = name.length <= 2 ? name[0] + '***' : name.slice(0, 2) + '***' + name.slice(-1);
-  return maskedName + '@***';
-}
-
-/** 隐私模式显示名：开着就脱敏，闭着用原文 */
-function displayName(email: string, privacy: boolean): string {
-  return privacy ? maskEmailStr(email) : email;
-}
-
-/**
- * AI 点数显示（🪙 金币图标 + 数值）。账号没有点数（undefined/null）返回空串——没点数就不显示，
- * 有点数的账号在 smart/dual/full/tooltip/QuickPick 全部带 🪙 图标露出。
- */
-export function formatCredits(v: number | null | undefined): string {
-  if (v === undefined || v === null || !Number.isFinite(v)) return '';
-  const n = Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
-  return '🪙 ' + n;
-}
-
-/**
- * 会员级别文案：大驼峰，Ultra 保留官方倍数后缀（Ultra 5x / Ultra 20x）。
- * 关键词表与 Manager normalize_subscription_tier 对齐（helium/starter/standard/gcp_ 全覆盖）。
- * 与 webview 模板内 planTierLabel 同 spec 双载（maskEmailStr/maskEmail 同款套路）。
- */
-export function displayTierLabel(tierId: string): string {
-  const s = String(tierId);
-  const t = s.toLowerCase();
-  const mult = /(\d+x)/i.exec(s);
-  if (t.includes('ultra') || t.includes('helium')) return 'Ultra' + (mult ? ' ' + mult[1] : '');
-  if (t.includes('plus')) return 'Plus';
-  if (t.includes('free') || t.includes('starter')) return 'Free';
-  if (t.includes('pro') || t.includes('premium') || t.includes('advanced')) return 'Pro';
-  if (t.includes('trial')) return 'Trial';
-  if (t.includes('enterprise') || t.includes('standard') || t.includes('business') || t.startsWith('gcp_') || t.includes('vertex')) return 'Enterprise';
-  if (t.includes('team')) return 'Team';
-  return s;
-}
-
-/**
- * 平铺样式分级降级（唯一权威实现）：
- * 按渲染有效宽度（$(codicon)≈1 字宽、emoji≈2 字宽）依次尝试
- *   全量(withReset+withCredits) → 丢倒计时 → 丢积分 → fallback 聚合段。
- * 信息优先级：配额 > 账号 > 倒计时 > 积分；builder 返回 null（无内容）的档位跳过。
- */
-export function degradeFlat(
-  build: (withReset: boolean, withCredits: boolean) => string | null,
-  fallback: string,
-  limit = 180
-): string {
-  const effLen = (t: string): number =>
-    t.replace(/\$\([a-z0-9-]+\)/gi, '@').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '@@').length;
-  for (const cand of [build(true, true), build(false, true), build(false, false)]) {
-    if (cand !== null && cand.length > 0 && effLen(cand) <= limit) return cand;
-  }
-  return fallback;
-}
-
-/**
- * QuickPick 账号排序（切号场景最顺手：想切的号永远在上面）：
- * 当前号 → 可用（按最紧额度降序）→ 检测异常/网络异常 → 封禁/登录失效 → 禁用垫底
- */
-export function sortPoolForQuickPick(
-  accounts: StoredAccount[],
-  getUsage: (email: string) => UsageSnapshot | undefined,
-  currentEmail: string
-): StoredAccount[] {
-  const rank = (a: StoredAccount): number => {
-    if (a.disabled) return 4;
-    if (a.email.toLowerCase() === currentEmail.toLowerCase()) return 0;
-    const h = a.health?.status;
-    if (h === 'banned' || h === 'auth_invalid') return 3;
-    if (h === 'unknown' || h === 'unreachable') return 2;
-    return 1;
-  };
-  return [...accounts].sort((a, b) => {
-    const ra = rank(a);
-    const rb = rank(b);
-    if (ra !== rb) return ra - rb;
-    if (ra === 1) {
-      // 同为可用：最紧额度高的在前（undefined 额度当 -1 沉底）
-      const pa = getUsage(a.email)?.minRemainingPercent ?? -1;
-      const pb = getUsage(b.email)?.minRemainingPercent ?? -1;
-      if (pb !== pa) return pb - pa;
-    }
-    return a.email.localeCompare(b.email);
-  });
-}
-
-/** 平铺样式窗口短标：label 唯一权威源是 usageService（族×窗口已在抓取层定型），此处仅兜底推导 */
-export function formatWindowShort(m: { label?: string; modelId?: string }): string {
-  if (m.label) return m.label;
-  const modelId = m.modelId || '';
-  const family = modelId.startsWith('argon') ? 'Gemini 4'
-    : modelId.startsWith('claude') ? 'Claude'
-    : 'Gemini';
-  const isWeekly = modelId.endsWith(':weekly');
-  return `${family} ${isWeekly ? t('quotaWeekly') : t('quota5h')}`;
-}
-
-/** 依赖注入：状态栏不再自建数据管线，全部走 extension.ts 的共享缓存与统一刷新 */
 export interface StatusBarDeps {
-  /** 读共享额度缓存（唯一数据源） */
   getUsage?: (email: string) => UsageSnapshot | undefined;
-  /** 刷新指定账号（统一管线：抓取→缓存→tracker→健康归类→三端分发） */
   refreshCurrent?: (email: string) => Promise<void>;
-  /** 刷新全池（QuickPick 快捷操作） */
   refreshAll?: () => Promise<void>;
-  /** 健康复检（QuickPick 快捷操作，独立推理探针） */
   recheckHealth?: () => Promise<void>;
-  /** 打开设置弹窗（侧栏 webview 模态） */
   openSettings?: () => void;
-  /** 隐私模式开关（globalState 权威源，G22：隐私不得局限在 webview 闭包） */
+  openAppearanceSettings?: () => void;
   getPrivacy?: () => boolean;
-  /** 指定账号最近一次刷新失败明细：非空表示当前展示的是缓存快照 */
   getUsageError?: (email: string) => string | undefined;
-}
-
-/** 配额条分档色（BuddyRelay 药丸同源：ok 翡翠/warn 橙黄/danger 红） */
-function barColor(pct: number): string {
-  if (pct >= 50) return '#10b981';
-  if (pct >= 30) return '#f59e0b';
-  if (pct >= 10) return '#f97316';
-  return '#ef4444';
-}
-
-/** 毫秒 → "3h 12m" / "2d 4h"（重置倒计时用；不可解析返回空串） */
-function fmtDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return '';
-  const m = Math.round(ms / 60000);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 48) return `${h}h ${m % 60}m`;
-  return `${Math.floor(h / 24)}d ${h % 24}h`;
+  getLiveContext?: () => LiveContextSnapshot | null;
+  refreshLiveContext?: () => Promise<LiveContextSnapshot | null>;
+  setLiveContextEnabled?: (enabled: boolean) => void;
+  openLogPanel?: () => void;
 }
 
 export class StatusBarManager implements vscode.Disposable {
   private _main: vscode.StatusBarItem;
   private _pool: vscode.StatusBarItem;
+  private _liveContext: LiveContextStatusBar;
   private _ctx: vscode.ExtensionContext;
   private _deps: StatusBarDeps;
   private _disposables: vscode.Disposable[] = [];
   private _currentAlignment: vscode.StatusBarAlignment = vscode.StatusBarAlignment.Right;
-
   private _redrawTimer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -310,57 +78,48 @@ export class StatusBarManager implements vscode.Disposable {
     this._ctx = ctx;
     this._deps = deps;
 
-    // 主段：账号 + 额度聚合，点击弹切号菜单（QuickPick）
     this._main = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     this._main.command = 'antigravityKite.quickSwitchAccount';
     this._main.name = 'Kite Quota';
 
-    // 副段：号池统计，点击开侧栏
     this._pool = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
     this._pool.command = OPEN_SIDEBAR_CMD;
     this._pool.name = 'Kite Pool';
 
-    // 注册打开侧栏命令
+    this._liveContext = new LiveContextStatusBar(vscode.StatusBarAlignment.Right);
+
     this._disposables.push(
       vscode.commands.registerCommand(OPEN_SIDEBAR_CMD, () => {
         vscode.commands.executeCommand('antigravityKite.sidebar.focus');
-      })
-    );
-
-    // 注册状态栏点击快速切号命令
-    this._disposables.push(
+      }),
+      vscode.commands.registerCommand(LIVE_CONTEXT_CMD, () => {
+        void this.showLiveContextDetails();
+      }),
       vscode.commands.registerCommand('antigravityKite.quickSwitchAccount', async () => {
         await this._showQuickSwitch(onAccountSwitched, switchRequest);
-      })
-    );
-
-    // 订阅状态栏设置变化，即时重绘（网络刷新只在宿主侧按统一周期跑）
-    this._disposables.push(
+      }),
       vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('antigravityKite.statusBar')) {
           this.update();
         }
-      })
+      }),
+      accountStore.onChange(() => this.update()),
     );
 
-    // 订阅账号变化（健康/禁用/增删都在 store 里，重绘即可；额度刷新由统一管线推送）
-    this._disposables.push(accountStore.onChange(() => this.update()));
-
-    // 倒计时跳动：每分钟纯重绘一次（不碰网络；渲染层读的都是缓存与时间差）
     this._redrawTimer = setInterval(() => this.update(), 60 * 1000);
-    this._disposables.push({ dispose: () => { if (this._redrawTimer) { clearInterval(this._redrawTimer); this._redrawTimer = null; } } });
+    this._disposables.push({
+      dispose: () => {
+        if (this._redrawTimer) { clearInterval(this._redrawTimer); this._redrawTimer = null; }
+      },
+    });
 
     this.update();
   }
 
-  /**
-   * 外部额度数据到位（统一管线推送），重绘即可——数据本体在共享 usageCache
-   */
   updateUsage(_email: string, _usage: UsageSnapshot): void {
     this.update();
   }
 
-  /** 手动触发当前号刷新（走统一管线） */
   async refreshUsage(): Promise<void> {
     const cur = this._ctx.globalState.get<string>('currentEmail') || '';
     if (cur && this._deps.refreshCurrent) {
@@ -375,7 +134,7 @@ export class StatusBarManager implements vscode.Disposable {
   }
 
   private _getStyle(): StatusBarStyle {
-    return validateStyle(this._sbCfg<string>('style', 'full'));
+    return validateStyle(this._sbCfg<string>('style', 'pulse'));
   }
 
   private _getPosition(): StatusBarPosition {
@@ -383,8 +142,6 @@ export class StatusBarManager implements vscode.Disposable {
     return VALID_POSITIONS.includes(v as StatusBarPosition) ? (v as StatusBarPosition) : 'right';
   }
 
-
-  /** 按配置重建两个状态栏项的对齐方向（对齐仅创建时可指定，需重建 item） */
   private _ensureAlignment(position: StatusBarPosition): void {
     const target = position === 'left' ? vscode.StatusBarAlignment.Left : vscode.StatusBarAlignment.Right;
     if (target === this._currentAlignment) return;
@@ -397,37 +154,48 @@ export class StatusBarManager implements vscode.Disposable {
     this._pool.command = OPEN_SIDEBAR_CMD;
     this._pool.name = 'Kite Pool';
     this._currentAlignment = target;
+    this._liveContext.setAlignment(target);
   }
 
-  /**
-   * 刷新状态栏显示
-   */
   update(): void {
     if (!this._sbCfg('enabled', true)) {
       this._main.hide();
       this._pool.hide();
+      this._liveContext.hide();
+      this._deps.setLiveContextEnabled?.(false);
       return;
     }
     this._ensureAlignment(this._getPosition());
     this._renderMain();
     this._renderPool();
+    this.updateLiveContext();
   }
 
-  /** 额度状态色点（额度维度；健康维度见 pickHealthMark）。四档 emoji 对齐 Anti Quota/Cockpit 参考系 */
-  private _getStatusIcon(pct: number): string {
-    return colorDot(pct);
+  updateLiveContext(): void {
+    const enabled = this._sbCfg('enabled', true);
+    const showContext = this._sbCfg('showLiveContext', true);
+    const showSpeed = this._sbCfg('showLiveSpeed', true);
+    const active = enabled && (showContext || showSpeed);
+    this._deps.setLiveContextEnabled?.(active);
+    this._liveContext.render(active, this._deps.getLiveContext?.() ?? null, {
+      showContext,
+      showSpeed,
+      pulseMode: this._getStyle() === 'pulse',
+    });
   }
 
-  /** 池过滤白名单（配置缺失 = 全开，读失败走保守路径） */
+  async showLiveContextDetails(): Promise<void> {
+    this._deps.openLogPanel?.();
+  }
+
   private _getFamilies(): Set<string> {
     const v = this._sbCfg<string[]>('families', ['claude', 'gemini', 'argon']);
     const all = new Set(['claude', 'gemini', 'argon']);
     if (!Array.isArray(v)) return all;
     const set = new Set(v.filter((x): x is string => typeof x === 'string' && all.has(x)));
-    return set.size > 0 ? set : all; // 全关视为配置异常，回退全开
+    return set.size > 0 ? set : all;
   }
 
-  /** 池过滤后的模型列表（族分格与最紧额度共用同一过滤） */
   private _filteredModels(usage: UsageSnapshot): ModelQuota[] {
     const fams = this._getFamilies();
     return usage.models.filter(m => fams.has((m.modelId || '').split(':')[0]));
@@ -447,33 +215,28 @@ export class StatusBarManager implements vscode.Disposable {
     const privacy = this._deps.getPrivacy?.() ?? false;
     const short = curEmail ? displayName(curEmail, privacy) : t('sbNotLoggedIn');
 
-    // 账号级健康结论（封禁/登录失效）才定调整段；探测失败不顶掉已缓存的额度数据
     const health = pickHealthMark(account?.health);
     const healthIcon = health.banner ? health.icon : '';
+    const healthLabel = this._healthShortLabel(account?.health);
 
-    // 内容开关 x 池过滤：models 先过"池过滤"再过"模型额度开关"；
-    // min 不再信预聚合值（那是全池的），按过滤后窗口重算——关掉的池不参与"最紧额度"
     const models = rawUsage ? this._filteredModels(rawUsage) : [];
     const hasQuota = showModels && models.length > 0;
     const pcts = models.map(m => m.remainingPercent).filter(v => typeof v === 'number');
     const min = hasQuota && pcts.length > 0 ? Math.min(...pcts) : 100;
-    const quotaIcon = this._getStatusIcon(min);
+    const quotaIcon = colorDot(min);
     const creditsStr = showCredits && rawUsage ? formatCredits(rawUsage.availableAICredits) : '';
-    // 会员级别：跟账号段走（账号关则无依托）；Free 是默认态不亮牌，Pro/Ultra 才值得标
     const tier = rawUsage?.tierId ? displayTierLabel(String(rawUsage.tierId)) : '';
     const tierStr = showTier && tier && tier !== 'Free' ? ` ·${tier}` : '';
-    // 重置倒计时：显示"最近回血"的那个窗口（快回血了），跟在额度块后面
     const resetStr = showReset && hasQuota ? formatResetHint(models) : '';
-    // 背景色只留给健康异常（封禁/失效）；额度低用色点表达即可，整段红底太刺眼（兄弟指令）
+
     this._main.backgroundColor = health.bg === 'error'
       ? new vscode.ThemeColor('statusBarItem.errorBackground')
       : health.bg === 'warning'
         ? new vscode.ThemeColor('statusBarItem.warningBackground')
         : undefined;
 
-    // 聚合段：账号 / 额度 / 积分 / 健康四块的合成器（内容开关全在这里收口）
     const smartText = (): string | null => {
-      if (health.banner) return `${health.icon} ${short} ${this._healthShortLabel(account?.health)}`.trim();
+      if (health.banner) return `${health.icon} ${short} ${healthLabel}`.trim();
       const parts: string[] = [];
       if (showAccount) parts.push(`$(account) ${short}${tierStr}`);
       if (hasQuota) parts.push(`${quotaIcon} ${min}%${resetStr ? ' ' + resetStr : ''}`);
@@ -484,8 +247,19 @@ export class StatusBarManager implements vscode.Disposable {
     let text: string | null = null;
     if (rawUsage && models.length > 0) {
       switch (style) {
+        case 'pulse':
+          text = formatPulseMainText({
+            short,
+            minPct: min,
+            healthBanner: health.banner,
+            healthIcon,
+            healthLabel,
+            resetStr,
+            showAccount,
+            showModels,
+          });
+          break;
         case 'dot':
-          // 仅图标：账号级告警用健康图标；额度开关关掉后无内容可显
           text = healthIcon || (hasQuota ? quotaIcon : null);
           break;
         case 'percent':
@@ -510,7 +284,6 @@ export class StatusBarManager implements vscode.Disposable {
     }
 
     if (text === null) {
-      // 无额度可显：回退聚合段（账号+积分），全空才隐藏
       text = smartText();
       if (text === null) {
         this._main.hide();
@@ -518,7 +291,6 @@ export class StatusBarManager implements vscode.Disposable {
       }
     }
 
-    // 刷新失败不清缓存：额度数字照常显示，只补一个历史图标，原因放 tooltip
     if (!health.banner && this._deps.getUsageError?.(curEmail)) {
       text = `${text} $(history)`;
     }
@@ -538,11 +310,6 @@ export class StatusBarManager implements vscode.Disposable {
     }
   }
 
-  /**
-   * 平铺样式（labeled/full）：账号 + 各窗口额度（异常窗才带图标，正常不刷 ✓）。
-   * 溢出保护：VS Code 状态栏单项不自动截断，超宽会被顶出屏幕（1.1.15 前的老毛病），
-   * 文本超长自动降级为聚合段。
-   */
   private _flatText(
     style: 'labeled' | 'full',
     models: ModelQuota[],
@@ -562,7 +329,7 @@ export class StatusBarManager implements vscode.Disposable {
     } else {
       if (showAccount) segments.push(`$(account) ${short}${tierStr}`);
       if (showModels) {
-        const famSegs = formatFamilySegments(models, undefined, resetStr ? true : false);
+        const famSegs = formatFamilySegments(models, undefined, !!resetStr);
         if (famSegs) segments.push(famSegs);
       }
       if (style === 'full' && showCredits) {
@@ -594,7 +361,6 @@ export class StatusBarManager implements vscode.Disposable {
     );
   }
 
-  /** tooltip 内联 CSS 配额条（Wanow 踩坑定案：█░ Unicode 在 Windows 字体度量错位，必须 CSS） */
   private _bar(pct: number): string {
     const c = barColor(pct);
     return `<span style="display:inline-block;width:120px;height:6px;border-radius:3px;background:#8884;">`
@@ -607,16 +373,20 @@ export class StatusBarManager implements vscode.Disposable {
     md.supportThemeIcons = true;
     md.supportHtml = true;
 
+    const allAccounts = accountStore.getAll();
+    const total = allAccounts.filter(a => !a.disabled).length;
+    const available = allAccounts.filter(a => !a.disabled && a.email !== email).length;
+
     if (!email) {
-      md.appendMarkdown(`**Antigravity Kite**\n\n${t('sbNotSignedInTip')}\n\n_${t('sbOpenPoolTip')}_`);
+      md.appendMarkdown(`**Antigravity Kite**\n\n${t('sbNotSignedInTip')}\n\n[$(sliders) ${t('sbJumpViewSettings')}](command:antigravityKite.openAppearanceSettings)`);
       return md;
     }
 
     const account = accountStore.getByEmail(email);
     const privacy = this._deps.getPrivacy?.() ?? false;
-    md.appendMarkdown(`**$(account) ${displayName(email, privacy)}**${account?.name ? ` · ${account.name}` : ''}${usage?.tierId ? ` · ${usage.tierId.toUpperCase()}` : ''}\n\n`);
+    const poolChip = total > 0 ? ` · ${t('sbPool')} ${available}/${total}` : '';
+    md.appendMarkdown(`**$(account) ${displayName(email, privacy)}**${account?.name ? ` · ${account.name}` : ''}${usage?.tierId ? ` · ${usage.tierId.toUpperCase()}` : ''}${poolChip}\n\n`);
 
-    // 健康块：异常才亮牌（ok 与未检测不出现在 tooltip）
     const health = account?.health;
     if (health && health.status !== 'ok') {
       const mark = pickHealthMark(health);
@@ -631,7 +401,7 @@ export class StatusBarManager implements vscode.Disposable {
       for (const model of usage.models) {
         md.appendMarkdown(`${this._windowLine(model)}\n\n`);
       }
-      if (usage.availableAICredits !== undefined) {
+      if (typeof usage.availableAICredits === 'number' && usage.availableAICredits > 0) {
         md.appendMarkdown(`---\n\n**🪙 ${t('sbAiCredits')}**：${usage.availableAICredits}\n\n`);
       }
       if (usage.updatedAt) {
@@ -646,11 +416,14 @@ export class StatusBarManager implements vscode.Disposable {
       md.appendMarkdown(`_${t('sbNoQuotaData')}_\n\n`);
     }
 
-    md.appendMarkdown(`---\n\n_${t('sbTooltipClick')}_`);
+    md.appendMarkdown(
+      `---\n\n[$(sliders) ${t('sbJumpViewSettings')}](command:antigravityKite.openAppearanceSettings)`
+      + ` &nbsp;·&nbsp; [$(graph) ${t('sbOpenStatsPanel')}](command:antigravityKite.openLogPanel)`
+      + `\n\n_${t('sbTooltipClick')}_`
+    );
     return md;
   }
 
-  /** 单窗口行：`🟢 **label** — 98% [CSS bar] · 3h 12m 后重置` */
   private _windowLine(model: ModelQuota): string {
     const label = formatWindowShort(model);
     let line = `**${colorDot(model.remainingPercent)} ${label}**：${model.remainingPercent}% ${this._bar(model.remainingPercent)}`;
@@ -662,14 +435,14 @@ export class StatusBarManager implements vscode.Disposable {
   }
 
   private _renderPool(): void {
-    if (!this._sbCfg('showPool', true)) {
+    // 灵动视图下号池可用数收进 Tooltip 与 QuickPick 标题，避免底栏零碎分段
+    if (this._getStyle() === 'pulse' || !this._sbCfg('showPool', true)) {
       this._pool.hide();
       return;
     }
 
     const accounts = accountStore.getAll();
     const curEmail = this._ctx.globalState.get<string>('currentEmail') || '';
-
     const total = accounts.filter(a => !a.disabled).length;
     const available = accounts.filter(a => !a.disabled && a.email !== curEmail).length;
 
@@ -683,9 +456,6 @@ export class StatusBarManager implements vscode.Disposable {
     this._pool.show();
   }
 
-  /**
-   * 点击弹混合菜单：账号（按最紧额度降序 + 健康图标）+ 分隔线 + 快捷操作（BuddyRelay 模式）
-   */
   private async _showQuickSwitch(
     onAccountSwitched?: (email: string) => void | Promise<void>,
     switchRequest?: (email: string) => Promise<void>
@@ -700,6 +470,8 @@ export class StatusBarManager implements vscode.Disposable {
     const privacy = this._deps.getPrivacy?.() ?? false;
     const getUsage = (email: string) => this._deps.getUsage?.(email);
     const sorted = sortPoolForQuickPick(accounts, getUsage, curEmail);
+    const totalActive = accounts.filter(a => !a.disabled).length;
+    const availBackup = accounts.filter(a => !a.disabled && a.email !== curEmail).length;
 
     const healthIconOf = (a: StoredAccount): string => {
       if (a.disabled) return '$(circle-slash)';
@@ -725,98 +497,90 @@ export class StatusBarManager implements vscode.Disposable {
       else if (a.health?.status === 'unreachable') details.push(t('sbHealthUnreachable'));
       if (usage && usage.models.length > 0) {
         details.push(usage.models.map(m => `${formatWindowShort(m)} ${m.remainingPercent}%`).join(' · '));
-        if (usage.availableAICredits !== undefined && usage.availableAICredits !== null) {
+        if (typeof usage.availableAICredits === 'number' && usage.availableAICredits > 0) {
           details.push(formatCredits(usage.availableAICredits));
         }
       }
-      const qpTierRaw = getUsage(a.email)?.tierId;
+      const qpTierRaw = usage?.tierId;
       const qpTier = qpTierRaw ? displayTierLabel(String(qpTierRaw)) : '';
       return {
         label: `${healthIconOf(a)} ${displayName(a.email, privacy)}`,
         description: [isCurrent ? t('sbCurrent') : (a.name || ''), qpTier && qpTier !== 'Free' ? qpTier : ''].filter(Boolean).join(' · ') || undefined,
         detail: details.length > 0 ? details.join(' | ') : (a.disabled ? t('sbDisabled') : t('sbAvailable')),
         type: 'account' as const,
-        email: a.email
+        email: a.email,
       };
     });
 
-    // ── 快捷操作区（BuddyRelay 分隔线模式）──
     items.push({ label: t('qpQuickActions'), kind: vscode.QuickPickItemKind.Separator, type: 'action' });
+    items.push({
+      label: `$(sliders) ${t('qpOpenAppearanceSettings')}`,
+      detail: t('qpOpenAppearanceSettingsDesc'),
+      actionId: 'openAppearanceSettings',
+      type: 'action',
+    });
     items.push({
       label: `$(refresh) ${t('qpRefreshAll')}`,
       detail: t('qpRefreshAllDesc'),
       actionId: 'refreshAll',
-      type: 'action'
+      type: 'action',
     });
     items.push({
       label: `$(shield) ${t('qpRecheckHealth')}`,
       detail: t('qpRecheckHealthDesc'),
       actionId: 'recheckHealth',
-      type: 'action'
+      type: 'action',
     });
     items.push({
       label: `$(layout-sidebar-left) ${t('qpOpenPanel')}`,
       detail: t('qpOpenPanelDesc'),
       actionId: 'openPanel',
-      type: 'action'
+      type: 'action',
     });
     items.push({
-      label: `$(gear) ${t('qpOpenSettings')}`,
-      detail: t('qpOpenSettingsDesc'),
-      actionId: 'openSettings',
-      type: 'action'
+      label: `$(graph) ${t('sbOpenStatsPanel')}`,
+      detail: t('sbCtxClickTip'),
+      actionId: 'openLogPanel',
+      type: 'action',
     });
 
     const selected = await vscode.window.showQuickPick(items, {
-      title: 'Antigravity Kite',
+      title: `Antigravity Kite · ${t('sbPool')} ${availBackup}/${totalActive}`,
       placeHolder: t('sbPickAccount'),
       matchOnDescription: true,
-      matchOnDetail: true
+      matchOnDetail: true,
     });
 
     if (!selected) return;
 
     if (selected.type === 'action') {
       switch (selected.actionId) {
+        case 'openAppearanceSettings':
+          if (this._deps.openAppearanceSettings) this._deps.openAppearanceSettings();
+          else this._deps.openSettings?.();
+          break;
+        case 'openLogPanel':
+          this._deps.openLogPanel?.();
+          break;
         case 'refreshAll':
-          await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: t('qpRefreshAll'),
-            cancellable: false
-          }, async () => {
-            try {
-              await this._deps.refreshAll?.();
-            } catch (err) {
-              notifyUi('error', t('sbSwitchFail', err instanceof Error ? err.message : String(err)));
-            }
+          await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: t('qpRefreshAll'), cancellable: false }, async () => {
+            try { await this._deps.refreshAll?.(); } catch (err) { notifyUi('error', t('sbSwitchFail', err instanceof Error ? err.message : String(err))); }
           });
           this.update();
           break;
         case 'recheckHealth':
-          await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: t('qpRecheckHealth'),
-            cancellable: false
-          }, async () => {
-            try {
-              await this._deps.recheckHealth?.();
-            } catch (err) {
-              notifyUi('error', String(err instanceof Error ? err.message : err));
-            }
+          await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: t('qpRecheckHealth'), cancellable: false }, async () => {
+            try { await this._deps.recheckHealth?.(); } catch (err) { notifyUi('error', String(err instanceof Error ? err.message : err)); }
           });
           this.update();
           break;
         case 'openPanel':
           await vscode.commands.executeCommand(OPEN_SIDEBAR_CMD);
           break;
-        case 'openSettings':
-          this._deps.openSettings?.();
-          break;
       }
       return;
     }
 
-    // ── 账号分支：完整切号链路 ──
     if (selected.type !== 'account' || !selected.email) return;
     const account = accounts.find(a => a.email === selected.email);
     if (!account) return;
@@ -830,12 +594,7 @@ export class StatusBarManager implements vscode.Disposable {
       return;
     }
 
-    await vscode.window.withProgress({
-      location: vscode.ProgressLocation.Notification,
-      title: t('sbSwitching', account.email),
-      cancellable: false
-    }, async () => {
-      // 复用侧栏完整切号链路（门控/token/凭据/状态库/agy/gemini/会话/引擎重载；切号内部已触发当前号额度刷新）
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: t('sbSwitching', account.email), cancellable: false }, async () => {
       try {
         await switchRequest?.(account.email);
         await onAccountSwitched?.(account.email);
@@ -846,27 +605,19 @@ export class StatusBarManager implements vscode.Disposable {
     });
   }
 
-  /**
-   * 隐藏状态栏
-   */
   hide(): void {
     this._main.hide();
     this._pool.hide();
+    this._liveContext.hide();
   }
 
-  /**
-   * 显示状态栏
-   */
-  show(): void {
-    this.update();
-  }
+  show(): void { this.update(); }
 
   dispose(): void {
     safeDispose(this._main, 'main');
     safeDispose(this._pool, 'pool');
-    for (const d of this._disposables) {
-      safeDispose(d, 'subscription');
-    }
+    safeDispose(this._liveContext, 'liveContext');
+    for (const d of this._disposables) { safeDispose(d, 'subscription'); }
     this._disposables = [];
   }
 }

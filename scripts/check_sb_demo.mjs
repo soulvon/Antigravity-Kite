@@ -67,7 +67,7 @@ const sandbox = `
   ${sbOptsSrc}
   ${sbDemoSrc}
 `;
-const styles = ['smart', 'dot', 'percent', 'compact', 'dual', 'labeled', 'full'];
+const styles = ['pulse', 'smart', 'dot', 'percent', 'compact', 'dual', 'labeled', 'full'];
 let run;
 try {
   run = new Function('styles', sandbox + `

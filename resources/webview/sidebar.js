@@ -56,6 +56,11 @@ let tagEditBatchEmails = null;
 let tagEditPendingTags = [];
 let selectMode = false;
 const selectedEmails = new Set();
+let statsCollapsed = false;
+let cardViewMode = 'classic';
+let showCardTokens = true;
+let perAccountTokens = {};
+let lastTodayStats = null;
 
 // 恢复过滤器与视图排序/分页偏好
 try {
@@ -64,6 +69,7 @@ try {
   if (st._sortBy && ['default', 'recommend', 'email', 'time'].includes(st._sortBy)) sortBy = st._sortBy;
   if (st._sortDir === 'asc' || st._sortDir === 'desc') sortDir = st._sortDir;
   if (typeof st._pageSize === 'number' && [0, 10, 20, 50].includes(st._pageSize)) pageSize = st._pageSize;
+  if (typeof st._statsCollapsed === 'boolean') statsCollapsed = st._statsCollapsed;
 } catch (e) {}
 
 function persistViewPrefs() {
@@ -72,8 +78,20 @@ function persistViewPrefs() {
     st._sortBy = sortBy;
     st._sortDir = sortDir;
     st._pageSize = pageSize;
+    st._statsCollapsed = statsCollapsed;
     vscode.setState(st);
   } catch (e) {}
+}
+function syncStatsCollapseUI() {
+  const btn = document.getElementById('statsCollapseBtn');
+  const drawer = document.getElementById('sidebarStatsDrawer');
+  if (btn) {
+    btn.classList.toggle('is-collapsed', statsCollapsed);
+    btn.setAttribute('aria-expanded', statsCollapsed ? 'false' : 'true');
+  }
+  if (drawer) {
+    drawer.classList.toggle('is-collapsed', statsCollapsed);
+  }
 }
 function applySortDirIcon() {
   const btn = document.getElementById('sortDirectionBtn');
@@ -87,6 +105,31 @@ function applySortDirIcon() {
   const pEl = document.getElementById('pageSizeSelect');
   if (pEl) pEl.value = String(pageSize);
   applySortDirIcon();
+  syncStatsCollapseUI();
+
+  const collapseBtn = document.getElementById('statsCollapseBtn');
+  if (collapseBtn) {
+    collapseBtn.addEventListener('click', () => {
+      statsCollapsed = !statsCollapsed;
+      syncStatsCollapseUI();
+      persistViewPrefs();
+    });
+  }
+  const todayStrip = document.getElementById('sbTodayStripBtn');
+  if (todayStrip) todayStrip.addEventListener('click', () => vscode.postMessage({ type: 'openStatsPanel', tab: 'tokens' }));
+  const todayWrap = document.getElementById('sbTodayWrap');
+  const todayPop = document.getElementById('sbTodayPopover');
+  if (todayWrap && todayPop) {
+    const showPop = () => {
+      if (statsCollapsed || !lastTodayStats) return;
+      todayPop.hidden = false;
+    };
+    const hidePop = () => { todayPop.hidden = true; };
+    todayWrap.addEventListener('mouseenter', showPop);
+    todayWrap.addEventListener('mouseleave', hidePop);
+    todayWrap.addEventListener('focusin', showPop);
+    todayWrap.addEventListener('focusout', hidePop);
+  }
 })();
 
 function getAccTags(a) {
@@ -792,9 +835,15 @@ window.addEventListener('message', e => {
     try { const st = vscode.getState() || {}; st._privacy = privacyMode; vscode.setState(st); } catch (err) {}
     renderAccounts();
   }
+  if (msg.type === 'sidebarStats') {
+    updateSidebarTodayStats(msg);
+  }
   if (msg.type === 'accounts') {
     accounts = msg.accounts || [];
     currentEmail = msg.currentEmail || '';
+    if (msg.perAccountTokens && typeof msg.perAccountTokens === 'object') {
+      perAccountTokens = msg.perAccountTokens;
+    }
     if (typeof msg.privacyMode === 'boolean' && msg.privacyMode !== privacyMode) {
       privacyMode = msg.privacyMode;
       syncPrivacyBtnUI();
@@ -861,7 +910,7 @@ window.addEventListener('message', e => {
     fillSettingsForm(msg.settings);
   }
   if (msg.type === 'openSettings') {
-    openSettingsModal();
+    openSettingsModal(msg.section);
   }
   if (msg.type === 'authWait') {
     setAuthWaitBar(msg.action, !!msg.active);
@@ -1085,30 +1134,55 @@ function fillSettingsForm(s) {
   set('setCdpHeartbeat', s.cdpHeartbeatMs || 500);
   set('setQuotaRefresh', s.quotaRefreshMinutes || 15);
   set('setLocale', s.locale || 'auto');
+  const nextCardView = s.sidebarCardView === 'compact' ? 'compact' : 'classic';
+  const nextShowCardTokens = s.sidebarShowCardTokens !== false;
+  set('setCardView', nextCardView);
+  chk('setCardTokens', nextShowCardTokens);
   chk('setStatusEnabled', s.statusBarEnabled !== false);
   set('setStatusPosition', s.statusBarPosition || 'right');
-  set('setStatusStyle', s.statusBarStyle || 'full');
+  set('setStatusStyle', s.statusBarStyle || 'pulse');
   chk('setStatusAccount', s.statusBarAccount !== false);
   chk('setStatusModels', s.statusBarModels !== false);
   chk('setStatusCredits', s.statusBarCredits !== false);
   chk('setStatusPool', s.statusBarPool !== false);
   chk('setStatusTier', s.statusBarTier !== false);
   chk('setStatusReset', s.statusBarResetCountdown !== false);
+  chk('setStatusLiveContext', s.statusBarLiveContext !== false);
+  chk('setStatusLiveSpeed', s.statusBarLiveSpeed !== false);
   const fams = Array.isArray(s.statusBarFamilies) ? s.statusBarFamilies : ['claude', 'gemini', 'argon'];
   chk('setStatusFamClaude', fams.indexOf('claude') >= 0);
   chk('setStatusFamGemini', fams.indexOf('gemini') >= 0);
   chk('setStatusFamArgon', fams.indexOf('argon') >= 0);
+  if (cardViewMode !== nextCardView || showCardTokens !== nextShowCardTokens) {
+    cardViewMode = nextCardView;
+    showCardTokens = nextShowCardTokens;
+    renderAccounts();
+  }
   if (typeof syncStyleCards === 'function') syncStyleCards();
   if (typeof renderDemos === 'function') renderDemos();
 }
 
-function openSettingsModal() {
+function openSettingsModal(section) {
   const ov = document.getElementById('settingsOverlay');
   if (!ov) return;
   ov.hidden = false;
   vscode.postMessage({ type: 'getSettings' });
   renderCdpStatus(null);
   vscode.postMessage({ type: 'getCdpStatus' });
+  const targetId = section === 'statusBar'
+    ? 'settingsStatusBarGroup'
+    : (section === 'appearance' ? 'settingsAppearanceGroup' : '');
+  if (targetId) {
+    const highlightGroup = () => {
+      const grp = document.getElementById(targetId);
+      if (!grp) return;
+      grp.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      grp.classList.add('is-spotlight');
+      setTimeout(() => grp.classList.remove('is-spotlight'), 1200);
+    };
+    requestAnimationFrame(highlightGroup);
+    setTimeout(highlightGroup, 120);
+  }
 }
 
 function closeSettingsModal() {
@@ -1191,24 +1265,26 @@ function sbDemoHTML(style) {
   const DOT = '🟢';
   const sep = '<span class="sbd-dim">|</span>';
   const fams = [];
-  if (o.claude) fams.push(DOT + ' Claude 96%/100%');
-  if (o.gemini) fams.push(DOT + ' Gemini 98%');
-  if (o.argon) fams.push(DOT + ' Gemini 4 91%');
-  const FAM = fams.join(' · ');
+  if (o.claude) fams.push('<span class="sbd-seg">' + DOT + ' Claude 96%/100%</span>');
+  if (o.gemini) fams.push('<span class="sbd-seg">' + DOT + ' Gemini 98%</span>');
+  if (o.argon) fams.push('<span class="sbd-seg">' + DOT + ' Gemini 4 91%</span>');
+  const FAM = fams.join('<span class="sbd-dim">·</span>');
   const acc = o.account ? '<span class="sbd-seg">' + SB_USER_SVG + 'soulvon2501' + (o.tier ? ' ·Pro' : '') + '</span>' : '';
   const pct = o.models ? '<span class="sbd-seg">' + DOT + ' 96%</span>' : '';
   const rst = o.models && o.reset ? '<span class="sbd-seg">🕐 Claude 5h 4h 55m</span>' : '';
   const cred = o.credits ? '<span class="sbd-seg">🪙 87.5</span>' : '';
   const minPct = o.claude && o.gemini ? (o.argon ? 91 : 96) : (o.gemini ? 98 : (o.argon ? 91 : 96));
   const pctStr = o.models ? minPct + '%' : '';
+  const dualLeft = [o.models ? '<span class="sbd-seg">' + DOT + ' ' + pctStr + '</span>' : '', rst].filter(Boolean).join('');
   switch (style) {
+    case 'pulse': return [o.account ? '<span class="sbd-seg">' + SB_USER_SVG + 'soulvon2501</span>' : '', o.models ? '<span class="sbd-seg">· ' + DOT + ' ' + minPct + '%</span>' : ''].filter(Boolean).join('') || '<span class="sbd-dim">—</span>';
     case 'smart': return [acc, pct, rst, cred].filter(Boolean).join('') || '<span class="sbd-dim">—</span>';
     case 'dot': return o.models ? '<span class="sbd-seg">' + DOT + '</span>' : (cred || '<span class="sbd-dim">—</span>');
     case 'percent': return o.models ? '<span class="sbd-seg">' + pctStr + '</span>' : '<span class="sbd-dim">—</span>';
     case 'compact': return o.models ? '<span class="sbd-seg">' + DOT + ' ' + pctStr + (rst ? ' 🕐 Claude 5h 4h 55m' : '') + '</span>' : '<span class="sbd-dim">—</span>';
-    case 'dual': return ((o.models ? '<span class="sbd-seg">' + DOT + ' ' + pctStr + '</span>' : '') + (rst ? '<span class="sbd-seg">' + rst + '</span>' : '') + (cred ? sep + cred : '')) || '<span class="sbd-dim">—</span>';
-    case 'labeled': return [acc, o.models && FAM ? '<span class="sbd-seg">' + FAM + (o.reset ? ' 🕐 5h 4h 55m' : '') + '</span>' : ''].filter(Boolean).join(sep) || '<span class="sbd-dim">—</span>';
-    case 'full': return [acc, o.models && FAM ? '<span class="sbd-seg">' + FAM + '</span>' : '', cred].filter(Boolean).join(sep) || '<span class="sbd-dim">—</span>';
+    case 'dual': return [dualLeft, cred].filter(Boolean).join(sep) || '<span class="sbd-dim">—</span>';
+    case 'labeled': return [acc, o.models && FAM ? FAM + (o.reset ? '<span class="sbd-seg">🕐 5h 4h 55m</span>' : '') : ''].filter(Boolean).join(sep) || '<span class="sbd-dim">—</span>';
+    case 'full': return [acc, o.models && FAM ? FAM : '', cred].filter(Boolean).join(sep) || '<span class="sbd-dim">—</span>';
   }
   return '';
 }
@@ -1238,6 +1314,8 @@ function syncStyleCards() {
 (function () {
   const ov = document.getElementById('settingsOverlay');
   if (!ov) return;
+  const openStatsBtn = document.getElementById('openStatsBtn');
+  if (openStatsBtn) openStatsBtn.addEventListener('click', () => vscode.postMessage({ type: 'openStatsPanel' }));
   const settingsBtn = document.getElementById('settingsBtn');
   if (settingsBtn) settingsBtn.addEventListener('click', openSettingsModal);
   const closeBtn = document.getElementById('settingsClose');
@@ -1265,22 +1343,31 @@ function syncStyleCards() {
       syncRemoteAuth: on('setSyncRemoteAuth'),
       quotaRefreshMinutes: num('setQuotaRefresh', 15),
       locale: val('setLocale') || 'auto',
+      sidebarCardView: val('setCardView') === 'compact' ? 'compact' : 'classic',
+      sidebarShowCardTokens: on('setCardTokens'),
       statusBarEnabled: on('setStatusEnabled'),
       statusBarPosition: val('setStatusPosition') || 'right',
-      statusBarStyle: val('setStatusStyle') || 'full',
+      statusBarStyle: val('setStatusStyle') || 'pulse',
       statusBarAccount: on('setStatusAccount'),
       statusBarModels: on('setStatusModels'),
       statusBarCredits: on('setStatusCredits'),
       statusBarPool: on('setStatusPool'),
       statusBarTier: on('setStatusTier'),
       statusBarResetCountdown: on('setStatusReset'),
+      statusBarLiveContext: on('setStatusLiveContext'),
+      statusBarLiveSpeed: on('setStatusLiveSpeed'),
       statusBarFamilies: ['setStatusFamClaude', 'setStatusFamGemini', 'setStatusFamArgon']
         .filter(function (id) { return on(id); })
         .map(function (id) { return document.getElementById(id).getAttribute('data-family'); })
     };
   };
   const pushSettings = (silent) => {
-    vscode.postMessage({ type: 'saveSettings', silent: !!silent, settings: readSettings() });
+    const nextSettings = readSettings();
+    const viewChanged = cardViewMode !== nextSettings.sidebarCardView || showCardTokens !== nextSettings.sidebarShowCardTokens;
+    cardViewMode = nextSettings.sidebarCardView;
+    showCardTokens = nextSettings.sidebarShowCardTokens;
+    if (viewChanged) renderAccounts();
+    vscode.postMessage({ type: 'saveSettings', silent: !!silent, settings: nextSettings });
   };
 
   (function buildStyleCards() {
@@ -1289,6 +1376,7 @@ function syncStyleCards() {
     if (!grid || !sel || grid.dataset.built) return;
     grid.dataset.built = '1';
     const NAMES = {
+      pulse: tl('sbStylePulseName'),
       smart: tl('sbStyleSmartName'),
       dot: tl('sbStyleDotName'),
       percent: tl('sbStylePercentName'),
@@ -1301,7 +1389,7 @@ function syncStyleCards() {
       const card = document.createElement('div');
       card.className = 'sb-style-card' + (sel.value === st ? ' is-on' : '');
       card.setAttribute('data-style', st);
-      card.innerHTML = '<div class="sb-style-demo">' + sbDemoHTML(st) + '</div><div class="sb-style-name">' + escHtml(NAMES[st]) + '</div>';
+      card.innerHTML = '<div class="sb-style-head"><span class="sb-style-name">' + escHtml(NAMES[st]) + '</span><span class="sb-style-check" aria-hidden="true"></span></div><div class="sb-style-demo">' + sbDemoHTML(st) + '</div>';
       grid.appendChild(card);
     });
     grid.addEventListener('click', (e) => {
@@ -1340,15 +1428,19 @@ function syncStyleCards() {
         syncRemoteAuth: true,
         quotaRefreshMinutes: 15,
         locale: 'auto',
+        sidebarCardView: 'classic',
+        sidebarShowCardTokens: true,
         statusBarEnabled: true,
         statusBarPosition: 'right',
-        statusBarStyle: 'full',
+        statusBarStyle: 'pulse',
         statusBarAccount: true,
         statusBarModels: true,
         statusBarCredits: true,
         statusBarPool: true,
         statusBarTier: true,
         statusBarResetCountdown: true,
+        statusBarLiveContext: true,
+        statusBarLiveSpeed: true,
         statusBarFamilies: ['claude', 'gemini', 'argon']
       });
       pushSettings(true);
@@ -1409,6 +1501,9 @@ function handleImportStatus(msg) {
         case 'toggle-tag-filter':
           e.stopPropagation();
           toggleTagFilter(tag);
+          break;
+        case 'open-account-tokens':
+          if (email) vscode.postMessage({ type: 'openStatsPanel', tab: 'tokens', account: email });
           break;
         case 'switch':
           if (email) setCurrent(email);
@@ -1524,6 +1619,53 @@ function confirmImportAction() {
   vscode.postMessage({ type: 'confirmImport' });
 }
 
+function fmtCompactTok(n) {
+  const v = Number(n) || 0;
+  if (v < 1000) return String(Math.round(v)) + ' tok';
+  if (v < 1e6) return (v / 1e3).toFixed(v >= 100000 ? 0 : 1) + 'K tok';
+  if (v < 1e9) return (v / 1e6).toFixed(2) + 'M tok';
+  return (v / 1e9).toFixed(2) + 'B tok';
+}
+
+function fmtUsdShort(u) {
+  const v = Number(u) || 0;
+  if (v <= 0) return '$0.00';
+  if (v < 0.01) return '<$0.01';
+  if (v >= 100) return '$' + v.toFixed(1);
+  return '$' + v.toFixed(2);
+}
+
+function updateSidebarTodayStats(msg) {
+  lastTodayStats = msg || null;
+  const tokEl = document.getElementById('sbTodayTokensPill');
+  const costEl = document.getElementById('sbTodayCostPill');
+  const wVal = document.getElementById('sbPopWeightedVal');
+  const rVal = document.getElementById('sbPopRawVal');
+  const sVal = document.getElementById('sbPopSplitVal');
+  const svVal = document.getElementById('sbPopSavedVal');
+  const stVal = document.getElementById('sbPopStepsVal');
+  const swVal = document.getElementById('sbPopSwitchVal');
+  const tokens = Number(msg.todayTokens) || 0;
+  const weighted = msg.todayWeighted !== undefined ? (Number(msg.todayWeighted) || 0) : tokens;
+  const costUsd = Number(msg.todayCostUsd) || 0;
+  const savedUsd = Number(msg.todaySavedUsd) || 0;
+  const desktopTok = Number(msg.todayDesktopTokens) || 0;
+  const cliTok = Number(msg.todayCliTokens) || 0;
+  const steps = Number(msg.todaySteps) || 0;
+  if (tokEl) tokEl.textContent = fmtCompactTok(weighted);
+  if (costEl) costEl.textContent = fmtUsdShort(costUsd);
+  if (wVal) wVal.textContent = fmtCompactTok(weighted);
+  if (rVal) rVal.textContent = fmtCompactTok(tokens);
+  if (sVal) sVal.textContent = fmtCompactTok(desktopTok) + ' / ' + fmtCompactTok(cliTok);
+  if (svVal) svVal.textContent = '-' + fmtUsdShort(savedUsd);
+  if (stVal) stVal.textContent = String(steps);
+  if (swVal) swVal.textContent = String(Number(msg.todaySwitches) || 0);
+  if (msg.perAccountTokens && typeof msg.perAccountTokens === 'object') {
+    perAccountTokens = msg.perAccountTokens;
+    renderAccounts();
+  }
+}
+
 function updateSummary() {
   const el = document.getElementById('gridCount');
   if (el) el.textContent = tl('accountsCount', accounts.length);
@@ -1612,7 +1754,49 @@ function renderAccounts() {
       };
 
       let quotasHtml;
-      if (models.length > 0) {
+      if (models.length > 0 && cardViewMode === 'compact') {
+        const compactResetShort = (isoTime) => {
+          if (!isoTime) return '';
+          const diffMs = new Date(isoTime).getTime() - Date.now();
+          if (!Number.isFinite(diffMs) || diffMs <= 0) return '';
+          const totalMin = Math.max(1, Math.round(diffMs / 60000));
+          const h = Math.floor(totalMin / 60);
+          const d = Math.floor(h / 24);
+          if (d > 0) return d + 'd' + (h % 24) + 'h';
+          if (h > 0) return h + 'h' + (totalMin % 60) + 'm';
+          return totalMin + 'm';
+        };
+        const poolDefs = [
+          { key: 'claude', name: 'Claude' },
+          { key: 'gemini', name: 'Gemini' },
+          { key: 'argon', name: 'Gemini 4' },
+        ];
+        quotasHtml = poolDefs.map(pd => {
+          const m5 = models.find(m => m.modelId === pd.key + ':5h');
+          const mw = models.find(m => m.modelId === pd.key + ':weekly');
+          if (!m5 && !mw) return '';
+          const pcts = [m5 ? m5.remainingPercent : null, mw ? mw.remainingPercent : null].filter(v => typeof v === 'number');
+          const minPct = Math.min.apply(null, pcts);
+          const cls = pctClass(minPct);
+          const pairText = pcts.map(v => v + '%').join(' / ');
+          const rstSrc = (m5 && m5.resetTime) || (mw && mw.resetTime) || '';
+          const rstTitle = rstSrc ? formatResetTime(rstSrc) : '';
+          const rstShort = (minPct < 100 && rstSrc) ? compactResetShort(rstSrc) : '';
+          return '<div class="grid-quota-compact-row"' + (rstTitle ? ' title="' + attrEsc(rstTitle) + '"' : '') + '>'
+            + '<span class="grid-quota-compact-name">' + escHtml(pd.name) + '</span>'
+            + '<div class="grid-quota-compact-bar"><div class="quota-bar-fill ' + cls + '" style="width:' + Math.max(0, Math.min(100, minPct)) + '%"></div></div>'
+            + '<span class="grid-quota-compact-vals ' + cls + '">' + escHtml(pairText)
+            + (rstShort ? '<span class="grid-quota-compact-reset">· ' + escHtml(rstShort) + '</span>' : '')
+            + '</span>'
+            + '</div>';
+        }).join('');
+        if (a._usageError) {
+          const cachedAt = a.usage && a.usage.updatedAt ? new Date(a.usage.updatedAt).toLocaleTimeString() : '—';
+          quotasHtml += '<div class="quota-cache-note" title="' + attrEsc(tl('quotaCacheTip', String(a._usageError))) + '">'
+            + '<span class="cache-dot"></span>' + escHtml(tl('quotaCached', cachedAt))
+            + '</div>';
+        }
+      } else if (models.length > 0) {
         const sortOrder = {
           'claude:5h': 1,
           'claude:weekly': 2,
@@ -1642,6 +1826,17 @@ function renderAccounts() {
             + '<span class="cache-dot"></span>' + escHtml(tl('quotaCached', cachedAt))
             + '</div>';
         }
+      } else if (cardViewMode === 'compact') {
+        const loadErrorHtml = a._usageError
+          ? '<div class="quota-load-error">' + escHtml(String(a._usageError)) + '</div>'
+          : '';
+        quotasHtml = ['Claude', 'Gemini'].map(name => {
+          return '<div class="grid-quota-compact-row" style="opacity:0.45;">'
+            + '<span class="grid-quota-compact-name">' + escHtml(name) + '</span>'
+            + '<div class="grid-quota-compact-bar"><div class="quota-bar-fill" style="width:0%"></div></div>'
+            + '<span class="grid-quota-compact-vals">—</span>'
+            + '</div>';
+        }).join('') + loadErrorHtml;
       } else {
         const phLabels = [
           'Claude ' + tl('quota5h'),
@@ -1666,6 +1861,33 @@ function renderAccounts() {
         quotasHtml = phHtml + loadErrorHtml;
       }
 
+      const creditNum = usage && typeof usage.availableAICredits === 'number' && Number.isFinite(usage.availableAICredits) ? usage.availableAICredits : 0;
+      const creditChipHtml = creditNum > 0
+        ? '<span class="grid-credit-chip"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v10"/><path d="M15 9.5c0-1.1-1.3-2-3-2s-3 .9-3 2 1.3 1.8 3 2.2 3 1.1 3 2.3-1.3 2-3 2-3-.9-3-2"/></svg>' + escHtml(Number.isInteger(creditNum) ? String(creditNum) : creditNum.toFixed(1)) + '</span>'
+        : '';
+
+      const tokStat = showCardTokens ? perAccountTokens[rawEmail.toLowerCase()] : null;
+      let cardTokensHtml = '';
+      if (showCardTokens && tokStat && tokStat.totalTokens > 0) {
+        const dayShow = tokStat.todayWeighted > 0 ? tokStat.todayWeighted : tokStat.todayTokens;
+        const totShow = tokStat.totalWeighted > 0 ? tokStat.totalWeighted : tokStat.totalTokens;
+        const tipLines = [
+          tokStat.todayTokens > 0 ? tl('cardTokensToday', fmtCompactTok(dayShow), fmtUsdShort(tokStat.todayCostUsd)) : '',
+          tl('cardTokensTotal', fmtCompactTok(totShow)) + ' (' + fmtUsdShort(tokStat.totalCostUsd) + ')',
+          tl('cardTokensHint'),
+        ].filter(Boolean).join(' · ');
+        cardTokensHtml = '<button type="button" class="grid-card-tokens" data-action="open-account-tokens" data-email="' + safeEmail + '" title="' + attrEsc(tipLines) + '">'
+          + '<span class="grid-card-tokens-main"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>'
+          + escHtml(tokStat.todayTokens > 0
+            ? tl('cardTokensToday', fmtCompactTok(dayShow), fmtUsdShort(tokStat.todayCostUsd))
+            : tl('cardTokensTotalOnly', fmtCompactTok(totShow), fmtUsdShort(tokStat.totalCostUsd)))
+          + '</span>'
+          + (tokStat.todayTokens > 0 ? '<span class="grid-card-tokens-sub">' + escHtml(tl('cardTokensTotal', fmtCompactTok(totShow))) + '</span>' : '')
+          + '</button>';
+      } else if (showCardTokens && isCurrent) {
+        cardTokensHtml = '<div class="grid-card-tokens is-pending"><span>' + escHtml(tl('cardTokensPending')) + '</span></div>';
+      }
+
       const accTags = getAccTags(a);
       const visibleTags = accTags.slice(0, 2);
       const extraTagCount = accTags.length - visibleTags.length;
@@ -1685,9 +1907,11 @@ function renderAccounts() {
         + '</div>'
         + '<div class="grid-card-meta">'
           + '<span class="grid-plan-chip ' + tierClass + '">' + planChipIcon(tierClass) + escHtml(tierLabel) + '</span>'
+          + creditChipHtml
           + cardTagsHtml
         + '</div>'
         + '<div class="grid-card-quotas">' + quotasHtml + '</div>'
+        + cardTokensHtml
         + '<div class="grid-card-actions">'
           + (isCurrent
             ? '<span class="grid-current-label"><span style="color:#3fb950">●</span> ' + escHtml(tl('inUse')) + '</span>'
@@ -1722,11 +1946,18 @@ function renderAccounts() {
 function cardSig(a) {
   const u = a.usage || {};
   const models = (u.models || []).map(m => (m.modelId || '') + ':' + m.remainingPercent + ':' + (m.resetTime || '')).join(',');
+  const cred = typeof u.availableAICredits === 'number' && u.availableAICredits > 0 ? String(u.availableAICredits) : '0';
+  const ts = showCardTokens ? perAccountTokens[a.email.toLowerCase()] : null;
+  const tokSig = ts ? `${ts.todayTokens}:${ts.todayWeighted || 0}:${ts.totalTokens}:${ts.totalWeighted || 0}:${ts.totalCostUsd}` : '';
   return [
     a.email,
     a.disabled ? '1' : '0',
     a.email === currentEmail ? '1' : '0',
     privacyMode ? '1' : '0',
+    cardViewMode,
+    showCardTokens ? '1' : '0',
+    cred,
+    tokSig,
     switchingEmail === a.email ? 'self' : (switchingEmail ? 'busy' : 'idle'),
     selectedEmails.has(a.email) ? '1' : '0',
     selectMode ? '1' : '0',
