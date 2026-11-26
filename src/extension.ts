@@ -196,7 +196,7 @@ export function activate(context: vscode.ExtensionContext): void {
         statusBar.update();
         logPanel.reloadLogPanelForLocale(context.extensionUri);
       }
-      if (e.affectsConfiguration('antigravityKite.quotaRefreshMinutes')) {
+      if (e.affectsConfiguration('antigravityKite.quotaRefreshMinutes') || e.affectsConfiguration('antigravityKite.quotaRefreshScope')) {
         orchestrator.applyRefreshInterval();
       }
       sidebar.onExternalConfigurationChanged(e);

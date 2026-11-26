@@ -202,7 +202,7 @@
                   </svg></span>
                 <div class="add-option-info">
                   <span class="add-option-title" data-i18n="oauthTitle">Google 登录</span>
-                  <span class="add-option-desc" data-i18n="oauthDesc">通过浏览器授权登录</span>
+                  <span class="add-option-desc" data-i18n="oauthDesc">通过浏览器授权，或复制链接跨设备登录</span>
                 </div>
               </button>
               <button class="add-modal-option" id="btnImport">
@@ -329,6 +329,75 @@
     </div>
   </div>
 
+  <!-- Google 授权弹窗（单一入口：浏览器授权 + 复制链接 + 手动输入回调地址） -->
+  <div id="oauthModal" class="modal-overlay" hidden>
+    <div class="modal-box oauth-modal-box">
+      <div class="modal-header">
+        <h3 data-i18n="oauthModalTitle">Google 授权登录</h3>
+        <button type="button" class="modal-close" id="oauthModalClose" data-i18n-title="close" title="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="oauth-status-row">
+          <svg class="oauth-globe-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="2" y1="12" x2="22" y2="12" />
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+          </svg>
+          <span class="auth-wait-text" data-i18n="oauthRecommendTip">推荐使用浏览器完成 Google 授权</span>
+          <span class="auth-wait-sec" id="oauthElapsed">0s</span>
+        </div>
+        <div class="oauth-btn-row">
+          <button type="button" class="primary oauth-start-btn" id="oauthOpenBrowserBtn">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="2" y1="12" x2="22" y2="12" />
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>
+            <span data-i18n="oauthOpenBrowser">开始 OAuth 授权</span>
+          </button>
+          <button type="button" class="modal-cancel-btn oauth-regen-btn" id="oauthRegenerateBtn" data-i18n="oauthRegenerate">重新生成</button>
+        </div>
+        <div class="oauth-field">
+          <label class="oauth-field-label" for="oauthAuthUrl" data-i18n="oauthLinkLabel">授权链接</label>
+          <div class="oauth-url-row">
+            <input type="text" class="oauth-url-input" id="oauthAuthUrl" readonly spellcheck="false" autocomplete="off">
+            <button type="button" class="oauth-copy-icon-btn" id="oauthCopyBtn" data-i18n-title="oauthCopyLink" title="复制授权链接" aria-label="复制授权链接">
+              <svg class="oauth-icon-copy" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+              <svg class="oauth-icon-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden>
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="oauth-field">
+          <label class="oauth-field-label" for="oauthCallbackInput" data-i18n="oauthCallbackLabel">手动输入回调地址</label>
+          <div class="oauth-callback-row">
+            <input type="text" class="oauth-callback-input" id="oauthCallbackInput" autocomplete="off" spellcheck="false"
+              data-i18n-ph="oauthCallbackPh" placeholder="粘贴完整回调地址，例如：http://127.0.0.1:11451/callback?code=...&state=...">
+            <button type="button" class="modal-cancel-btn oauth-submit-btn" id="oauthSubmitBtn">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+              <span id="oauthSubmitText" data-i18n="oauthSubmitCallback">我已授权，继续</span>
+            </button>
+          </div>
+          <div class="oauth-error-msg" id="oauthErrorMsg" hidden></div>
+        </div>
+      </div>
+      <div class="modal-footer oauth-modal-footer">
+        <button type="button" class="modal-cancel-btn" id="oauthCancelBtn" data-i18n="cancel">取消</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 通用询问弹窗（宿主 askUi 驱动，替代 VS Code 原生 showXxxMessage） -->
   <div id="askOverlay" class="modal-overlay" hidden>
     <div class="modal-box" style="width:min(440px,92vw)">
@@ -436,7 +505,15 @@
             <span data-i18n="quotaGroup">额度与刷新</span>
           </div>
           <div class="v2-opt-row">
-            <span class="v2-opt-label" data-i18n="quotaPoolRow">全池后台刷新间隔</span>
+            <span class="v2-opt-label" data-i18n="quotaScopeRow">后台自动刷新</span>
+            <select class="v2-sel" id="setQuotaScope">
+              <option value="active" data-i18n="quotaScopeActive">仅当前账号（推荐）</option>
+              <option value="all" data-i18n="quotaScopeAll">全池账号（错峰）</option>
+              <option value="manual" data-i18n="quotaScopeManual">关闭（仅手动刷新）</option>
+            </select>
+          </div>
+          <div class="v2-opt-row" id="quotaIntervalRow">
+            <span class="v2-opt-label" data-i18n="quotaPoolRow">自动刷新间隔</span>
             <div class="sb-num-row">
               <input type="number" class="v2-param-val" id="setQuotaRefresh" min="5" max="120" placeholder="15">
               <span class="v2-param-unit" data-i18n="unitMin">分钟</span>

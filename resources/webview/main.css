@@ -1552,6 +1552,7 @@ body.vscode-light #tabAccounts .search-bar:focus-within, body.vscode-high-contra
   border-color: color-mix(in srgb, var(--ac-emerald, #10b981) 58%, transparent) !important;
 }
 .settings-group .v2-opt-row { gap: 12px !important; padding: 6px 0 !important; min-height: 36px !important; }
+.settings-group .v2-opt-row.is-disabled { opacity: 0.45; }
 .settings-group .v2-opt-row > .v2-opt-label { flex: 0 0 96px !important; min-width: 96px !important; font-size: 12px !important; white-space: nowrap !important; }
 .settings-group .v2-opt-col { padding: 6px 0 !important; gap: 6px !important; }
 .settings-group .v2-opt-col > .v2-opt-label { flex: 0 0 auto !important; min-width: 0 !important; width: auto !important; font-size: 12px !important; line-height: 1.4 !important; white-space: nowrap !important; }
@@ -2296,4 +2297,72 @@ button.grid-card-tokens:hover {
 .settings-group.is-spotlight {
   border-color: var(--ac-emerald, #10b981) !important;
   box-shadow: 0 0 0 1px var(--ac-emerald, #10b981) !important;
+}
+
+/* ── Google OAuth 复制链接与跨设备回调弹窗 ── */
+.oauth-modal-box { width: min(460px, 94vw); }
+.oauth-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--elevated-bg);
+  border: 1px solid var(--card-border);
+  font-size: 12px;
+}
+.oauth-globe-icon { color: var(--muted); flex-shrink: 0; }
+.oauth-btn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.oauth-start-btn { gap: 6px; min-height: 32px; padding: 6px 14px; }
+.oauth-regen-btn { min-height: 32px; }
+.oauth-field { display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
+.oauth-field-label { margin-top: 0 !important; color: var(--muted) !important; font-size: 12px; font-weight: 500; }
+.oauth-url-row { display: flex; align-items: stretch; gap: 6px; }
+.oauth-url-input, .oauth-callback-input {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  min-height: 32px;
+  min-width: 0;
+}
+.oauth-url-row .oauth-url-input { flex: 1 1 0; width: auto !important; color: var(--muted) !important; }
+.oauth-copy-icon-btn {
+  flex: 0 0 32px;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, color 0.15s;
+}
+.oauth-copy-icon-btn:hover { background: var(--hover-bg); border-color: var(--card-border-hover); }
+.oauth-copy-icon-btn.is-copied { color: var(--ac-emerald); border-color: var(--ac-emerald); }
+.oauth-icon-copy, .oauth-icon-check { flex-shrink: 0; }
+.oauth-callback-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: stretch; }
+.oauth-callback-row .oauth-callback-input { flex: 1 1 180px; width: auto !important; }
+.oauth-submit-btn {
+  flex: 0 0 auto;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.oauth-submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.oauth-modal-footer { justify-content: flex-end; }
+.oauth-error-msg {
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--tone-danger-line, rgba(248, 113, 113, 0.28));
+  background: var(--tone-danger-soft, rgba(248, 113, 113, 0.12));
+  color: var(--tone-danger, #f87171);
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
 }

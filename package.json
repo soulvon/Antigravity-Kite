@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.5.6",
+  "version": "1.5.7",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -135,6 +135,21 @@
           "maximum": 5000,
           "scope": "application",
           "description": "%config.cdpHeartbeatMs%"
+        },
+        "antigravityKite.quotaRefreshScope": {
+          "type": "string",
+          "enum": [
+            "active",
+            "all",
+            "manual"
+          ],
+          "enumDescriptions": [
+            "%config.quotaRefreshScope.active%",
+            "%config.quotaRefreshScope.all%",
+            "%config.quotaRefreshScope.manual%"
+          ],
+          "default": "active",
+          "description": "%config.quotaRefreshScope%"
         },
         "antigravityKite.quotaRefreshMinutes": {
           "type": "number",
@@ -292,7 +307,7 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_agy_reload.mjs && node scripts/check_switch_health.mjs && node scripts/check_switch_perf.mjs && node scripts/check_webview_hardening.mjs && node scripts/check_platform_gates.mjs && node scripts/check_decl_suppressor.mjs && node scripts/check_status_bar.mjs && node scripts/check_tags.mjs && node scripts/check_hardening.mjs && node scripts/check_remote_ssh.mjs && node scripts/check_architecture_and_security.mjs",
+    "compile": "tsc -p ./ && node scripts/check-i18n.js && node scripts/check_agy_reload.mjs && node scripts/check_switch_health.mjs && node scripts/check_switch_perf.mjs && node scripts/check_webview_hardening.mjs && node scripts/check_platform_gates.mjs && node scripts/check_decl_suppressor.mjs && node scripts/check_status_bar.mjs && node scripts/check_tags.mjs && node scripts/check_hardening.mjs && node scripts/check_remote_ssh.mjs && node scripts/check_architecture_and_security.mjs && node scripts/check_quota_polling.mjs && node scripts/check_oauth_manual_link.mjs",
     "verify": "npm run compile && node scripts/check_cockpit_decrypt.mjs && node scripts/check_manager_import.mjs && node scripts/check_sb_demo.mjs && node scripts/check_live_context_bar.mjs && node scripts/check_stats_panel.mjs && node scripts/check-no-leak.mjs --fast",
     "watch": "tsc -watch -p ./",
     "package": "node ./scripts/update-version.js && npm run compile && vsce package --skip-license",

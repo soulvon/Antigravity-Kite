@@ -13,7 +13,7 @@ export const OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/userinfo.profile',
 ];
 export const OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
-export const OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/auth';
+export const OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 export const OAUTH_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
 
 /** 计算 accessToken 短指纹（仅用于绑定验证来源，绝不明文落盘） */

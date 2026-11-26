@@ -3,7 +3,9 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import * as accountStore from './accountStore';
-import { startOAuth } from './oauthService';
+import {
+  runOAuthUiFlow, copyActiveOAuthUrl, openActiveOAuthBrowser, submitActiveOAuthCallback, cancelActiveOAuthSession,
+} from './oauthService';
 import { previewLocalAccount, confirmImport, cancelImport } from './localReader';
 import * as importService from './importService';
 import { WebviewMessage, UsageSnapshot, AccountHealth } from './types';
@@ -13,6 +15,7 @@ import { enableCdp } from './cdpGate';
 import { probeCdpPort } from './declarationSuppressor';
 import { t, localeBundle, getLang } from './i18n';
 import { logInfo, logWarn, logError } from './logger';
+import { normalizeRefreshScope } from './quotaOrchestrator';
 import { notifyUi, UiPresenter, UiAskOptions, UiStatus } from './uiChannel';
 
 export interface SidebarActionHandlers {
@@ -242,6 +245,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
 
   public dispose(): void {
     this._disposed = true;
+    cancelActiveOAuthSession();
     if (this._statsTimer) {
       clearTimeout(this._statsTimer);
       this._statsTimer = null;
@@ -314,6 +318,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
         cdpHeartbeatMs: cfg.get<number>('cdpHeartbeatMs', 500),
         syncGeminiFiles: cfg.get<boolean>('switch.syncGeminiFiles', true),
         syncRemoteAuth: cfg.get<boolean>('remote.syncAuth', true),
+        quotaRefreshScope: normalizeRefreshScope(cfg.get<string>('quotaRefreshScope', 'active')),
         quotaRefreshMinutes: cfg.get<number>('quotaRefreshMinutes', 15),
         locale: cfg.get<string>('locale', 'auto'),
         sidebarCardView: cfg.get<string>('sidebar.cardView', 'classic'),
@@ -354,6 +359,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
     const port = Number(s.cdpPort);
     const prevLocale = cfg.get<string>('locale', 'auto');
     const nextLocale = String(s.locale ?? 'auto');
+    const prevQuotaScope = normalizeRefreshScope(cfg.get<string>('quotaRefreshScope', 'active'));
+    const nextQuotaScope = normalizeRefreshScope(s.quotaRefreshScope);
     const quotaMin = Number(s.quotaRefreshMinutes);
     const prevQuotaMin = cfg.get<number>('quotaRefreshMinutes', 15);
     const normalizedQuotaMin = Number.isFinite(quotaMin) ? Math.min(120, Math.max(5, Math.round(quotaMin))) : 15;
@@ -368,6 +375,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
       await cfg.update('cdpHeartbeatMs', Number.isFinite(heartbeat) ? Math.min(5000, Math.max(200, Math.round(heartbeat))) : 500, target);
       await cfg.update('switch.syncGeminiFiles', s.syncGeminiFiles !== false, target);
       await cfg.update('remote.syncAuth', s.syncRemoteAuth !== false, target);
+      await cfg.update('quotaRefreshScope', nextQuotaScope, target);
       await cfg.update('quotaRefreshMinutes', normalizedQuotaMin, target);
       await cfg.update('locale', nextLocale, target);
       const cardView = String(s.sidebarCardView ?? 'classic');
@@ -395,7 +403,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
     }
 
     logInfo('settings.saved', { ...s });
-    if (Number.isFinite(quotaMin) && normalizedQuotaMin !== prevQuotaMin) {
+    if (nextQuotaScope !== prevQuotaScope || (Number.isFinite(quotaMin) && normalizedQuotaMin !== prevQuotaMin)) {
       this._handlers.onQuotaRefreshMinutesChanged?.();
     }
     if (nextLocale !== prevLocale && this._view) {
@@ -509,19 +517,41 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
 
     switch (msgType) {
       case 'oauthLogin':
-        void this._view?.webview.postMessage({ type: 'authWait', action: 'oauth', active: true });
-        try {
-          const account = await startOAuth();
-          accountStore.add(account);
-          await this._context.globalState.update('currentEmail', account.email);
-          this._pushAccounts();
-          notifyUi('success', t('accountAdded', account.email));
-          void this._refreshUsage(account.email);
-        } catch (err) {
-          notifyUi('error', t('loginFailed', err instanceof Error ? err.message : String(err)));
-        } finally {
-          void this._view?.webview.postMessage({ type: 'authWait', action: 'oauth', active: false });
+        void runOAuthUiFlow({
+          openBrowser: msg.openBrowser !== false,
+          copyUrl: msg.copyUrl === true,
+          post: (m) => void this._view?.webview.postMessage(m),
+          notify: (st, text) => notifyUi(st, text),
+          onAccount: async (account) => {
+            accountStore.add(account);
+            await this._context.globalState.update('currentEmail', account.email);
+            this._pushAccounts();
+            notifyUi('success', t('accountAdded', account.email));
+            void this._refreshUsage(account.email);
+          },
+        });
+        break;
+      case 'oauthCopyUrl':
+        if (await copyActiveOAuthUrl()) {
+          void this._view?.webview.postMessage({ type: 'oauthUrlCopied' });
+          notifyUi('success', t('oauthUrlCopiedToast'));
+        } else {
+          void this._view?.webview.postMessage({ type: 'oauthCallbackError', message: t('oauthSessionMissing') });
         }
+        break;
+      case 'oauthOpenBrowser':
+        if (!(await openActiveOAuthBrowser())) void this._view?.webview.postMessage({ type: 'oauthCallbackError', message: t('oauthSessionMissing') });
+        break;
+      case 'oauthSubmitCallback':
+        try {
+          await submitActiveOAuthCallback(typeof msg.callbackUrl === 'string' ? msg.callbackUrl : '');
+        } catch (err) {
+          void this._view?.webview.postMessage({ type: 'oauthCallbackError', message: err instanceof Error ? err.message : String(err) });
+        }
+        break;
+      case 'oauthCancel':
+        cancelActiveOAuthSession();
+        void this._view?.webview.postMessage({ type: 'oauthSession', active: false });
         break;
 
       case 'importLocal':

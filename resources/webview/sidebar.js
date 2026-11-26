@@ -277,7 +277,7 @@ if (_addModal) {
   });
 }
 const _btnOAuth = document.getElementById('btnOAuth');
-if (_btnOAuth) _btnOAuth.addEventListener('click', () => { hideAddModal(); vscode.postMessage({ type: 'oauthLogin' }); });
+if (_btnOAuth) _btnOAuth.addEventListener('click', () => { hideAddModal(); vscode.postMessage({ type: 'oauthLogin', openBrowser: false, copyUrl: false }); });
 const _btnImport = document.getElementById('btnImport');
 if (_btnImport) _btnImport.addEventListener('click', () => { hideAddModal(); vscode.postMessage({ type: 'importLocal' }); });
 const _btnImportCockpit = document.getElementById('btnImportCockpit');
@@ -915,6 +915,15 @@ window.addEventListener('message', e => {
   if (msg.type === 'authWait') {
     setAuthWaitBar(msg.action, !!msg.active);
   }
+  if (msg.type === 'oauthSession') {
+    handleOAuthSessionMsg(msg);
+  }
+  if (msg.type === 'oauthUrlCopied') {
+    flashOAuthCopiedState();
+  }
+  if (msg.type === 'oauthCallbackError') {
+    showOAuthCallbackError(msg.message);
+  }
   if (msg.type === 'switchResult') {
     clearSwitchingState();
     renderAccounts();
@@ -1034,6 +1043,144 @@ function setAuthWaitBar(action, active) {
   authWaitTimer = setInterval(render, 1000);
 }
 
+// ── Google OAuth 跨设备复制链接 & 手动回调弹窗 ──
+let oauthElapsedTimer = null;
+let oauthStartedAt = 0;
+let oauthCopyResetTimer = null;
+let oauthSubmitting = false;
+
+function resetOAuthSubmitBtn() {
+  oauthSubmitting = false;
+  const btn = document.getElementById('oauthSubmitBtn');
+  const txt = document.getElementById('oauthSubmitText');
+  if (btn) btn.disabled = false;
+  if (txt) txt.textContent = tl('oauthSubmitCallback');
+}
+
+function setOAuthCopyIconState(copied) {
+  const btn = document.getElementById('oauthCopyBtn');
+  if (!btn) return;
+  btn.classList.toggle('is-copied', !!copied);
+  btn.title = copied ? tl('oauthCopied') : tl('oauthCopyLink');
+  const copySvg = btn.querySelector('.oauth-icon-copy');
+  const checkSvg = btn.querySelector('.oauth-icon-check');
+  if (copySvg) copySvg.hidden = !!copied;
+  if (checkSvg) checkSvg.hidden = !copied;
+}
+
+function flashOAuthCopiedState() {
+  if (oauthCopyResetTimer) clearTimeout(oauthCopyResetTimer);
+  setOAuthCopyIconState(true);
+  oauthCopyResetTimer = setTimeout(() => {
+    setOAuthCopyIconState(false);
+    oauthCopyResetTimer = null;
+  }, 2000);
+}
+
+function showOAuthCallbackError(message) {
+  resetOAuthSubmitBtn();
+  const errEl = document.getElementById('oauthErrorMsg');
+  if (!errEl) return;
+  errEl.textContent = String(message || '');
+  errEl.hidden = !errEl.textContent;
+}
+
+function clearOAuthCallbackError() {
+  const errEl = document.getElementById('oauthErrorMsg');
+  if (errEl) {
+    errEl.textContent = '';
+    errEl.hidden = true;
+  }
+}
+
+function closeOAuthModalLocal() {
+  if (oauthElapsedTimer) { clearInterval(oauthElapsedTimer); oauthElapsedTimer = null; }
+  if (oauthCopyResetTimer) { clearTimeout(oauthCopyResetTimer); oauthCopyResetTimer = null; }
+  oauthStartedAt = 0;
+  resetOAuthSubmitBtn();
+  clearOAuthCallbackError();
+  setOAuthCopyIconState(false);
+  const modal = document.getElementById('oauthModal');
+  if (modal) modal.hidden = true;
+}
+
+function handleOAuthSessionMsg(msg) {
+  if (!msg || !msg.active) {
+    closeOAuthModalLocal();
+    return;
+  }
+  const modal = document.getElementById('oauthModal');
+  const urlInput = document.getElementById('oauthAuthUrl');
+  const cbInput = document.getElementById('oauthCallbackInput');
+  const elapsedEl = document.getElementById('oauthElapsed');
+  if (!modal) return;
+  if (urlInput) urlInput.value = msg.authUrl || '';
+  if (cbInput) cbInput.value = '';
+  clearOAuthCallbackError();
+  resetOAuthSubmitBtn();
+  setOAuthCopyIconState(false);
+  if (oauthElapsedTimer) clearInterval(oauthElapsedTimer);
+  oauthStartedAt = Date.now();
+  const tick = () => {
+    if (!elapsedEl || !oauthStartedAt) return;
+    elapsedEl.textContent = Math.max(0, Math.floor((Date.now() - oauthStartedAt) / 1000)) + 's';
+  };
+  tick();
+  oauthElapsedTimer = setInterval(tick, 1000);
+  modal.hidden = false;
+  if (msg.copied) flashOAuthCopiedState();
+}
+
+(function bindOAuthModal() {
+  const modal = document.getElementById('oauthModal');
+  const closeBtn = document.getElementById('oauthModalClose');
+  const cancelBtn = document.getElementById('oauthCancelBtn');
+  const copyBtn = document.getElementById('oauthCopyBtn');
+  const openBtn = document.getElementById('oauthOpenBrowserBtn');
+  const regenBtn = document.getElementById('oauthRegenerateBtn');
+  const submitBtn = document.getElementById('oauthSubmitBtn');
+  const submitTxt = document.getElementById('oauthSubmitText');
+  const urlInput = document.getElementById('oauthAuthUrl');
+  const cbInput = document.getElementById('oauthCallbackInput');
+
+  const cancelFlow = () => {
+    closeOAuthModalLocal();
+    vscode.postMessage({ type: 'oauthCancel' });
+  };
+  const submitCallback = () => {
+    if (oauthSubmitting) return;
+    oauthSubmitting = true;
+    clearOAuthCallbackError();
+    if (submitBtn) submitBtn.disabled = true;
+    if (submitTxt) submitTxt.textContent = tl('oauthSubmitting');
+    vscode.postMessage({ type: 'oauthSubmitCallback', callbackUrl: cbInput ? cbInput.value : '' });
+  };
+
+  if (closeBtn) closeBtn.addEventListener('click', cancelFlow);
+  if (cancelBtn) cancelBtn.addEventListener('click', cancelFlow);
+  if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) cancelFlow(); });
+  if (copyBtn) copyBtn.addEventListener('click', () => {
+    if (urlInput) urlInput.select();
+    vscode.postMessage({ type: 'oauthCopyUrl' });
+  });
+  if (openBtn) openBtn.addEventListener('click', () => vscode.postMessage({ type: 'oauthOpenBrowser' }));
+  if (regenBtn) regenBtn.addEventListener('click', () => {
+    clearOAuthCallbackError();
+    vscode.postMessage({ type: 'oauthLogin', openBrowser: false, copyUrl: false });
+  });
+  if (submitBtn) submitBtn.addEventListener('click', submitCallback);
+  if (urlInput) urlInput.addEventListener('click', () => urlInput.select());
+  if (cbInput) {
+    cbInput.addEventListener('input', clearOAuthCallbackError);
+    cbInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
+        e.preventDefault();
+        submitCallback();
+      }
+    });
+  }
+})();
+
 function showToast(message, type = 'info', duration, raw = false) {
   const effectiveDuration = (duration === undefined || duration === null)
     ? (type === 'error' ? 10000 : (type === 'warning' ? 6000 : 3000))
@@ -1132,7 +1279,9 @@ function fillSettingsForm(s) {
   chk('setSyncRemoteAuth', s.syncRemoteAuth !== false);
   set('setCdpPort', s.cdpPort || 9333);
   set('setCdpHeartbeat', s.cdpHeartbeatMs || 500);
+  set('setQuotaScope', ['active', 'all', 'manual'].includes(s.quotaRefreshScope) ? s.quotaRefreshScope : 'active');
   set('setQuotaRefresh', s.quotaRefreshMinutes || 15);
+  syncQuotaScopeUi();
   set('setLocale', s.locale || 'auto');
   const nextCardView = s.sidebarCardView === 'compact' ? 'compact' : 'classic';
   const nextShowCardTokens = s.sidebarShowCardTokens !== false;
@@ -1304,6 +1453,15 @@ function renderDemos() {
   }
 }
 
+function syncQuotaScopeUi() {
+  const scopeEl = document.getElementById('setQuotaScope');
+  const minEl = document.getElementById('setQuotaRefresh');
+  const rowEl = document.getElementById('quotaIntervalRow');
+  const isManual = !!(scopeEl && scopeEl.value === 'manual');
+  if (minEl) minEl.disabled = isManual;
+  if (rowEl) rowEl.classList.toggle('is-disabled', isManual);
+}
+
 function syncStyleCards() {
   const sel = document.getElementById('setStatusStyle');
   const grid = document.getElementById('sbStyleGrid');
@@ -1341,6 +1499,7 @@ function syncStyleCards() {
       cdpHeartbeatMs: num('setCdpHeartbeat', 500),
       syncGeminiFiles: on('setSyncGemini'),
       syncRemoteAuth: on('setSyncRemoteAuth'),
+      quotaRefreshScope: ['active', 'all', 'manual'].includes(val('setQuotaScope')) ? val('setQuotaScope') : 'active',
       quotaRefreshMinutes: num('setQuotaRefresh', 15),
       locale: val('setLocale') || 'auto',
       sidebarCardView: val('setCardView') === 'compact' ? 'compact' : 'classic',
@@ -1405,7 +1564,10 @@ function syncStyleCards() {
 
   ov.querySelectorAll('input, select').forEach(el => {
     if (el.type === 'hidden') return;
-    el.addEventListener('change', () => pushSettings(true));
+    el.addEventListener('change', () => {
+      if (el.id === 'setQuotaScope') syncQuotaScopeUi();
+      pushSettings(true);
+    });
   });
   ov.querySelectorAll('.v2-tag').forEach(tag => {
     tag.addEventListener('click', () => {
@@ -1426,6 +1588,7 @@ function syncStyleCards() {
         cdpHeartbeatMs: 500,
         syncGeminiFiles: true,
         syncRemoteAuth: true,
+        quotaRefreshScope: 'active',
         quotaRefreshMinutes: 15,
         locale: 'auto',
         sidebarCardView: 'classic',
