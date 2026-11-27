@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 /**
- * 配额轮询降敏与回血推算门控（devloop 红线 4：先写能在旧代码上失败的检查）
+ * 配额刷新与本机 LS 读取门控（devloop 红线 4：先写能在旧代码上失败的检查）
  *
  * 校验项：
- *   Q1 停用后台定时全池 1-token 推理探针（仅保留手动 probeOneHealth / probeAllHealth）
- *   Q2 三档后台刷新范围（active 默认 / all / manual）在 package.json、宿主与侧栏 UI 全闭合
- *   Q3 隔离沙箱实测 QuotaOrchestrator：
- *      - active 默认模式后台仅刷当前账号，备用号零请求
- *      - manual 模式停用后台定时与自动首刷，手动全池刷新仍可用
- *      - 批量刷新带账号间随机错峰抖动（拒绝多号同毫秒齐射）
+ *   Q1 精简状态检测路径，移除独立推理请求探测入口
+ *   Q2 精简后台刷新模式（quotaRefreshScope 仅保留 active / manual，历史 all 自动归一化为 active）
+ *   Q3 隔离沙箱实测本机官方 LS RPC 配额读取与账号一致性校验（127.0.0.1 直连，邮箱不匹配返回 null）
+ *   Q4 隔离沙箱实测 QuotaOrchestrator：
+ *      - active 默认模式后台仅通过本机官方 LS 读取当前活跃账号；本机 LS 暂不可用时跳过本轮
+ *      - manual 模式停用后台定时与自动首刷
+ *      - 手动刷新全部时，当前号优先走本机 LS、其余可用号串行错峰刷新
  *      - 窗口失焦满 30 分钟自动挂机休眠，重新聚焦自动补刷过期目标
- *   Q4 本地 resetTime 到期回血折算（resolveEffectiveUsage + getUsage 同源输出，不污染底层快照）
+ *   Q5 本地 resetTime 到期回血折算（resolveEffectiveUsage + getUsage 同源输出，不污染底层快照）
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -34,44 +35,70 @@ function gate(name, ok, detail = '') {
   }
 }
 
-console.log('=== 配额轮询降敏与回血推算门控 ===\n');
+console.log('=== 配额刷新与本机 LS 读取门控 ===\n');
 
 const pkg = JSON.parse(read('package.json'));
+const usageSvcSrc = read('src/usageService.ts');
 const orchestratorSrc = read('src/quotaOrchestrator.ts');
 const sidebarHtml = read('resources/webview/sidebar.html');
 const sidebarJs = read('resources/webview/sidebar.js');
 const sidebarProvSrc = read('src/sidebarProvider.ts');
+const statusBarSrc = read('src/statusBar.ts');
 const extSrc = read('src/extension.ts');
 
-// ── Q1 停用后台定时全池推理探针 ──
-const noAutoHealthTimer = !orchestratorSrc.includes('_healthProbeTimer')
-  && !orchestratorSrc.includes('_startupHealthTimer')
-  && !/setInterval\([\s\S]{0,120}probeAllHealth/.test(orchestratorSrc)
-  && !/setTimeout\([\s\S]{0,120}probeAllHealth/.test(orchestratorSrc);
-const manualHealthKept = orchestratorSrc.includes('async probeOneHealth(')
-  && orchestratorSrc.includes('async probeAllHealth(');
-gate('Q1.1 后台已彻底移除自动定时/启动全池推理健康探针', noAutoHealthTimer);
-gate('Q1.2 手动单号与全池健康复检入口完整保留', manualHealthKept);
+// ── Q1 精简状态检测与命令入口 ──
+const srcFiles = fs.readdirSync(path.join(root, 'src')).filter((f) => f.endsWith('.ts'));
+const removedSymbols = ['probeGenerateContent', 'kite-health-', 'v1internal:generateContent', 'checkAccountHealth', 'probeAllHealth', 'probeOneHealth'];
+const residualHits = [];
+for (const f of srcFiles) {
+  const txt = read(path.join('src', f));
+  for (const tok of removedSymbols) {
+    if (txt.includes(tok)) residualHits.push(`${f}:${tok}`);
+  }
+}
+gate(
+  'Q1.1 src/ 全目录已清理废弃的独立状态探测逻辑',
+  residualHits.length === 0,
+  residualHits.join(', '),
+);
 
-// ── Q2 三档刷新范围配置与 UI 闭合 ──
+const cmds = (pkg.contributes?.commands || []).map((c) => c.command);
+const noHealthRecheckEntry = !cmds.includes('antigravityKite.healthRecheck')
+  && !extSrc.includes('antigravityKite.healthRecheck')
+  && !statusBarSrc.includes('recheckHealth')
+  && !sidebarProvSrc.includes("case 'checkHealth'")
+  && !sidebarJs.includes("type: 'checkHealth'");
+gate(
+  'Q1.2 命令、底栏 QuickPick 与侧栏 Webview 均已移除废弃状态复检入口',
+  noHealthRecheckEntry,
+);
+
+const noLegacyVersionSplit = !usageSvcSrc.includes("'1.20.5'") && !usageSvcSrc.includes('"1.20.5"');
+gate('Q1.3 usageService 移除过时 1.20.5 版本号硬编码', noLegacyVersionSplit);
+
+// ── Q2 彻底移除后台全池轮询（仅保留 active / manual） ──
 const scopeProp = pkg.contributes?.configuration?.properties?.['antigravityKite.quotaRefreshScope'];
 gate(
-  'Q2.1 package.json 声明 quotaRefreshScope（active/all/manual，默认 active）',
+  'Q2.1 package.json quotaRefreshScope 仅声明 active / manual（默认 active，移除 all）',
   Boolean(scopeProp)
     && scopeProp.default === 'active'
-    && JSON.stringify(scopeProp.enum) === JSON.stringify(['active', 'all', 'manual']),
+    && JSON.stringify(scopeProp.enum) === JSON.stringify(['active', 'manual']),
   JSON.stringify(scopeProp || null),
 );
 
-const uiScopeWired = sidebarHtml.includes('id="setQuotaScope"')
+const noBgAllPolling = !orchestratorSrc.includes('refreshAllBackground')
+  && !sidebarHtml.includes('value="all"')
+  && sidebarHtml.includes('id="setQuotaScope"')
   && sidebarJs.includes('setQuotaScope')
-  && sidebarJs.includes("quotaRefreshScope")
   && /setQuotaRefresh[\s\S]{0,200}disabled/.test(sidebarJs)
-  && sidebarProvSrc.includes("quotaRefreshScope")
-  && extSrc.includes("antigravityKite.quotaRefreshScope");
-gate('Q2.2 侧栏设置 #setQuotaScope、manual 置灰联动与宿主配置监听闭合', uiScopeWired);
+  && sidebarProvSrc.includes('quotaRefreshScope')
+  && extSrc.includes('antigravityKite.quotaRefreshScope');
+gate('Q2.2 移除 refreshAllBackground 与 UI all 选项，侧栏/宿主设置闭环完整', noBgAllPolling);
 
-// ── Q3 & Q4 隔离沙箱运行态验证 ──
+const noImportAutoStorm = !/importFrom(?:CockpitTools|AntigravityManager|JsonFile)[\s\S]{0,450}_refreshAllUsage/.test(sidebarProvSrc);
+gate('Q2.3 批量导入账号后不再自动触发全池云端刷新风暴', noImportAutoStorm);
+
+// ── Q3, Q4 & Q5 隔离沙箱运行态验证 ──
 const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kite-quota-poll-'));
 const runnerPath = path.join(sandboxDir, 'runner.cjs');
 const runnerCode = `
@@ -121,15 +148,16 @@ const qoMod = require(path.join(root, 'out', 'quotaOrchestrator.js'));
 
 assert.equal(typeof qoMod.normalizeRefreshScope, 'function', '缺少 normalizeRefreshScope 导出');
 assert.equal(typeof qoMod.resolveEffectiveUsage, 'function', '缺少 resolveEffectiveUsage 导出');
+assert.equal(typeof usageService.fetchUsageFromLocalLs, 'function', '缺少 fetchUsageFromLocalLs 导出');
 
-// 校验 normalizeRefreshScope
+// 校验 normalizeRefreshScope：历史 all 与非法值均收口回 active
 assert.equal(qoMod.normalizeRefreshScope('active'), 'active');
-assert.equal(qoMod.normalizeRefreshScope('all'), 'all');
 assert.equal(qoMod.normalizeRefreshScope('manual'), 'manual');
+assert.equal(qoMod.normalizeRefreshScope('all'), 'active', '历史 all 必须归一化为 active');
 assert.equal(qoMod.normalizeRefreshScope('invalid'), 'active');
 assert.equal(qoMod.normalizeRefreshScope(undefined), 'active');
 
-// 校验 resolveEffectiveUsage：已过 resetTime 窗口本地回血至 100%，保留未到期窗口，不篡改原对象
+// 校验 resolveEffectiveUsage：已过 resetTime 窗口本地回血至 100%，不篡改原对象
 const now = Date.parse('2026-11-26T12:00:00Z');
 const rawSnap = {
   minRemainingPercent: 0,
@@ -141,24 +169,68 @@ const rawSnap = {
   ],
 };
 const effPart = qoMod.resolveEffectiveUsage(rawSnap, now);
-assert.equal(effPart.models[0].remainingPercent, 100, '已过 resetTime 的 5h 窗口应折算为 100%');
-assert.equal(effPart.models[0].resetTime, '2026-11-26T10:00:00Z', '保留原 resetTime 供卡片显示已重置');
-assert.equal(effPart.models[1].remainingPercent, 65, '未到期周窗口应保持 65%');
-assert.equal(effPart.minRemainingPercent, 65, '整体最低余量应重算为 65%');
-assert.equal(rawSnap.models[0].remainingPercent, 0, '严禁原地篡改原始持久化快照');
-
-const rawFullReset = {
-  minRemainingPercent: 0,
-  updatedAt: now - 6 * 3600_000,
-  models: [
-    { label: 'Claude 5h', modelId: 'claude:5h', remainingPercent: 0, resetTime: '2026-11-26T11:59:00Z' },
-    { label: 'Gemini 5h', modelId: 'gemini:5h', remainingPercent: 12, resetTime: '2026-11-26T09:00:00Z' },
-  ],
-};
-const effFull = qoMod.resolveEffectiveUsage(rawFullReset, now);
-assert.equal(effFull.minRemainingPercent, 100, '全部窗口均过重置时间后整体应折算为 100%');
+assert.equal(effPart.models[0].remainingPercent, 100);
+assert.equal(effPart.models[1].remainingPercent, 65);
+assert.equal(effPart.minRemainingPercent, 65);
+assert.equal(rawSnap.models[0].remainingPercent, 0);
 
 (async () => {
+  // Q3: fetchUsageFromLocalLs 实测（邮箱匹配返回真数据，邮箱不匹配 Fail-Closed 返回 null）
+  const mockHub = { fileName: 'hub_32794.json', pid: process.pid, httpPort: 32794, csrfToken: 'tok', lsVersion: '2.35.2', mtimeMs: Date.now() };
+  const rpcLog = [];
+  const fakeDeps = {
+    discoverHubs: () => [mockHub],
+    rpcPost: async (_hub, method) => {
+      rpcLog.push(method);
+      if (method === 'GetUserStatus') {
+        return {
+          userStatus: {
+            email: 'cur@example.com',
+            userTier: {
+              id: 'g1-ultra-tier',
+              name: 'Google AI Ultra',
+              availableCredits: [{ creditType: 'GOOGLE_ONE_AI', creditAmount: '120' }],
+            },
+          },
+        };
+      }
+      if (method === 'RetrieveUserQuotaSummary') {
+        return {
+          response: {
+            groups: [
+              {
+                displayName: 'Gemini Models',
+                buckets: [
+                  { bucketId: 'gemini-5h', remainingFraction: 0.92, resetTime: '2026-11-27T18:00:00Z' },
+                  { bucketId: 'gemini-weekly', remainingFraction: 0.85, resetTime: '2026-12-03T14:00:00Z' },
+                ],
+              },
+              {
+                displayName: 'Claude and GPT models',
+                buckets: [
+                  { bucketId: '3p-5h', remainingFraction: 1 },
+                ],
+              },
+            ],
+          },
+        };
+      }
+      throw new Error('Unexpected RPC: ' + method);
+    },
+  };
+
+  const localHit = await usageService.fetchUsageFromLocalLs('cur@example.com', fakeDeps);
+  assert.ok(localHit, '本地 LS 匹配当前账号时应返回有效配额快照');
+  assert.equal(localHit.tierId, 'Google AI Ultra');
+  assert.equal(localHit.availableAICredits, 120);
+  assert.equal(localHit.minRemainingPercent, 85);
+  assert.equal(localHit.models.length, 3);
+  assert.deepEqual(rpcLog, ['GetUserStatus', 'RetrieveUserQuotaSummary']);
+
+  const localMiss = await usageService.fetchUsageFromLocalLs('standby1@example.com', fakeDeps);
+  assert.equal(localMiss, null, '本地 LS 登录邮箱与目标不一致时必须 Fail-Closed 返回 null 防串号');
+
+  // Q4: QuotaOrchestrator 全链路验证
   const sharedDir = process.env.KITE_SHARED_DIR;
   const storeMap = new Map([['currentEmail', 'cur@example.com']]);
   const mockCtx = {
@@ -171,14 +243,17 @@ assert.equal(effFull.minRemainingPercent, 100, '全部窗口均过重置时间�
 
   accountStore.init(mockCtx);
   accountStore.upsertBatch([
-    { email: 'cur@example.com', accessToken: 'ya29.cur', refreshToken: '1//cur' },
-    { email: 'standby1@example.com', accessToken: 'ya29.s1', refreshToken: '1//s1' },
-    { email: 'standby2@example.com', accessToken: 'ya29.s2', refreshToken: '1//s2' },
+    { email: 'cur@example.com', accessToken: 'ya29.cur', refreshToken: '1//cur', projectId: 'p-cur' },
+    { email: 'standby1@example.com', accessToken: 'ya29.s1', refreshToken: '1//s1', projectId: 'p-s1' },
+    { email: 'banned@example.com', accessToken: 'ya29.ban', refreshToken: '1//ban', health: { status: 'banned', checkedAt: new Date().toISOString() } },
   ], { overwriteTokens: true });
 
-  const fetchCalls = [];
+  const cloudCalls = [];
+  const localLsCalls = [];
+  let localLsAvailable = true;
+
   usageService.fetchUsage = async (acc) => {
-    fetchCalls.push(acc.email);
+    cloudCalls.push(acc.email);
     return {
       minRemainingPercent: 80,
       updatedAt: Date.now(),
@@ -186,68 +261,96 @@ assert.equal(effFull.minRemainingPercent, 100, '全部窗口均过重置时间�
       models: [{ label: 'Claude 5h', modelId: 'claude:5h', remainingPercent: 80 }],
     };
   };
-
-  const mockTracker = {
-    recordRefresh() {},
-    recordUsage() {},
+  usageService.fetchUsageFromLocalLs = async (email) => {
+    localLsCalls.push(email);
+    if (!localLsAvailable || email !== storeMap.get('currentEmail')) return null;
+    return {
+      minRemainingPercent: 95,
+      updatedAt: Date.now(),
+      tierId: 'Google AI Ultra',
+      models: [{ label: 'Gemini 5h', modelId: 'gemini:5h', remainingPercent: 95 }],
+    };
   };
 
+  const mockTracker = { recordRefresh() {}, recordUsage() {} };
   const recordedDelays = [];
   const orchestrator = new qoMod.QuotaOrchestrator(mockCtx, mockTracker, {}, {
     sleepFn: async (ms) => { recordedDelays.push(ms); },
   });
 
-  // 1) active 模式后台周期：仅刷当前号，备用号 0 请求
+  // 1) active 模式后台周期：只走本地 LS 读当前号，云端 OAuth 0 请求
   currentScope = 'active';
   await orchestrator.refreshBackgroundCycle();
-  assert.deepEqual(fetchCalls, ['cur@example.com'], 'active 模式下后台刷新只能请求当前活跃号');
+  assert.deepEqual(localLsCalls, ['cur@example.com'], 'active 后台周期必须走本地 LS 读当前号');
+  assert.equal(cloudCalls.length, 0, 'active 后台周期命中本地 LS 时外网云端必须零请求');
 
-  // 2) manual 模式：后台周期 0 请求，无定时器；手动全池刷新照常拉取全部 3 个号且带错峰延迟
-  fetchCalls.length = 0;
+  // 2) 本地 LS 暂不可用时，active 后台周期必须安全跳过，严禁偷偷回退外网直连
+  localLsCalls.length = 0;
+  cloudCalls.length = 0;
+  localLsAvailable = false;
+  await orchestrator.refreshBackgroundCycle();
+  assert.deepEqual(localLsCalls, ['cur@example.com']);
+  assert.equal(cloudCalls.length, 0, '本地 LS 不可用时后台自动周期不得回退外网直连 cloudcode-pa');
+
+  // 3) manual 模式：后台零请求；手动全池刷新时当前号走本地 LS、备用号串行错峰、自动跳过 banned 号
+  localLsCalls.length = 0;
+  cloudCalls.length = 0;
   recordedDelays.length = 0;
+  localLsAvailable = true;
   currentScope = 'manual';
   orchestrator.applyRefreshInterval();
   await orchestrator.refreshBackgroundCycle();
-  assert.equal(fetchCalls.length, 0, 'manual 模式下后台周期不得发起任何请求');
+  assert.equal(localLsCalls.length, 0);
+  assert.equal(cloudCalls.length, 0);
 
   const okCount = await orchestrator.refreshAllInteractive();
-  assert.equal(okCount, 3, 'manual 模式下手动全池刷新仍应刷齐 3 个号');
-  assert.equal(fetchCalls.length, 3);
-  assert.ok(recordedDelays.length >= 2 && recordedDelays.every((d) => d >= 500), '批量全池刷新必须包含 >=500ms 的账号间错峰延迟: ' + JSON.stringify(recordedDelays));
+  assert.equal(okCount, 2, '手动全池刷新应跳过 banned 号，仅刷新 2 个有效号');
+  assert.deepEqual(localLsCalls, ['cur@example.com'], '当前号优先走本地 LS');
+  assert.deepEqual(cloudCalls, ['standby1@example.com'], '仅非活跃非封禁备用号走云端，且跳过 banned@example.com');
+  assert.ok(recordedDelays.length >= 1 && recordedDelays.every((d) => d >= 1000), '批量刷新备用号必须串行且带 >=1000ms 错峰延迟: ' + JSON.stringify(recordedDelays));
 
-  // 3) 挂机失焦休眠（>30 分钟跳过后台刷新，重新聚焦且缓存过期时自动补刷）
-  fetchCalls.length = 0;
+  // 4) 窗口失焦 >30 分钟休眠，聚焦自动补刷（走本地 LS）
+  localLsCalls.length = 0;
+  cloudCalls.length = 0;
   currentScope = 'active';
   windowFocused = false;
   for (const fn of windowListeners) fn({ focused: false });
-  // 模拟已失焦 31 分钟且当前号缓存已过期
   orchestrator._setUnfocusedSinceForTest(Date.now() - 31 * 60 * 1000);
   storeMap.set('currentEmail', 'standby1@example.com');
-  // 把 standby1 缓存时间拨回 20 分钟前（已超 15 分钟阈值）
   orchestrator._usageCache.set('standby1@example.com', {
     minRemainingPercent: 0,
     updatedAt: Date.now() - 20 * 60 * 1000,
     models: [{ label: 'Claude 5h', modelId: 'claude:5h', remainingPercent: 0, resetTime: new Date(Date.now() - 60_000).toISOString() }],
   });
 
-  // 在未刷新前，通过 getUsage 读取已过 resetTime 的 standby1，应直接获得 100% 本地回血推算，且 QuickPick 排序提优
   const effectiveBeforeFetch = orchestrator.getUsage('standby1@example.com');
-  assert.equal(effectiveBeforeFetch.minRemainingPercent, 100, 'getUsage 应返回本地 resetTime 回血折算后的 100%');
+  assert.equal(effectiveBeforeFetch.minRemainingPercent, 100);
   const sorted = statusBarMod.sortPoolForQuickPick(
     accountStore.getAll(),
     (em) => orchestrator.getUsage(em),
     'cur@example.com',
   );
-  assert.equal(sorted[1].email, 'standby1@example.com', '已过 resetTime 的满血备用号应在 QuickPick 中排在 80% 号之前');
+  assert.equal(sorted[1].email, 'standby1@example.com');
 
   await orchestrator.refreshBackgroundCycle();
-  assert.equal(fetchCalls.length, 0, '窗口失焦超过 30 分钟时后台轮询必须休眠跳过');
+  assert.equal(localLsCalls.length, 0, '失焦超过 30 分钟时后台轮询必须休眠跳过');
 
-  // 模拟用户回到窗口聚焦（注入 0ms 唤醒延迟测试即时触发）
   windowFocused = true;
   for (const fn of windowListeners) fn({ focused: true });
   await new Promise((r) => setTimeout(r, 30));
-  assert.deepEqual(fetchCalls, ['standby1@example.com'], '窗口重新聚焦后应自动补刷已过期的当前账号');
+  assert.deepEqual(localLsCalls, ['standby1@example.com'], '重新聚焦后应通过本地 LS 补刷过期当前号');
+  assert.equal(cloudCalls.length, 0, '聚焦补刷同样零外网直连');
+
+  // 5) 切号后延迟同步仅走本地 LS（首次未就绪自动重试一次，全程零外网）
+  localLsCalls.length = 0;
+  cloudCalls.length = 0;
+  localLsAvailable = false;
+  orchestrator.schedulePostSwitchRefresh('standby1@example.com', 10, 15);
+  await new Promise((r) => setTimeout(r, 20));
+  localLsAvailable = true;
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(localLsCalls, ['standby1@example.com', 'standby1@example.com'], '切号延迟同步应重试本地 LS');
+  assert.equal(cloudCalls.length, 0, '切号延迟同步全程不发外网直连');
 
   orchestrator.dispose();
   accountStore.dispose();
@@ -264,13 +367,13 @@ try {
     env: { ...process.env, KITE_SHARED_DIR: path.join(sandboxDir, 'shared'), KITE_MASTER_KEY_FILE: '' },
     encoding: 'utf8',
   });
-  gate('Q3 & Q4 隔离沙箱实测 active/manual 范围、错峰抖动、失焦休眠唤醒与本地回血排序', out.includes('POLLING_SANDBOX_OK'), out.trim());
+  gate('Q3-Q5 隔离沙箱实测本地 LS 零外网读配额、防串号、跳过 banned 与失焦休眠唤醒', out.includes('POLLING_SANDBOX_OK'), out.trim());
 } catch (err) {
   const detail = err?.stderr ? String(err.stderr).trim() : (err instanceof Error ? err.message : String(err));
-  gate('Q3 & Q4 隔离沙箱实测 active/manual 范围、错峰抖动、失焦休眠唤醒与本地回血排序', false, detail.split(/\r?\n/)[0]);
+  gate('Q3-Q5 隔离沙箱实测本地 LS 零外网读配额、防串号、跳过 banned 与失焦休眠唤醒', false, detail.split(/\r?\n/)[0]);
 } finally {
   fs.rmSync(sandboxDir, { recursive: true, force: true });
 }
 
-console.log(`\n配额轮询降敏门控结果: ${passed} 通过, ${failed} 失败`);
+console.log(`\n配额刷新与本机 LS 读取门控结果: ${passed} 通过, ${failed} 失败`);
 process.exit(failed > 0 ? 1 : 0);

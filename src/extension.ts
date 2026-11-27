@@ -96,7 +96,7 @@ export function activate(context: vscode.ExtensionContext): void {
       switchAccount(context, email, {
         usageTracker: tracker,
         refreshAfterSwitch: (switchedEmail) => {
-          void orchestrator.refreshOneAccountUsage(switchedEmail);
+          orchestrator.schedulePostSwitchRefresh(switchedEmail);
         },
         pushAccounts: () => sidebar.refresh(),
         postMessage: (msg) => sidebar.postMessage(msg),
@@ -111,7 +111,6 @@ export function activate(context: vscode.ExtensionContext): void {
     isRefreshInFlight: () => orchestrator.isRefreshInFlight(),
     getUsageSnapshot: (email) => orchestrator.getUsage(email),
     getUsageError: (email) => orchestrator.getUsageError(email),
-    probeOneHealth: (email) => orchestrator.probeOneHealth(email),
     onQuotaRefreshMinutesChanged: () => orchestrator.applyRefreshInterval(),
     onPrivacyChanged: (enabled) => broadcastPrivacyAcrossHosts(enabled, 'sidebar'),
     getTrackerSummary: () => tracker.getSummary(),
@@ -146,7 +145,6 @@ export function activate(context: vscode.ExtensionContext): void {
       getUsage: (email) => orchestrator.getUsage(email),
       refreshCurrent: (email) => orchestrator.refreshOneAccountUsage(email).then(() => undefined),
       refreshAll: () => orchestrator.refreshAllInteractive().then(() => undefined),
-      recheckHealth: () => orchestrator.probeAllHealth(),
       openSettings: () => sidebar.openSettingsUi(),
       openAppearanceSettings: () => sidebar.openSettingsUi('appearance'),
       getPrivacy: () => context.globalState.get<boolean>('privacyMode', false),
@@ -211,9 +209,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('antigravityKite.refreshQuota', async () => {
       await orchestrator.refreshAllInteractive();
-    }),
-    vscode.commands.registerCommand('antigravityKite.healthRecheck', async () => {
-      await orchestrator.probeAllHealth();
     }),
     vscode.commands.registerCommand('antigravityKite.openSettings', () => {
       sidebar.openSettingsUi();

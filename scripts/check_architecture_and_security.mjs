@@ -381,8 +381,7 @@ const g22Ok = logPanelSrc.includes('export function broadcastPrivacyToLogPanel')
   && extSrc.includes('broadcastPrivacyToLogPanel')
   && extSrc.includes('broadcastPrivacy(')
   && lpMaskedSample === 'al***e@***'
-  && sidebarJs.includes("tl('healthBannedToast', displayEmail(msg.email))")
-  && sidebarJs.includes("tl('healthAuthToast', displayEmail(msg.email))")
+  && sidebarJs.includes("tl('confirmRemove', displayEmail(email))")
   && !seamlessSrc.includes('accessToken.substring(');
 gate('A6 logPanel 与侧栏/状态栏 G22 双向隐私模式同步及域名脱敏闭环', g22Ok, `lpMasked=${lpMaskedSample}`);
 

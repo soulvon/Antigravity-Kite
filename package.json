@@ -2,7 +2,7 @@
   "name": "antigravity-kite",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.5.7",
+  "version": "1.5.8",
   "publisher": "soulvon",
   "repository": {
     "type": "git",
@@ -78,11 +78,6 @@
         "category": "Antigravity Kite"
       },
       {
-        "command": "antigravityKite.healthRecheck",
-        "title": "%cmd.healthRecheck%",
-        "category": "Antigravity Kite"
-      },
-      {
         "command": "antigravityKite.openSettings",
         "title": "%cmd.openSettings%",
         "category": "Antigravity Kite"
@@ -140,12 +135,10 @@
           "type": "string",
           "enum": [
             "active",
-            "all",
             "manual"
           ],
           "enumDescriptions": [
             "%config.quotaRefreshScope.active%",
-            "%config.quotaRefreshScope.all%",
             "%config.quotaRefreshScope.manual%"
           ],
           "default": "active",

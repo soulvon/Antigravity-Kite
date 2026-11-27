@@ -1,17 +1,17 @@
 /**
- * 配额与健康探测编排器
+ * 配额编排器（本机官方 LS 优先 + 低频按需同步）
  *
  * 统一托管：
  * - usageCache（globalState 持久化快照）与本地 resetTime 到期回血折算（resolveEffectiveUsage）
- * - 三档后台刷新范围：active（仅当前账号，默认）/ all（全池错峰）/ manual（关闭后台定时）
- * - 账号间随机抖动错峰拉取（消除同 IP 同毫秒多号齐射指纹）与窗口长时失焦挂机休眠
- * - 按需手动推理健康探针（与后台轮询彻底解耦，不在后台定时戳备用号推理端点）
+ * - 两档后台刷新范围：active（仅当前账号通过本机官方 LS RPC 同步，默认）/ manual（关闭后台定时）
+ * - 窗口长时失焦挂机休眠与重新聚焦补刷
+ * - 手动批量刷新：当前号优先走本机 LS、其余可用号串行错峰（并发 1 + 随机抖动）
  */
 import * as vscode from 'vscode';
 import * as accountStore from './accountStore';
 import { readActiveAccount } from './geminiFiles';
 import { extractPoolsFromModels, UsageTracker } from './usageTracker';
-import { fetchUsage, checkAccountHealth, classifyAccountError, describeError } from './usageService';
+import * as usageService from './usageService';
 import { AccountHealth, StoredAccount, UsageSnapshot } from './types';
 import { t } from './i18n';
 import { logInfo, logWarn } from './logger';
@@ -19,16 +19,14 @@ import { notifyUi } from './uiChannel';
 
 const HEALTH_STALE_MS = 60 * 60 * 1000;
 const IDLE_UNFOCUSED_PAUSE_MS = 30 * 60 * 1000;
-const INTERACTIVE_CONCURRENCY = 2;
-const BG_JITTER_MIN_MS = 1200;
-const BG_JITTER_MAX_MS = 2500;
-const FG_JITTER_MIN_MS = 550;
-const FG_JITTER_MAX_MS = 1200;
+const MANUAL_BATCH_CONCURRENCY = 1;
+const MANUAL_JITTER_MIN_MS = 1200;
+const MANUAL_JITTER_MAX_MS = 2500;
 
-export type QuotaRefreshScope = 'active' | 'all' | 'manual';
+export type QuotaRefreshScope = 'active' | 'manual';
 
 export function normalizeRefreshScope(v: unknown): QuotaRefreshScope {
-  if (v === 'active' || v === 'all' || v === 'manual') return v;
+  if (v === 'manual') return 'manual';
   return 'active';
 }
 
@@ -89,6 +87,7 @@ export class QuotaOrchestrator implements vscode.Disposable {
   private _quotaRefreshTimer: NodeJS.Timeout | null = null;
   private _startupUsageTimer: NodeJS.Timeout | null = null;
   private _focusResumeTimer: NodeJS.Timeout | null = null;
+  private _postSwitchTimer: NodeJS.Timeout | null = null;
   private _windowStateSub: vscode.Disposable | undefined;
   private _unfocusedSince: number | null = null;
   private _disposed = false;
@@ -129,13 +128,38 @@ export class QuotaOrchestrator implements vscode.Disposable {
     this._unfocusedSince = ts;
   }
 
-  async refreshOneAccountUsage(email: string, opts: { batch?: boolean } = {}): Promise<UsageSnapshot | null> {
+  async refreshOneAccountUsage(
+    email: string,
+    opts: { batch?: boolean; localLsOnly?: boolean } = {},
+  ): Promise<UsageSnapshot | null> {
     const targetLower = email.toLowerCase();
     const account = accountStore.getAll().find((a) => a.email.toLowerCase() === targetLower && !a.disabled);
     if (!account) return null;
 
+    const isActive = this._isCurrentActiveEmail(account.email);
+    const prevSnap = this._usageCache.get(account.email);
+
     try {
-      const snapshot = await fetchUsage(account);
+      let snapshot: UsageSnapshot | null = null;
+
+      // 当前活跃账号优先走本机官方 LS RPC（127.0.0.1），零外网直连、零 OAuth 令牌外发
+      if (isActive) {
+        snapshot = await usageService.fetchUsageFromLocalLs(account.email);
+        if (!snapshot && opts.localLsOnly) {
+          logInfo('usage.refresh.skip.local_ls_unavailable', { email: account.email });
+          return null;
+        }
+      } else if (opts.localLsOnly) {
+        return null;
+      }
+
+      if (!snapshot) {
+        snapshot = await usageService.fetchUsage(account, {
+          existingTierId: prevSnap?.tierId,
+          existingCredits: prevSnap?.availableAICredits,
+        });
+      }
+
       this._usageCache.set(account.email, snapshot);
       this._usageCacheLastRefresh = Date.now();
       this._usageErrors.delete(account.email);
@@ -158,7 +182,7 @@ export class QuotaOrchestrator implements vscode.Disposable {
       }
       return snapshot;
     } catch (err) {
-      const msg = describeError(err);
+      const msg = usageService.describeError(err);
       logWarn('usage.refresh.fail', { email: account.email, error: msg });
       this._usageErrors.set(account.email, msg);
       // 失败不清 usageCache：继续展示上次成功快照，仅标注失败明细；只让明确的凭据失效/封禁信号落盘
@@ -171,17 +195,38 @@ export class QuotaOrchestrator implements vscode.Disposable {
     }
   }
 
-  /** 按当前配置的后台范围（active / all / manual）与窗口闲置状态执行单次后台周期 */
+  /** 切号后等待官方 LS 完成重启再仅通过本机 RPC 同步一次配额，避免切号瞬间外发请求 */
+  schedulePostSwitchRefresh(email: string, initialDelayMs = 3500, retryDelayMs = 4500): void {
+    if (this._disposed || !email) return;
+    if (this._postSwitchTimer) {
+      clearTimeout(this._postSwitchTimer);
+      this._postSwitchTimer = null;
+    }
+    const targetLower = email.trim().toLowerCase();
+    const runAttempt = (attempt: number) => {
+      if (this._disposed || this._currentActiveEmailLower() !== targetLower) return;
+      void this.refreshOneAccountUsage(email, { localLsOnly: true }).then((snap) => {
+        if (!snap && attempt === 0 && !this._disposed && this._currentActiveEmailLower() === targetLower) {
+          this._postSwitchTimer = setTimeout(() => {
+            this._postSwitchTimer = null;
+            runAttempt(1);
+          }, retryDelayMs);
+        }
+      });
+    };
+    this._postSwitchTimer = setTimeout(() => {
+      this._postSwitchTimer = null;
+      runAttempt(0);
+    }, initialDelayMs);
+  }
+
+  /** 按当前配置的后台范围（active / manual）与窗口闲置状态执行单次后台周期（严禁后台直连外网） */
   async refreshBackgroundCycle(): Promise<void> {
     if (this._disposed) return;
     const scope = this._quotaRefreshScope();
     if (scope === 'manual') return;
     if (this._isIdlePaused()) {
       logInfo('usage.refresh.skip.idle_unfocused');
-      return;
-    }
-    if (scope === 'all') {
-      await this.refreshAllBackground();
       return;
     }
     if (this._refreshAllInFlight) {
@@ -192,29 +237,7 @@ export class QuotaOrchestrator implements vscode.Disposable {
     if (!active) return;
     this._refreshAllInFlight = true;
     try {
-      await this.refreshOneAccountUsage(active.email);
-    } finally {
-      this._refreshAllInFlight = false;
-    }
-  }
-
-  async refreshAllBackground(): Promise<void> {
-    if (this._refreshAllInFlight || this._disposed) {
-      logInfo('usage.refresh.skip.inflight');
-      return;
-    }
-    this._refreshAllInFlight = true;
-    try {
-      logInfo('usage.refresh.background.start');
-      const accounts = accountStore.getAll().filter((a) => !a.disabled);
-      await this._runStaggered(accounts, 1, BG_JITTER_MIN_MS, BG_JITTER_MAX_MS, async (account) => {
-        if (!this._disposed) {
-          await this.refreshOneAccountUsage(account.email, { batch: true });
-        }
-      });
-      this._saveUsageCache();
-      this._bridge.onTrackerChanged?.();
-      logInfo('usage.refresh.background.done', { count: accounts.length });
+      await this.refreshOneAccountUsage(active.email, { localLsOnly: true });
     } finally {
       this._refreshAllInFlight = false;
     }
@@ -228,9 +251,9 @@ export class QuotaOrchestrator implements vscode.Disposable {
     }
     this._refreshAllInFlight = true;
     try {
-      const accounts = accountStore.getAll().filter((a) => !a.disabled);
+      const accounts = this._listManualBatchTargets();
       let successCount = 0;
-      await this._runStaggered(accounts, INTERACTIVE_CONCURRENCY, FG_JITTER_MIN_MS, FG_JITTER_MAX_MS, async (account) => {
+      await this._runStaggered(accounts, MANUAL_BATCH_CONCURRENCY, MANUAL_JITTER_MIN_MS, MANUAL_JITTER_MAX_MS, async (account) => {
         const snap = await this.refreshOneAccountUsage(account.email, { batch: true });
         if (snap) successCount++;
       });
@@ -252,7 +275,7 @@ export class QuotaOrchestrator implements vscode.Disposable {
     }
     this._refreshAllInFlight = true;
     try {
-      const accounts = accountStore.getAll().filter((a) => !a.disabled);
+      const accounts = this._listManualBatchTargets();
       const total = accounts.length;
       let successCount = 0;
       let doneCount = 0;
@@ -262,7 +285,7 @@ export class QuotaOrchestrator implements vscode.Disposable {
         onProgress?.(0, total);
       }
 
-      await this._runStaggered(accounts, INTERACTIVE_CONCURRENCY, FG_JITTER_MIN_MS, FG_JITTER_MAX_MS, async (account) => {
+      await this._runStaggered(accounts, MANUAL_BATCH_CONCURRENCY, MANUAL_JITTER_MIN_MS, MANUAL_JITTER_MAX_MS, async (account) => {
         const snap = await this.refreshOneAccountUsage(account.email, { batch: true });
         if (snap) {
           successCount++;
@@ -286,40 +309,6 @@ export class QuotaOrchestrator implements vscode.Disposable {
     } finally {
       this._refreshAllInFlight = false;
     }
-  }
-
-  async probeOneHealth(email: string): Promise<AccountHealth | null> {
-    const targetLower = email.toLowerCase();
-    const account = accountStore.getAll().find((a) => a.email.toLowerCase() === targetLower);
-    if (!account) return null;
-    const health = await checkAccountHealth(account);
-    this._persistHealthIfChanged(account.email, health);
-    return health;
-  }
-
-  async probeAllHealth(onlyStale = false): Promise<void> {
-    if (this._disposed) return;
-    logInfo('health.probeAll.start', { onlyStale });
-    const accounts = accountStore.getAll().filter((a) => {
-      if (a.disabled) return false;
-      if (!onlyStale) return true;
-      if (!a.health) return true;
-      const age = Date.parse(a.health.checkedAt);
-      return a.health.status !== 'ok' || !Number.isFinite(age) || Date.now() - age > HEALTH_STALE_MS;
-    });
-
-    await this._runStaggered(accounts, INTERACTIVE_CONCURRENCY, FG_JITTER_MIN_MS, FG_JITTER_MAX_MS, async (account) => {
-      try {
-        const health = await checkAccountHealth(account);
-        this._persistHealthIfChanged(account.email, health);
-      } catch (e) {
-        logWarn('health.probe.unexpected', {
-          email: account.email,
-          error: e instanceof Error ? e.message : String(e),
-        });
-      }
-    });
-    logInfo('health.probeAll.done', { count: accounts.length });
   }
 
   applyRefreshInterval(): void {
@@ -396,11 +385,32 @@ export class QuotaOrchestrator implements vscode.Disposable {
     return this._unfocusedSince !== null && Date.now() - this._unfocusedSince >= IDLE_UNFOCUSED_PAUSE_MS;
   }
 
-  private _resolveActiveEnabledAccount(): StoredAccount | undefined {
+  private _currentActiveEmailLower(): string {
     const raw = this._context.globalState.get<string>('currentEmail') || readActiveAccount();
-    if (!raw) return undefined;
-    const lower = raw.toLowerCase();
+    return raw ? raw.trim().toLowerCase() : '';
+  }
+
+  private _isCurrentActiveEmail(email: string): boolean {
+    const activeLower = this._currentActiveEmailLower();
+    return Boolean(activeLower) && email.trim().toLowerCase() === activeLower;
+  }
+
+  private _resolveActiveEnabledAccount(): StoredAccount | undefined {
+    const lower = this._currentActiveEmailLower();
+    if (!lower) return undefined;
     return accountStore.getAll().find((a) => !a.disabled && a.email.toLowerCase() === lower);
+  }
+
+  /** 手动批量刷新目标：跳过禁用与已封禁账号，并将当前活跃号置顶（优先走本地 LS） */
+  private _listManualBatchTargets(): StoredAccount[] {
+    const activeLower = this._currentActiveEmailLower();
+    const list = accountStore.getAll().filter((a) => !a.disabled && a.health?.status !== 'banned');
+    if (!activeLower) return list;
+    return list.sort((a, b) => {
+      const aAct = a.email.toLowerCase() === activeLower ? 0 : 1;
+      const bAct = b.email.toLowerCase() === activeLower ? 0 : 1;
+      return aAct - bAct;
+    });
   }
 
   private _isAccountStale(email: string): boolean {
@@ -412,16 +422,8 @@ export class QuotaOrchestrator implements vscode.Disposable {
   private _isTargetStale(): boolean {
     const scope = this._quotaRefreshScope();
     if (scope === 'manual') return false;
-    if (scope === 'active') {
-      const active = this._resolveActiveEnabledAccount();
-      return active ? this._isAccountStale(active.email) : false;
-    }
-    const enabled = accountStore.getAll().filter((a) => !a.disabled);
-    if (enabled.length === 0) return false;
-    if (this._usageCache.size === 0 || Date.now() - this._usageCacheLastRefresh > this._quotaRefreshMs()) {
-      return true;
-    }
-    return enabled.some((a) => this._isAccountStale(a.email));
+    const active = this._resolveActiveEnabledAccount();
+    return active ? this._isAccountStale(active.email) : false;
   }
 
   private _clearTimers(): void {
@@ -436,6 +438,10 @@ export class QuotaOrchestrator implements vscode.Disposable {
     if (this._focusResumeTimer) {
       clearTimeout(this._focusResumeTimer);
       this._focusResumeTimer = null;
+    }
+    if (this._postSwitchTimer) {
+      clearTimeout(this._postSwitchTimer);
+      this._postSwitchTimer = null;
     }
   }
 
@@ -472,7 +478,7 @@ export class QuotaOrchestrator implements vscode.Disposable {
   private _healthFromError(err: unknown): AccountHealth {
     const msg = err instanceof Error ? err.message : String(err);
     return {
-      status: classifyAccountError(msg),
+      status: usageService.classifyAccountError(msg),
       checkedAt: new Date().toISOString(),
       detail: msg.slice(0, 300),
     };
@@ -481,7 +487,7 @@ export class QuotaOrchestrator implements vscode.Disposable {
   private _persistHealthIfChanged(email: string, health: AccountHealth): void {
     const prev = accountStore.getByEmail(email)?.health;
     if (health.status !== 'ok') {
-      logWarn('health.probe', { email, status: health.status, detail: health.detail || '' });
+      logWarn('health.state', { email, status: health.status, detail: health.detail || '' });
     }
     const prevAge = prev?.checkedAt ? Date.parse(prev.checkedAt) : NaN;
     const timestampStale = !Number.isFinite(prevAge) || Date.now() - prevAge > HEALTH_STALE_MS;
@@ -494,7 +500,7 @@ export class QuotaOrchestrator implements vscode.Disposable {
 
   /**
    * 错峰派发执行器：第 1 个任务立即启动，后续每派发一个新任务前串行等待随机抖动延迟 [minDelayMs, maxDelayMs]，
-   * 确保同一出口 IP 上绝不出现多账号同毫秒并发齐射。
+   * 确保同一出口 IP 上绝不出现多账号并发齐射。
    */
   private async _runStaggered<T>(
     items: readonly T[],

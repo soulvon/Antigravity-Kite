@@ -25,7 +25,6 @@ export interface SidebarActionHandlers {
   isRefreshInFlight: () => boolean;
   getUsageSnapshot: (email: string) => UsageSnapshot | undefined;
   getUsageError: (email: string) => string | undefined;
-  probeOneHealth: (email: string) => Promise<AccountHealth | null>;
   onQuotaRefreshMinutesChanged: () => void;
   onPrivacyChanged: (enabled: boolean) => void;
   getTrackerSummary?: () => StatsSummary | null;
@@ -503,13 +502,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
     }
   }
 
-  private async _checkHealth(email: string): Promise<void> {
-    const health = await this._handlers.probeOneHealth?.(email) ?? null;
-    if (health) {
-      void this._view?.webview.postMessage({ type: 'healthResult', email, health });
-    }
-  }
-
   private async _handleMessage(msg: WebviewMessage): Promise<void> {
     const msgType = typeof msg.type === 'string' ? msg.type : '';
     const email = typeof msg.email === 'string' ? msg.email : '';
@@ -603,7 +595,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
             imported: result1.imported,
             skipped: result1.skipped,
           });
-          if (result1.imported > 0) void this._refreshAllUsage();
         } catch (err) {
           void this._view?.webview.postMessage({
             type: 'importStatus',
@@ -626,7 +617,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
             imported: result2.imported,
             skipped: result2.skipped,
           });
-          if (result2.imported > 0) void this._refreshAllUsage();
         } catch (err) {
           void this._view?.webview.postMessage({
             type: 'importStatus',
@@ -649,7 +639,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
             imported: result3.imported,
             skipped: result3.skipped,
           });
-          if (result3.imported > 0) void this._refreshAllUsage();
         } catch (err) {
           if (err instanceof Error && err.message === t('impNoFileSelected')) {
             void this._view?.webview.postMessage({ type: 'importStatus', status: 'cancelled' });
@@ -759,12 +748,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider, UiPresenter,
       case 'refreshUsage':
         if (email) {
           void this._refreshUsage(email);
-        }
-        break;
-
-      case 'checkHealth':
-        if (email) {
-          void this._checkHealth(email);
         }
         break;
 

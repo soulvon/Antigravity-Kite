@@ -48,7 +48,6 @@ export interface StatusBarDeps {
   getUsage?: (email: string) => UsageSnapshot | undefined;
   refreshCurrent?: (email: string) => Promise<void>;
   refreshAll?: () => Promise<void>;
-  recheckHealth?: () => Promise<void>;
   openSettings?: () => void;
   openAppearanceSettings?: () => void;
   getPrivacy?: () => boolean;
@@ -526,12 +525,6 @@ export class StatusBarManager implements vscode.Disposable {
       type: 'action',
     });
     items.push({
-      label: `$(shield) ${t('qpRecheckHealth')}`,
-      detail: t('qpRecheckHealthDesc'),
-      actionId: 'recheckHealth',
-      type: 'action',
-    });
-    items.push({
       label: `$(layout-sidebar-left) ${t('qpOpenPanel')}`,
       detail: t('qpOpenPanelDesc'),
       actionId: 'openPanel',
@@ -565,12 +558,6 @@ export class StatusBarManager implements vscode.Disposable {
         case 'refreshAll':
           await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: t('qpRefreshAll'), cancellable: false }, async () => {
             try { await this._deps.refreshAll?.(); } catch (err) { notifyUi('error', t('sbSwitchFail', err instanceof Error ? err.message : String(err))); }
-          });
-          this.update();
-          break;
-        case 'recheckHealth':
-          await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: t('qpRecheckHealth'), cancellable: false }, async () => {
-            try { await this._deps.recheckHealth?.(); } catch (err) { notifyUi('error', String(err instanceof Error ? err.message : err)); }
           });
           this.update();
           break;

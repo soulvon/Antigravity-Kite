@@ -885,18 +885,6 @@ window.addEventListener('message', e => {
     renderAccounts();
     updateSummary();
   }
-  if (msg.type === 'healthResult') {
-    healthCheckingEmail = null;
-    const idx = accounts.findIndex(a => a.email === msg.email);
-    if (idx >= 0 && msg.health) accounts[idx].health = msg.health;
-    renderAccounts();
-    updateSummary();
-    if (msg.health && msg.health.status === 'banned') {
-      showToast(tl('healthBannedToast', displayEmail(msg.email)), 'error');
-    } else if (msg.health && msg.health.status === 'auth_invalid') {
-      showToast(tl('healthAuthToast', displayEmail(msg.email)), 'warning');
-    }
-  }
   if (msg.type === 'localImportPreview') {
     showImportConfirmModal(msg.email, msg.exists, msg.tokenExpired);
   }
@@ -1279,7 +1267,7 @@ function fillSettingsForm(s) {
   chk('setSyncRemoteAuth', s.syncRemoteAuth !== false);
   set('setCdpPort', s.cdpPort || 9333);
   set('setCdpHeartbeat', s.cdpHeartbeatMs || 500);
-  set('setQuotaScope', ['active', 'all', 'manual'].includes(s.quotaRefreshScope) ? s.quotaRefreshScope : 'active');
+  set('setQuotaScope', s.quotaRefreshScope === 'manual' ? 'manual' : 'active');
   set('setQuotaRefresh', s.quotaRefreshMinutes || 15);
   syncQuotaScopeUi();
   set('setLocale', s.locale || 'auto');
@@ -1499,7 +1487,7 @@ function syncStyleCards() {
       cdpHeartbeatMs: num('setCdpHeartbeat', 500),
       syncGeminiFiles: on('setSyncGemini'),
       syncRemoteAuth: on('setSyncRemoteAuth'),
-      quotaRefreshScope: ['active', 'all', 'manual'].includes(val('setQuotaScope')) ? val('setQuotaScope') : 'active',
+      quotaRefreshScope: val('setQuotaScope') === 'manual' ? 'manual' : 'active',
       quotaRefreshMinutes: num('setQuotaRefresh', 15),
       locale: val('setLocale') || 'auto',
       sidebarCardView: val('setCardView') === 'compact' ? 'compact' : 'classic',
@@ -1670,9 +1658,6 @@ function handleImportStatus(msg) {
           break;
         case 'switch':
           if (email) setCurrent(email);
-          break;
-        case 'recheck-health':
-          if (email) recheckHealth(email);
           break;
         case 'edit-tags':
           if (email) openTagEditModal(email);
@@ -2083,7 +2068,7 @@ function renderAccounts() {
               : (switchingEmail
                 ? '<button type="button" class="grid-switch-btn" disabled title="' + attrEsc(tl('switching')) + '">' + escHtml(tl('switch')) + '</button>'
                 : '<button type="button" class="grid-switch-btn" data-action="switch" data-email="' + safeEmail + '">' + escHtml(tl('switch')) + '</button>')))
-          + healthPillHtml(a, safeEmail)
+          + healthPillHtml(a)
           + '<div class="grid-actions-right">'
             + '<button type="button" class="icon-btn" data-action="edit-tags" data-email="' + safeEmail + '" title="' + attrEsc(tl('editTagsT')) + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>'
             + '<button type="button" class="icon-btn is-refresh" data-action="refresh-one" data-email="' + safeEmail + '" data-refresh-email="' + safeEmail + '" title="' + attrEsc(tl('refreshQuotaT')) + '"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>'
@@ -2128,7 +2113,6 @@ function cardSig(a) {
     u.loadError || '',
     a._usageError || '',
     a.health ? a.health.status + ':' + (a.health.checkedAt || '') : '',
-    healthCheckingEmail === a.email ? '1' : '0',
     models,
     getAccTags(a).join('|'),
     [...filterTags].sort().join(','),
@@ -2229,28 +2213,17 @@ function removeAccount(email) {
 }
 function toggleDisabled(email) { vscode.postMessage({ type: 'toggleDisabled', email }); }
 
-// ── 健康药丸 ──
-let healthCheckingEmail = null;
+// ── 账号状态徽标（只读展示） ──
 const HEALTH_LABEL_KEYS = { banned: 'healthBanned', auth_invalid: 'healthAuthInvalid', unknown: 'healthUnknown', unreachable: 'healthUnreachable' };
 
-function healthPillHtml(a, safeEmail) {
-  if (healthCheckingEmail === a.email) {
-    return '<button type="button" class="health-pill is-checking" disabled title="' + attrEsc(tl('healthChecking')) + '"><span class="health-dot"></span>' + escHtml(tl('healthChecking')) + '</button>';
-  }
+function healthPillHtml(a) {
   const h = a.health;
   if (!h || h.status === 'ok') return '';
   const label = tl(HEALTH_LABEL_KEYS[h.status] || 'healthUnknown');
-  const tipParts = [tl('healthRecheckT'), h.checkedAt ? new Date(h.checkedAt).toLocaleString() : ''];
+  const tipParts = [label, h.checkedAt ? new Date(h.checkedAt).toLocaleString() : ''];
   if (h.detail) tipParts.push(h.detail);
-  return '<button type="button" class="health-pill is-' + attrEsc(h.status) + '" data-action="recheck-health" data-email="' + safeEmail + '" title="' + attrEsc(tipParts.filter(Boolean).join(' · ')) + '">'
-    + '<span class="health-dot"></span>' + escHtml(label) + '</button>';
-}
-
-function recheckHealth(email) {
-  if (healthCheckingEmail) return;
-  healthCheckingEmail = email;
-  renderAccounts();
-  vscode.postMessage({ type: 'checkHealth', email });
+  return '<span class="health-pill is-' + attrEsc(h.status) + '" title="' + attrEsc(tipParts.filter(Boolean).join(' · ')) + '">'
+    + '<span class="health-dot"></span>' + escHtml(label) + '</span>';
 }
 
 // ── 就绪信号 ──

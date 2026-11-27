@@ -1,21 +1,26 @@
 /**
  * 额度查询服务
- * 调用 Cloud Code API 获取账号配额信息
+ * - 当前活跃账号优先通过本机 Language Server（127.0.0.1 Daemon Hub RPC）直读配额
+ * - 仅在手动刷新非活跃账号或本机 LS 不可用时，调用精简的 Cloud Code 元数据接口
  */
 
 import { StoredAccount, UsageSnapshot, AccountHealth } from './types';
 import * as accountStore from './accountStore';
 import { t } from './i18n';
 import { computeTokenFingerprint, refreshGoogleAccessToken } from './googleOAuth';
+import { DaemonHubInfo, daemonHubRpcPost, discoverAliveHubDaemons } from './liveContextMeter';
 
 export { computeTokenFingerprint } from './googleOAuth';
 
 const CLOUDCODE_DAILY_URL = 'https://daily-cloudcode-pa.googleapis.com';
 const CLOUDCODE_PROD_URL = 'https://cloudcode-pa.googleapis.com';
 const HTTP_TIMEOUT_MS = 15000;
-const OFFICIAL_IDE_VERSION = '1.20.5';
+const LOCAL_LS_STATUS_TIMEOUT_MS = 3000;
+const LOCAL_LS_QUOTA_TIMEOUT_MS = 5000;
+const FALLBACK_IDE_VERSION = '2.35.2';
 const GOOGLE_API_CLIENT_VERSION = '10.3.0';
 const NODE_VERSION = '22.21.1';
+const SUMMARY_CLIENT_ID = '1003475615';
 
 interface CloudCodeQuotaResponse {
   models?: Record<string, {
@@ -66,12 +71,26 @@ function getCloudCodePlatform(): string {
   }
 }
 
-function getCloudCodeMetadata(): Record<string, string> {
+/** 动态对齐本机存活官方 LS 版本号，避免多个接口出现分裂或过时版本号 */
+function resolveClientIdeVersion(): string {
+  try {
+    const hubs = discoverAliveHubDaemons();
+    for (const hub of hubs) {
+      const ver = typeof hub.lsVersion === 'string' ? hub.lsVersion.trim() : '';
+      if (/^\d+\.\d+\.\d+/.test(ver)) return ver;
+    }
+  } catch {
+    /* 读取本机 Hub 版本失败时使用默认基线版本 */
+  }
+  return FALLBACK_IDE_VERSION;
+}
+
+function getCloudCodeMetadata(ideVersion = resolveClientIdeVersion()): Record<string, string> {
   return {
     ideName: 'antigravity',
     ideType: 'ANTIGRAVITY',
-    ideVersion: OFFICIAL_IDE_VERSION,
-    pluginVersion: OFFICIAL_IDE_VERSION,
+    ideVersion,
+    pluginVersion: ideVersion,
     platform: getCloudCodePlatform(),
     updateChannel: 'stable',
     pluginType: 'GEMINI',
@@ -79,26 +98,22 @@ function getCloudCodeMetadata(): Record<string, string> {
 }
 
 /** loadCodeAssist 用的 User-Agent（含 google-api-nodejs-client） */
-function getLoadCodeAssistUA(): string {
-  return `antigravity/${OFFICIAL_IDE_VERSION} ${getOsName()}/${getArchName()} google-api-nodejs-client/${GOOGLE_API_CLIENT_VERSION}`;
+function getLoadCodeAssistUA(ideVersion = resolveClientIdeVersion()): string {
+  return `antigravity/${ideVersion} ${getOsName()}/${getArchName()} google-api-nodejs-client/${GOOGLE_API_CLIENT_VERSION}`;
 }
 
 /** fetchAvailableModels 用的 User-Agent */
-function getCloudCodeUA(): string {
-  return `antigravity/${OFFICIAL_IDE_VERSION} ${getOsName()}/${getArchName()}`;
+function getCloudCodeUA(ideVersion = resolveClientIdeVersion()): string {
+  return `antigravity/${ideVersion} ${getOsName()}/${getArchName()}`;
 }
 
 /**
  * retrieveUserQuotaSummary 用的 User-Agent。
- * 服务端按 UA 识别客户端身份，两者返回的分组不同（2026-11-06 实测，同一账号同一时刻）：
- * - IDE 格式 `antigravity/x.y.z win/amd64`          → 4 桶，缺 Gemini 4 Argon 组
- * - 客户端格式 `antigravity/x.y.z (aidev_client; …)` → 5 桶，多出 gemini-argon-wtu-weekly
- * 版本号影响 3p 组是否返回（1.20.5 缺 Gemini 组），故仍固定 2.25.0。
+ * 客户端格式 `antigravity/x.y.z (aidev_client; …)` 返回完整分桶（含 Gemini 4 组），
+ * 版本号动态与本机官方 LS 对齐，避免不同接口间版本号割裂。
  */
-const SUMMARY_IDE_VERSION = '2.25.0';
-const SUMMARY_CLIENT_ID = '1003475615';
-function getSummaryUA(): string {
-  return `antigravity/${SUMMARY_IDE_VERSION} (aidev_client; os_type=${getOsName()}; arch=${getArchName()}; cl=${SUMMARY_CLIENT_ID})`;
+function getSummaryUA(ideVersion = resolveClientIdeVersion()): string {
+  return `antigravity/${ideVersion} (aidev_client; os_type=${getOsName()}; arch=${getArchName()}; cl=${SUMMARY_CLIENT_ID})`;
 }
 
 /** 刷新 accessToken（Google 刷新响应可能携带 id_token，一并取回） */
@@ -540,10 +555,111 @@ export function extractQuotaFromModels(response: CloudCodeQuotaResponse['models'
   };
 }
 
+export interface LocalLsQuotaDeps {
+  discoverHubs?: () => DaemonHubInfo[];
+  rpcPost?: (
+    hub: DaemonHubInfo,
+    method: string,
+    body: Record<string, unknown>,
+    timeoutMs: number,
+  ) => Promise<unknown>;
+}
+
+interface LocalUserStatusResponse {
+  userStatus?: {
+    email?: string;
+    name?: string;
+    userTier?: {
+      id?: string;
+      name?: string;
+      availableCredits?: AvailableCredit[];
+    };
+    planStatus?: {
+      planInfo?: {
+        planName?: string;
+        teamsTier?: string;
+      };
+    };
+  };
+}
+
+interface LocalQuotaSummaryRpcResponse {
+  response?: QuotaSummaryResponse;
+  groups?: QuotaSummaryResponse['groups'];
+}
+
 /**
- * 查询单个账号的额度
+ * 零外网直连：通过本机存活的官方 Antigravity Language Server（127.0.0.1 Daemon Hub RPC）
+ * 读取当前登录账号的订阅档位与双窗配额摘要。
+ *
+ * 严格校对 `userStatus.email === targetEmail`（忽略大小写）；
+ * 若本机无存活 LS 或登录邮箱不匹配，一律 Fail-Closed 返回 null，绝不串号。
  */
-export async function fetchUsage(account: StoredAccount): Promise<UsageSnapshot> {
+export async function fetchUsageFromLocalLs(
+  email: string,
+  deps: LocalLsQuotaDeps = {},
+): Promise<UsageSnapshot | null> {
+  const targetLower = String(email || '').trim().toLowerCase();
+  if (!targetLower) return null;
+
+  const discoverHubs = deps.discoverHubs || (() => discoverAliveHubDaemons());
+  const rpcPost = deps.rpcPost || daemonHubRpcPost;
+  const hubs = discoverHubs();
+  if (hubs.length === 0) return null;
+
+  for (const hub of hubs.slice(0, 4)) {
+    let statusRes: LocalUserStatusResponse;
+    try {
+      statusRes = (await rpcPost(hub, 'GetUserStatus', {}, LOCAL_LS_STATUS_TIMEOUT_MS)) as LocalUserStatusResponse;
+    } catch {
+      continue;
+    }
+
+    const userStatus = statusRes?.userStatus;
+    const hubEmail = typeof userStatus?.email === 'string' ? userStatus.email.trim().toLowerCase() : '';
+    if (!hubEmail || hubEmail !== targetLower) {
+      continue;
+    }
+
+    const summaryRpc = (await rpcPost(
+      hub,
+      'RetrieveUserQuotaSummary',
+      {},
+      LOCAL_LS_QUOTA_TIMEOUT_MS,
+    )) as LocalQuotaSummaryRpcResponse;
+    const summaryPayload: QuotaSummaryResponse = summaryRpc?.response ?? { groups: summaryRpc?.groups };
+    const summaryModels = extractQuotaFromSummary(summaryPayload);
+    if (summaryModels.length === 0) {
+      throw new Error(t('usNoQuotaBuckets'));
+    }
+
+    const userTier = userStatus?.userTier;
+    const tierId = userTier?.name || userTier?.id || userStatus?.planStatus?.planInfo?.planName || 'FREE';
+    const availableAICredits = sumAvailableCredits(userTier?.availableCredits);
+
+    return {
+      minRemainingPercent: Math.min(...summaryModels.map((m) => m.remainingPercent)),
+      models: summaryModels,
+      tierId,
+      availableAICredits,
+      updatedAt: Date.now(),
+    };
+  }
+
+  return null;
+}
+
+export interface FetchUsageOptions {
+  /** 已缓存的订阅级别（存在且已缓存 projectId 时可免重复打 loadCodeAssist） */
+  existingTierId?: string;
+  /** 已缓存的 AI 积分 */
+  existingCredits?: number;
+}
+
+/**
+ * 查询单个账号的额度（云端元数据路径，仅供用户手动查询非活跃备用号或本地 LS 不可用时的手动刷新）
+ */
+export async function fetchUsage(account: StoredAccount, opts: FetchUsageOptions = {}): Promise<UsageSnapshot> {
   if (!account.accessToken && !account.refreshToken) {
     throw new Error('No access token');
   }
@@ -551,34 +667,58 @@ export async function fetchUsage(account: StoredAccount): Promise<UsageSnapshot>
   // 0. 确保 token 有效；若缓存 AT 被服务端提前 401 吊销且持有 refreshToken，自动强制重刷重试一次
   let accessToken = await ensureFreshToken(account);
 
-  // 1. 获取项目信息（projectId、tierId、availableAICredits）并缓存 projectId
+  // 1. 已有 projectId 与订阅级别缓存时跳过 loadCodeAssist，单次查询仅发 1 次摘要请求
   let projectInfo: ProjectInfo;
-  try {
-    projectInfo = await loadProjectInfo(accessToken);
-  } catch (firstErr) {
-    const errText = firstErr instanceof Error ? firstErr.message : String(firstErr);
-    if (account.refreshToken && /AUTH_EXPIRED|HTTP 401\b/i.test(errText)) {
-      const refreshedToken = await ensureFreshToken(account, 60000, true);
-      if (refreshedToken && refreshedToken !== accessToken) {
-        accessToken = refreshedToken;
-        projectInfo = await loadProjectInfo(accessToken);
+  if (account.projectId && opts.existingTierId) {
+    projectInfo = {
+      projectId: account.projectId,
+      tierId: opts.existingTierId,
+      availableAICredits: opts.existingCredits,
+    };
+  } else {
+    try {
+      projectInfo = await loadProjectInfo(accessToken);
+    } catch (firstErr) {
+      const errText = firstErr instanceof Error ? firstErr.message : String(firstErr);
+      if (account.refreshToken && /AUTH_EXPIRED|HTTP 401\b/i.test(errText)) {
+        const refreshedToken = await ensureFreshToken(account, 60000, true);
+        if (refreshedToken && refreshedToken !== accessToken) {
+          accessToken = refreshedToken;
+          projectInfo = await loadProjectInfo(accessToken);
+        } else {
+          throw firstErr;
+        }
       } else {
         throw firstErr;
       }
-    } else {
-      throw firstErr;
     }
-  }
-  if (projectInfo.projectId && projectInfo.projectId !== account.projectId) {
-    account.projectId = projectInfo.projectId;
-    accountStore.update(account.email, { projectId: projectInfo.projectId });
+    if (projectInfo.projectId && projectInfo.projectId !== account.projectId) {
+      account.projectId = projectInfo.projectId;
+      accountStore.update(account.email, { projectId: projectInfo.projectId });
+    }
   }
 
   // 2. 优先取官方窗口级摘要（retrieveUserQuotaSummary，含 5h/Weekly 双窗真数据）；
-  //    仅当摘要失败时才拉取模型级推断并显式标注错误，避免正常路径浪费额外请求
+  //    遇 401 时强制刷新令牌重试一次；仅当摘要失败时才退回模型级推断并显式标注错误
+  const fetchSummaryWithAuthRetry = async (): Promise<QuotaSummaryResponse> => {
+    try {
+      return await fetchQuotaSummary(accessToken, projectInfo.projectId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (account.refreshToken && /AUTH_EXPIRED|HTTP 401\b/i.test(msg)) {
+        const renewed = await ensureFreshToken(account, 60000, true);
+        if (renewed && renewed !== accessToken) {
+          accessToken = renewed;
+          return fetchQuotaSummary(accessToken, projectInfo.projectId);
+        }
+      }
+      throw err;
+    }
+  };
+
   let snapshot: UsageSnapshot;
   try {
-    const summary = await fetchQuotaSummary(accessToken, projectInfo.projectId);
+    const summary = await fetchSummaryWithAuthRetry();
     const summaryModels = extractQuotaFromSummary(summary);
     if (summaryModels.length === 0) {
       throw new Error(t('usNoQuotaBuckets'));
@@ -590,13 +730,16 @@ export async function fetchUsage(account: StoredAccount): Promise<UsageSnapshot>
     };
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
+    if (/AUTH_EXPIRED|HTTP 401\b|TOS_VIOLATION/i.test(reason)) {
+      throw e;
+    }
     console.warn('[UsageService] 周限摘要获取失败，退回模型级推断:', reason);
     const modelsResponse = await fetchAvailableModels(accessToken, projectInfo.projectId);
     snapshot = extractQuotaFromModels(modelsResponse.models);
     snapshot.loadError = t('errQuotaSummaryFallback') + reason;
   }
 
-  // 4. 补充订阅级别和 AI 积分
+  // 3. 补充订阅级别和 AI 积分
   snapshot.tierId = projectInfo.tierId;
   snapshot.availableAICredits = projectInfo.availableAICredits;
   if (projectInfo.loadError) {
@@ -611,46 +754,13 @@ export async function fetchUsage(account: StoredAccount): Promise<UsageSnapshot>
   return snapshot;
 }
 
-/**
- * 批量查询多个账号的额度
- */
-export async function fetchUsageBatch(
-  accounts: StoredAccount[],
-  onProgress?: (email: string, result: UsageSnapshot | Error) => void,
-): Promise<Map<string, UsageSnapshot>> {
-  const results = new Map<string, UsageSnapshot>();
-
-  for (const account of accounts) {
-    try {
-      const snapshot = await fetchUsage(account);
-      results.set(account.email, snapshot);
-      onProgress?.(account.email, snapshot);
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      console.error(`[UsageService] Failed to fetch quota for ${account.email}:`, error.message);
-      onProgress?.(account.email, error);
-    }
-  }
-
-  return results;
-}
-
-// ── 账号健康检测（封号识别） ─────────────────────────────────────────────
-// 2026-11-08 真机实测（8 号池 × {Node fetch, Chrome 指纹} × {gemini, claude} 对照 IDE 报错）定案：
-// - 封禁（ToS）只在推理端点 generateContent 现形：403 + reason=TOS_VIOLATION；
-//   ToS 检查先于配额检查（额度耗尽的号用 2.5-flash 探测照样 403 ToS），固定模型即可。
-// - 元数据端点（loadCodeAssist/fetchAvailableModels/retrieveUserQuotaSummary）对封禁完全隐身，
-//   被封号照样 200 + 额度满格——所以额度刷新成功绝不能当作健康依据。
-// - 429 RESOURCE_EXHAUSTED = 配额耗尽/瞬时限流，与封禁无关（对齐 Antigravity-Manager 语义：
-//   其反代对短 RetryInfo 的 429 做同号 grace retry，属日常现象）。
-//   卡片额度满格仍可能 429：官方下发口径 ≠ 服务端真实准入池，勿拿额度反驳 429。
-// 判定签名同时参照 Antigravity-Manager（lbjlaq）proxy/handlers/common.rs。
+// ── 错误归类（供配额刷新异常留痕，不主动发起推理探测） ───────────────────
 
 const TOS_BAN_PATTERN = /tos_violation|violation of terms of service|disabled in this account/i;
 const AUTH_FAIL_PATTERN = /auth_expired|invalid_grant|invalid_credentials|unauthenticated|http 401\b|no access token/i;
 /**
- * 本地网络/代理层失败签名。这类错误说明探针根本没拿到服务端响应，
- * 不能归类为账号健康结论——否则本机代理抖动会在底栏显示「检测异常」。
+ * 本地网络/代理层失败签名。这类错误说明请求根本没拿到服务端响应，
+ * 不能归类为账号封禁或凭据失效。
  */
 const NETWORK_FAIL_PATTERN = /fetch failed|und_err_|econnreset|econnrefused|etimedout|enotfound|eai_again|epipe|ehostunreach|enetunreach|socket hang up|network (error|unavailable|unreachable)|proxy|tls|ssl|certificate|timeout|timed out|aborted|abort/i;
 
@@ -669,124 +779,4 @@ export function classifyAccountError(message: string): AccountHealth['status'] {
   if (AUTH_FAIL_PATTERN.test(message)) return 'auth_invalid';
   if (NETWORK_FAIL_PATTERN.test(message)) return 'unreachable';
   return 'unknown';
-}
-
-/** 推理探针响应（只看状态码与错误签名，不打印 token） */
-interface ProbeResult {
-  status: number;
-  body: string;
-}
-
-/** 推理端点探测：generateContent（prod），1 token 损耗；探测模型固定 2.5-flash（ToS 检查先于配额检查） */
-async function probeGenerateContent(
-  accessToken: string,
-  project?: string,
-): Promise<ProbeResult> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
-  try {
-    const response = await fetch(`${CLOUDCODE_PROD_URL}/v1internal:generateContent`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'User-Agent': getCloudCodeUA(),
-        'x-goog-api-client': `gl-node/${NODE_VERSION}`,
-        'Content-Type': 'application/json',
-        'Accept': '*/*',
-        'Accept-Encoding': 'gzip, deflate, br',
-      },
-      body: JSON.stringify({
-        project: project || 'aicode-consumers',
-        model: 'gemini-2.5-flash',
-        request: {
-          contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
-          generationConfig: { maxOutputTokens: 1 },
-        },
-        userAgent: 'antigravity',
-        requestId: `kite-health-${Date.now()}`,
-      }),
-      signal: controller.signal,
-    });
-    return { status: response.status, body: await response.text() };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-/**
- * 单账号健康探针（两步，≈2s/号）：
- * 1) loadCodeAssist 拿 project + 抓凭据失效（401 在这里现形）
- * 2) generateContent 1-token 推理——封禁（ToS）唯一现形点
- * 分类：200/429=ok（429 是没量不是封）、403 ToS=banned、401=auth_invalid、
- *       网络/代理失败=unreachable（探针没发出去，不是账号结论）、其余响应无法定性=unknown。
- */
-export async function checkAccountHealth(account: StoredAccount): Promise<AccountHealth> {
-  const checkedAt = new Date().toISOString();
-  const fail = (status: AccountHealth['status'], detail: string): AccountHealth =>
-    ({ status, checkedAt, detail: detail.slice(0, 300) });
-  try {
-    if (!account.accessToken && !account.refreshToken) {
-      return fail('auth_invalid', 'No access token');
-    }
-    let accessToken = await ensureFreshToken(account);
-    let refreshedOn401 = false;
-
-    // 1) project + 凭据层（优先复用缓存 projectId，缺失时探测并落库）
-    let projectId: string | undefined = account.projectId;
-    if (!projectId) {
-      try {
-        const data = await loadCodeAssistRequest<LoadCodeAssistResponse>(
-          { metadata: getCloudCodeMetadata(), mode: 'FULL_ELIGIBILITY_CHECK' },
-          accessToken,
-        );
-        const proj = data.cloudaicompanionProject;
-        projectId = typeof proj === 'string' ? proj : proj?.id;
-        if (projectId) {
-          account.projectId = projectId;
-          accountStore.update(account.email, { projectId });
-        }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (/auth_expired|http 401/i.test(msg)) {
-          if (account.refreshToken) {
-            const renewed = await ensureFreshToken(account, 60000, true);
-            refreshedOn401 = true;
-            if (renewed && renewed !== accessToken) {
-              accessToken = renewed;
-            } else {
-              return fail('auth_invalid', msg);
-            }
-          } else {
-            return fail('auth_invalid', msg);
-          }
-        }
-        // 元数据失败不致命：project 缺省走共享池，继续推理探测
-      }
-    }
-
-    // 2) 推理探测——封禁唯一现形点（若缓存 AT 首次 401 且有 RT，补刷重试一次）
-    let res = await probeGenerateContent(accessToken, projectId);
-    if (res.status === 401 && !refreshedOn401 && account.refreshToken) {
-      const renewed = await ensureFreshToken(account, 60000, true);
-      if (renewed && renewed !== accessToken) {
-        accessToken = renewed;
-        res = await probeGenerateContent(accessToken, projectId);
-      }
-    }
-    if (res.status >= 200 && res.status < 300) {
-      return { status: 'ok', checkedAt };
-    }
-    const combined = `HTTP ${res.status}: ${res.body}`;
-    if (TOS_BAN_PATTERN.test(combined)) return fail('banned', combined);
-    if (res.status === 401) return fail('auth_invalid', combined);
-    // 429 = 配额耗尽/限流：没封，量的事额度条负责（detail 留痕，悬停可见）
-    if (res.status === 429) {
-      return { status: 'ok', checkedAt, detail: combined.slice(0, 300) };
-    }
-    // 其余（license 403 / 5xx / 异常码）不装懂
-    return fail('unknown', combined);
-  } catch (e) {
-    const msg = describeError(e);
-    return { status: classifyAccountError(msg), checkedAt, detail: msg.slice(0, 300) };
-  }
 }

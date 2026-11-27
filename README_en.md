@@ -6,7 +6,7 @@
 
 **Switch without restart · Real dual-window quotas for Claude / Gemini / Gemini 4 · Auto-confirm security notice · Bilingual UI**
 
-[![Version](https://img.shields.io/badge/version-1.5.7-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.5.8-blue?style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)]()
 [![GitHub release](https://img.shields.io/github/v/release/soulvon/Antigravity-Kite?color=orange&style=flat-square)](https://github.com/soulvon/Antigravity-Kite/releases)
@@ -47,7 +47,7 @@ Sidebar account card flow: **single-column vertical quota bars for Claude / Gemi
 
 ### Option 1: Extensions panel (recommended)
 
-1. Download the latest `antigravity-kite-1.5.7.vsix` ([GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest));
+1. Download the latest `antigravity-kite-1.5.8.vsix` ([GitHub Releases](https://github.com/soulvon/Antigravity-Kite/releases/latest));
 2. Open the **Antigravity IDE**;
 3. Open the Extensions view (`Ctrl+Shift+X` / macOS `Cmd+Shift+X`);
 4. Click the `...` menu ➔ **"Install from VSIX..."**;
@@ -56,7 +56,7 @@ Sidebar account card flow: **single-column vertical quota bars for Claude / Gemi
 ### Option 2: Command line
 
 ```bash
-antigravity-ide --install-extension antigravity-kite-1.5.7.vsix --force
+antigravity-ide --install-extension antigravity-kite-1.5.8.vsix --force
 ```
 
 ---
@@ -140,7 +140,7 @@ Search for `antigravityKite` in the IDE settings:
 | `antigravityKite.autoConfirmDeclaration` | `true` | Auto-confirm the security notice on switch (requires a debug port; first switch offers to enable it) |
 | `antigravityKite.cdpPort` | `9333` | Debug port; 9222 is tried as an automatic fallback |
 | `antigravityKite.cdpHeartbeatMs` | `500` | Heartbeat interval (ms) for auto-confirming the notice; takes effect immediately |
-| `antigravityKite.quotaRefreshScope` | `active` | Background auto-refresh scope: `active` (active account only, standby silent) / `all` (staggered) / `manual` (off) |
+| `antigravityKite.quotaRefreshScope` | `active` | Background auto-refresh mode: `active` (active account via local Language Server, default) / `manual` (off) |
 | `antigravityKite.quotaRefreshMinutes` | `15` | Background refresh interval (minutes) when auto-refresh is enabled; takes effect immediately |
 | `antigravityKite.switch.syncGeminiFiles` | `true` | Sync `~/.gemini` credential files on switch |
 | `antigravityKite.remote.syncAuth` | `true` | Sync & hot-switch remote Antigravity auth state in Remote SSH windows without restart |

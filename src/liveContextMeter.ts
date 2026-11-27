@@ -528,7 +528,7 @@ export function extractLiveContextSnapshot(
   };
 }
 
-async function defaultRpcPost(
+export async function daemonHubRpcPost(
   hub: DaemonHubInfo,
   method: string,
   body: Record<string, unknown>,
@@ -550,6 +550,8 @@ async function defaultRpcPost(
   }
   return JSON.parse(res.body);
 }
+
+const defaultRpcPost = daemonHubRpcPost;
 
 /** 实时上下文与速度监听控制器（负责自调度生命周期与事件推送） */
 export class LiveContextMeter implements vscode.Disposable {
